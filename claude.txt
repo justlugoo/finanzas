@@ -1,0 +1,112 @@
+# Finanzas — Contexto del proyecto
+
+App de escritorio personal de gestión financiera. Backend Rust + Tauri 2, frontend Svelte 5, base de datos libSQL / Turso.
+
+## Documentación completa
+
+Lee estos archivos en orden antes de hacer cualquier cosa:
+
+1. `docs/plan.md` — plan completo del proyecto, stack, principios, fases
+2. `docs/schema_finanzas.sql` — modelo de datos, 5 tablas SQLite/libSQL
+3. `docs/commands_contract.md` — contrato de comandos Rust ↔ Svelte (tipos, funciones, eventos)
+4. `docs/Diagrams/Model_ER.svg` — diagrama ER visual
+
+## Stack técnico
+
+- **Tauri 2.x** — framework desktop
+- **Rust 1.75+** — backend, lógica de negocio, comandos
+- **Svelte 5** — frontend (runes API: `$state`, `$derived`, `$effect`)
+- **libSQL** (crate `libsql`) — cliente de Turso, modo `new_remote_replica`
+- **Turso** — SQLite cloud sync, base ya creada y con schema aplicado
+- **CSS puro** — sin Tailwind, sin frameworks de UI. Variables CSS, tema oscuro fijo
+
+## Estado actual del proyecto
+
+**Fase:** Desarrollo — hito D-1
+
+**Completado antes de Development:**
+- Schema SQL aplicado en Turso (11 categorías seed en `budgets`, parámetros en `config`, precio gasolina inicial en `gas_prices`)
+- Contrato de comandos definido (36 comandos, 7 eventos push)
+- Repo GitHub privado inicializado
+
+**Estructura Rust src-tauri/src/ esperada:**
+```
+src-tauri/src/
+├── main.rs          — entry point, sin cambios
+├── lib.rs           — setup Tauri, registra DbState y comandos
+├── error.rs         — AppError con Serialize, conversiones From<>
+├── credentials.rs   — lee ~/.config/finanzas/credentials.toml
+├── db.rs            — open_database() con new_remote_replica + sync()
+└── commands.rs      — comandos Tauri (todos async, retornan AppResult<T>)
+```
+
+## Credenciales
+
+Las credenciales de Turso viven en `~/.config/finanzas/credentials.toml`:
+```toml
+turso_url = "libsql://..."
+turso_auth_token = "eyJ..."
+```
+
+**NUNCA commitearlo. Ya está en .gitignore.**
+
+La DB local se guarda en `~/.local/share/finanzas/local.db` (Linux) o `%LOCALAPPDATA%\finanzas\local.db` (Windows).
+
+## Convenciones Rust
+
+- Errores: siempre `AppResult<T>` = `Result<T, AppError>` definido en `error.rs`
+- Estado compartido: `DbState(pub Mutex<Database>)` en `commands.rs`
+- Comandos: `async fn`, reciben `State<'_, DbState>`, retornan `AppResult<T>`
+- Tipos retornados: structs con `#[derive(Serialize)]`, campos `snake_case`
+- Campo `type` en structs: usar `#[serde(rename = "type")] kind: String` (type es reservado en Rust)
+- Sync con Turso: llamar `db.sync().await?` después de cada escritura (en background, no bloqueante para el usuario)
+
+## Convenciones Svelte
+
+- API de runes Svelte 5: usar `$state()`, `$derived()`, `$effect()` — NO la sintaxis legacy de Svelte 4
+- Llamadas a comandos: `invoke<ReturnType>('nombre_comando', { args })`
+- Tipos TypeScript: definidos en `src/lib/types.ts`, espejo de los structs Rust
+- CSS: en el bloque `<style>` de cada `.svelte`, variables CSS globales en `app.css`
+- Tema: oscuro siempre, fondo base `#0c0c14`, acento `#7c6bff`
+
+## Principios de diseño
+
+1. **Local-first.** La app funciona offline. Sync es eventual, nunca bloquea UI.
+2. **Sin sobre-ingeniería.** Si algo se puede hacer simple, hacerlo simple.
+3. **Una pantalla, una intención.** 4 tabs: Resumen, Registrar, Historial, Configuración.
+4. **Sin ruido.** CSS mínimo, sin animaciones complejas, sin gradientes decorativos.
+5. **Reversible.** Todo lo que se crea se puede editar y eliminar.
+
+## Módulos y pantallas
+
+```
+src/routes/
+├── +page.svelte        — Resumen (dashboard principal)
+├── registrar/
+│   └── +page.svelte    — Formulario de registro de movimiento
+├── historial/
+│   └── +page.svelte    — Lista filtrable + exportar CSV
+└── config/
+    └── +page.svelte    — Metas, parámetros, objetivos, gasolina
+```
+
+Navegación entre tabs: componente `src/lib/components/Tabs.svelte`.
+
+## Comandos disponibles (resumen)
+
+Ver `docs/commands_contract.md` para la lista completa. Los primeros a implementar:
+
+- `list_budgets` → `Vec<Budget>` — categorías con meta mensual
+- `create_transaction(input)` → `Transaction` — registrar movimiento
+- `list_transactions(filter)` → `Vec<Transaction>` — historial
+- `get_period_summary(period)` → `PeriodSummary` — KPIs del dashboard
+- `get_category_progress(period)` → `Vec<CategoryProgress>` — barras de progreso
+
+## Lo que NO hacer
+
+- No usar `unwrap()` en código de producción — usar `?` y `AppResult`
+- No hacer queries SQL en el frontend — solo `invoke()` a comandos Rust
+- No agregar dependencias sin necesidad real
+- No usar `sudo npm install` — usar directorio npm local sin sudo
+- No commitar `credentials.toml`, archivos `.db`, `target/`, `node_modules/`
+- No usar TypeScript `any` — tipar correctamente con los tipos de `types.ts`
