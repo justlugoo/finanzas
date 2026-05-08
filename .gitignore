@@ -1,0 +1,35 @@
+# Rust / Cargo
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Node / npm
+node_modules/
+dist/
+.svelte-kit/
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/gen/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+credentials.toml
+
+# Build artifacts
+*.AppImage
+*.msi
+*.deb
+*.rpm
