@@ -43,6 +43,7 @@ pub fn run() {
             commands::list_categories,
             commands::list_active_goals,
             commands::export_transactions_csv,
+            commands::import_transactions_csv,
             commands::has_turso_credentials,
             commands::set_turso_credentials,
         ])

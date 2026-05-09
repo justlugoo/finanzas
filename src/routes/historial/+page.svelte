@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { Transaction, TransactionInput, CsvExport } from "$lib/types";
+  import type { Transaction, TransactionInput, CsvExport, ImportResult } from "$lib/types";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -33,8 +33,12 @@
   // ── Confirmación eliminar ─────────────────────────────────────────────────
   let deletingId   = $state<number | null>(null);
 
-  // ── Exportar ──────────────────────────────────────────────────────────────
-  let exporting    = $state(false);
+  // ── Exportar / Importar ───────────────────────────────────────────────────
+  let exporting      = $state(false);
+  let importing      = $state(false);
+  let importResult   = $state<ImportResult | null>(null);
+  let reloadKey      = $state(0);
+  let fileInputEl: HTMLInputElement | undefined = $state();
 
   let total = $derived(txs.reduce((sum, tx) => {
     return sum + (tx.type === "ingreso" ? tx.amount : -tx.amount);
@@ -65,6 +69,7 @@
     const _period = activePeriod;
     const _kind   = filterKind;
     const _cat    = filterCat;
+    const _reload = reloadKey;
     let cancelled = false;
 
     async function load() {
@@ -142,6 +147,33 @@
     }
   }
 
+  function triggerImport() {
+    importResult = null;
+    fileInputEl?.click();
+  }
+
+  function handleImportFile(e: Event & { currentTarget: HTMLInputElement }) {
+    const file = e.currentTarget.files?.[0];
+    if (!file) return;
+    importing = true;
+    importResult = null;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const content = ev.target?.result as string;
+      try {
+        const result = await invoke<ImportResult>("import_transactions_csv", { csvContent: content });
+        importResult = result;
+        if (result.imported > 0) reloadKey += 1;
+      } catch (err) {
+        error = JSON.stringify(err);
+      } finally {
+        importing = false;
+        if (fileInputEl) fileInputEl.value = "";
+      }
+    };
+    reader.readAsText(file);
+  }
+
   async function exportCSV() {
     exporting = true;
     try {
@@ -166,13 +198,44 @@
 <main>
   <div class="toolbar">
     <h1>Historial</h1>
-    <button class="export-btn" onclick={exportCSV} disabled={exporting || txs.length === 0}>
-      {exporting ? "Exportando…" : "Exportar CSV"}
-    </button>
+    <div class="toolbar-actions">
+      <button class="action-btn" onclick={triggerImport} disabled={importing}>
+        {importing ? "Importando…" : "Importar CSV"}
+      </button>
+      <button class="action-btn" onclick={exportCSV} disabled={exporting || txs.length === 0}>
+        {exporting ? "Exportando…" : "Exportar CSV"}
+      </button>
+    </div>
   </div>
+
+  <!-- File input oculto para importar -->
+  <input
+    type="file"
+    accept=".csv,text/csv"
+    bind:this={fileInputEl}
+    onchange={handleImportFile}
+    style="display:none"
+  />
 
   {#if error}
     <div class="banner error"><strong>Error</strong><pre>{error}</pre></div>
+  {/if}
+
+  {#if importResult}
+    <div class="banner" class:success={importResult.skipped === 0} class:warning={importResult.skipped > 0}>
+      <strong>Importación completada</strong>
+      <span>{importResult.imported} importadas, {importResult.skipped} omitidas</span>
+      {#if importResult.errors.length > 0}
+        <ul class="import-errors">
+          {#each importResult.errors.slice(0, 5) as err}
+            <li>{err}</li>
+          {/each}
+          {#if importResult.errors.length > 5}
+            <li>… y {importResult.errors.length - 5} más</li>
+          {/if}
+        </ul>
+      {/if}
+    </div>
   {/if}
 
   <!-- Filtros -->
@@ -350,7 +413,9 @@
 
   h1 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
 
-  .export-btn {
+  .toolbar-actions { display: flex; gap: 0.4rem; }
+
+  .action-btn {
     padding: 0.4rem 0.9rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -361,8 +426,8 @@
     transition: color 0.15s, background 0.15s;
   }
 
-  .export-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
-  .export-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .action-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
+  .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .banner {
     border-radius: var(--radius);
@@ -377,7 +442,18 @@
     border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
     color: var(--danger);
   }
+  .banner.success {
+    background: color-mix(in srgb, var(--success) 15%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+    color: var(--success);
+  }
+  .banner.warning {
+    background: color-mix(in srgb, var(--warning) 12%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+    color: var(--warning);
+  }
   .banner pre { font-size: 0.72rem; opacity: 0.8; white-space: pre-wrap; word-break: break-all; }
+  .import-errors { font-size: 0.75rem; opacity: 0.85; margin-top: 0.25rem; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.1rem; }
 
   /* ── Filtros ── */
   .filters {
@@ -408,17 +484,24 @@
   .period-selector button.active { background: var(--accent); color: #fff; }
 
   .filter-select {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    -webkit-appearance: none;
+    appearance: none;
+    background-color: #14141f;
+    border: 1px solid #2a2a40;
     border-radius: var(--radius);
-    color: var(--text-primary);
+    color: #e8e8f0;
     font: inherit;
     font-size: 0.8rem;
-    padding: 0.35rem 0.65rem;
+    padding: 0.35rem 1.8rem 0.35rem 0.65rem;
     outline: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.45rem center;
+    background-size: 0.875rem;
   }
 
   .filter-select:focus { border-color: var(--accent); }
+  .filter-select option { background-color: #14141f; color: #e8e8f0; }
 
   /* ── Tabla ── */
   .table-wrap {
@@ -547,16 +630,31 @@
   input[type="number"],
   input[type="date"],
   select {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
+    -webkit-appearance: none;
+    appearance: none;
+    background-color: #1c1c2e;
+    border: 1px solid #2a2a40;
     border-radius: var(--radius);
-    color: var(--text-primary);
+    color: #e8e8f0;
     font: inherit;
     font-size: 0.875rem;
-    padding: 0.5rem 0.65rem;
+    padding: 0.5rem 2rem 0.5rem 0.65rem;
     outline: none;
     width: 100%;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 0.875rem;
   }
+
+  input[type="text"],
+  input[type="number"],
+  input[type="date"] {
+    background-image: none;
+    padding-right: 0.65rem;
+  }
+
+  select option { background-color: #1c1c2e; color: #e8e8f0; }
 
   input:focus, select:focus { border-color: var(--accent); }
 

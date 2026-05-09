@@ -557,6 +557,13 @@ pub async fn get_month_comparison(state: State<'_, DbState>) -> AppResult<MonthC
     })
 }
 
+const INCOME_DEFAULTS: &[&str] = &[
+    "Carrera cuñada", "Carrera mamá", "Eventual", "Mesada", "Otro ingreso",
+];
+const EXPENSE_DEFAULTS: &[&str] = &[
+    "Gasolina", "Imprevisto", "Mantenimiento", "Otro gasto", "Parqueadero", "Social/Salidas",
+];
+
 #[tauri::command]
 pub async fn list_categories(
     state: State<'_, DbState>,
@@ -565,28 +572,34 @@ pub async fn list_categories(
     let conn = get_conn(&state).await?;
     let mut cats: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-    let mut rows = conn
-        .query("SELECT category FROM budgets ORDER BY category", ())
-        .await?;
-    while let Some(row) = rows.next().await? {
-        cats.insert(row.get(0)?);
-    }
+    match &kind {
+        None => {
+            let mut rows = conn.query("SELECT category FROM budgets ORDER BY category", ()).await?;
+            while let Some(row) = rows.next().await? { cats.insert(row.get(0)?); }
+            let mut rows = conn.query("SELECT DISTINCT category FROM transactions ORDER BY category", ()).await?;
+            while let Some(row) = rows.next().await? { cats.insert(row.get(0)?); }
+        }
+        Some(k) => {
+            let mut rows = conn
+                .query(
+                    "SELECT DISTINCT category FROM transactions WHERE type = ? ORDER BY category",
+                    libsql::params![k.clone()],
+                )
+                .await?;
 
-    let mut tx_rows = if let Some(ref k) = kind {
-        conn.query(
-            "SELECT DISTINCT category FROM transactions WHERE type = ? ORDER BY category",
-            libsql::params![k.clone()],
-        )
-        .await?
-    } else {
-        conn.query(
-            "SELECT DISTINCT category FROM transactions ORDER BY category",
-            (),
-        )
-        .await?
-    };
-    while let Some(row) = tx_rows.next().await? {
-        cats.insert(row.get(0)?);
+            let mut has_history = false;
+            while let Some(row) = rows.next().await? {
+                cats.insert(row.get(0)?);
+                has_history = true;
+            }
+
+            // Siempre incluir las categorías convencionales del tipo
+            let defaults: &[&str] = if k == "ingreso" { INCOME_DEFAULTS } else { EXPENSE_DEFAULTS };
+            for d in defaults { cats.insert(d.to_string()); }
+
+            // Si no hay historial ni convenciones coinciden, igual devuelve las convencionales
+            let _ = has_history;
+        }
     }
 
     Ok(cats.into_iter().collect())
@@ -678,6 +691,129 @@ pub async fn export_transactions_csv(
         content: csv,
         suggested_filename: format!("transacciones_{today}.csv"),
     })
+}
+
+// ── CSV Import ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Debug)]
+pub struct ImportResult {
+    pub imported: i64,
+    pub skipped: i64,
+    pub errors: Vec<String>,
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if in_quotes => {
+                if chars.peek() == Some(&'"') { current.push('"'); chars.next(); }
+                else { in_quotes = false; }
+            }
+            '"' => { in_quotes = true; }
+            ',' if !in_quotes => { fields.push(std::mem::take(&mut current)); }
+            _ => current.push(c),
+        }
+    }
+    fields.push(current);
+    fields
+}
+
+fn is_valid_date(s: &str) -> bool {
+    s.len() == 10 && NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+}
+
+#[tauri::command]
+pub async fn import_transactions_csv(
+    state: State<'_, DbState>,
+    csv_content: String,
+) -> AppResult<ImportResult> {
+    let conn = get_conn(&state).await?;
+
+    // Categorías válidas
+    let mut valid_cats: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cat_rows = conn.query("SELECT category FROM budgets", ()).await?;
+    while let Some(row) = cat_rows.next().await? { valid_cats.insert(row.get(0)?); }
+
+    let mut imported = 0i64;
+    let mut skipped = 0i64;
+    let mut errors: Vec<String> = Vec::new();
+
+    let mut lines = csv_content.lines();
+    lines.next(); // saltar encabezado
+
+    for (i, line) in lines.enumerate() {
+        let row_num = i + 2;
+        if line.trim().is_empty() { continue; }
+
+        let fields = parse_csv_line(line);
+
+        // Detectar si la primera columna es un ID numérico (formato export) o una fecha
+        let offset = if fields[0].trim().parse::<i64>().is_ok() { 1usize } else { 0 };
+
+        if fields.len() < offset + 4 {
+            skipped += 1;
+            errors.push(format!("Fila {row_num}: columnas insuficientes"));
+            continue;
+        }
+
+        let date = fields[offset].trim().to_string();
+        if !is_valid_date(&date) {
+            skipped += 1;
+            errors.push(format!("Fila {row_num}: fecha inválida '{date}'"));
+            continue;
+        }
+
+        let kind = fields[offset + 1].trim().to_lowercase();
+        if kind != "ingreso" && kind != "gasto" {
+            skipped += 1;
+            errors.push(format!("Fila {row_num}: tipo inválido '{kind}'"));
+            continue;
+        }
+
+        let category = fields[offset + 2].trim().to_string();
+        if !valid_cats.contains(&category) {
+            skipped += 1;
+            errors.push(format!("Fila {row_num}: categoría '{category}' no existe en presupuestos"));
+            continue;
+        }
+
+        let amount: i64 = match fields[offset + 3].trim().parse() {
+            Ok(a) if a > 0 => a,
+            _ => {
+                skipped += 1;
+                errors.push(format!("Fila {row_num}: monto inválido '{}'", fields[offset + 3].trim()));
+                continue;
+            }
+        };
+
+        let note: Option<String> = fields.get(offset + 4)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let is_extraordinary: bool = fields.get(offset + 5)
+            .map(|s| matches!(s.trim(), "Sí" | "Si" | "1" | "true"))
+            .unwrap_or(false);
+
+        match conn.execute(
+            "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id) \
+             VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            libsql::params![date, kind, category, amount, note, is_extraordinary as i64],
+        ).await {
+            Ok(_) => imported += 1,
+            Err(e) => {
+                skipped += 1;
+                errors.push(format!("Fila {row_num}: {e}"));
+            }
+        }
+    }
+
+    if imported > 0 { spawn_sync(Arc::clone(&state.0)); }
+
+    Ok(ImportResult { imported, skipped, errors })
 }
 
 #[tauri::command]

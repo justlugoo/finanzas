@@ -299,16 +299,33 @@
   input[type="text"],
   input[type="date"],
   select {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    -webkit-appearance: none;
+    appearance: none;
+    background-color: #14141f;
+    border: 1px solid #2a2a40;
     border-radius: var(--radius);
-    color: var(--text-primary);
+    color: #e8e8f0;
     font: inherit;
     font-size: 0.9rem;
-    padding: 0.55rem 0.75rem;
+    padding: 0.55rem 2.2rem 0.55rem 0.75rem;
     outline: none;
     transition: border-color 0.15s;
     width: 100%;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    background-size: 1rem;
+  }
+
+  input[type="text"],
+  input[type="date"] {
+    background-image: none;
+    padding-right: 0.75rem;
+  }
+
+  select option {
+    background-color: #14141f;
+    color: #e8e8f0;
   }
 
   input:focus, select:focus { border-color: var(--accent); }
