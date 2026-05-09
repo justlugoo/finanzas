@@ -98,6 +98,11 @@ export interface SyncStatus {
   is_online: boolean;
 }
 
+export interface CsvExport {
+  content: string;
+  suggested_filename: string;
+}
+
 export interface AppError {
   kind: string;
   message?: string;

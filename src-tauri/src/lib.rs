@@ -39,6 +39,10 @@ pub fn run() {
             commands::delete_transaction,
             commands::get_period_summary,
             commands::get_category_progress,
+            commands::get_month_comparison,
+            commands::list_categories,
+            commands::list_active_goals,
+            commands::export_transactions_csv,
             commands::has_turso_credentials,
             commands::set_turso_credentials,
         ])

@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 
 pub struct DbState(pub Arc<Mutex<Option<libsql::Database>>>);
 
-// ── Tipos compartidos ──────────────────────────────────────────────────────
+// ── Tipos compartidos ─────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Budget {
@@ -81,7 +81,59 @@ pub struct CategoryProgress {
     pub kind: String,
 }
 
+#[derive(Serialize, Debug)]
+pub struct CategoryComparison {
+    pub category: String,
+    pub current: i64,
+    pub previous: i64,
+    pub delta_pct: f64,
+}
+
+#[derive(Serialize, Debug)]
+pub struct MonthComparison {
+    pub current_month_total: i64,
+    pub previous_month_total: i64,
+    pub delta_amount: i64,
+    pub delta_percentage: f64,
+    pub by_category: Vec<CategoryComparison>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct CsvExport {
+    pub content: String,
+    pub suggested_filename: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Goal {
+    pub id: i64,
+    pub name: String,
+    pub target_amount: i64,
+    pub target_date: Option<String>,
+    pub status: String,
+    pub created_at: String,
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let next = if month == 12 {
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+    };
+    next.unwrap()
+        .signed_duration_since(NaiveDate::from_ymd_opt(year, month, 1).unwrap())
+        .num_days() as u32
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
 
 fn period_to_dates(period: &Period) -> (String, String) {
     let today = Local::now().date_naive();
@@ -424,6 +476,208 @@ pub async fn get_category_progress(
         });
     }
     Ok(progress)
+}
+
+#[tauri::command]
+pub async fn get_month_comparison(state: State<'_, DbState>) -> AppResult<MonthComparison> {
+    let conn = get_conn(&state).await?;
+    let today = Local::now().date_naive();
+
+    let curr_first = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
+    let curr_last = NaiveDate::from_ymd_opt(
+        today.year(), today.month(), days_in_month(today.year(), today.month()),
+    ).unwrap();
+
+    let (prev_year, prev_month) = if today.month() == 1 {
+        (today.year() - 1, 12u32)
+    } else {
+        (today.year(), today.month() - 1)
+    };
+    let prev_first = NaiveDate::from_ymd_opt(prev_year, prev_month, 1).unwrap();
+    let prev_last = NaiveDate::from_ymd_opt(
+        prev_year, prev_month, days_in_month(prev_year, prev_month),
+    ).unwrap();
+
+    let cs = curr_first.format("%Y-%m-%d").to_string();
+    let ce = curr_last.format("%Y-%m-%d").to_string();
+    let ps = prev_first.format("%Y-%m-%d").to_string();
+    let pe = prev_last.format("%Y-%m-%d").to_string();
+
+    let mut rows = conn
+        .query(
+            "SELECT
+                category,
+                COALESCE(SUM(CASE WHEN date >= ? AND date <= ? THEN amount ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN date >= ? AND date <= ? THEN amount ELSE 0 END), 0)
+             FROM transactions
+             WHERE type = 'gasto'
+               AND ((date >= ? AND date <= ?) OR (date >= ? AND date <= ?))
+             GROUP BY category
+             ORDER BY 2 DESC",
+            libsql::params![
+                cs.clone(), ce.clone(),
+                ps.clone(), pe.clone(),
+                cs.clone(), ce.clone(),
+                ps.clone(), pe.clone()
+            ],
+        )
+        .await?;
+
+    let mut by_category: Vec<CategoryComparison> = Vec::new();
+    let mut current_month_total: i64 = 0;
+    let mut previous_month_total: i64 = 0;
+
+    while let Some(row) = rows.next().await? {
+        let category: String = row.get(0)?;
+        let current: i64 = row.get(1)?;
+        let previous: i64 = row.get(2)?;
+        let delta_pct = if previous > 0 {
+            (current - previous) as f64 / previous as f64 * 100.0
+        } else {
+            0.0
+        };
+        current_month_total += current;
+        previous_month_total += previous;
+        by_category.push(CategoryComparison { category, current, previous, delta_pct });
+    }
+
+    let delta_amount = current_month_total - previous_month_total;
+    let delta_percentage = if previous_month_total > 0 {
+        delta_amount as f64 / previous_month_total as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    Ok(MonthComparison {
+        current_month_total,
+        previous_month_total,
+        delta_amount,
+        delta_percentage,
+        by_category,
+    })
+}
+
+#[tauri::command]
+pub async fn list_categories(
+    state: State<'_, DbState>,
+    kind: Option<String>,
+) -> AppResult<Vec<String>> {
+    let conn = get_conn(&state).await?;
+    let mut cats: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    let mut rows = conn
+        .query("SELECT category FROM budgets ORDER BY category", ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        cats.insert(row.get(0)?);
+    }
+
+    let mut tx_rows = if let Some(ref k) = kind {
+        conn.query(
+            "SELECT DISTINCT category FROM transactions WHERE type = ? ORDER BY category",
+            libsql::params![k.clone()],
+        )
+        .await?
+    } else {
+        conn.query(
+            "SELECT DISTINCT category FROM transactions ORDER BY category",
+            (),
+        )
+        .await?
+    };
+    while let Some(row) = tx_rows.next().await? {
+        cats.insert(row.get(0)?);
+    }
+
+    Ok(cats.into_iter().collect())
+}
+
+#[tauri::command]
+pub async fn list_active_goals(state: State<'_, DbState>) -> AppResult<Vec<Goal>> {
+    let conn = get_conn(&state).await?;
+    let mut rows = conn
+        .query(
+            "SELECT id, name, target_amount, target_date, status, created_at \
+             FROM goals WHERE status = 'activo' ORDER BY name",
+            (),
+        )
+        .await?;
+
+    let mut goals = Vec::new();
+    while let Some(row) = rows.next().await? {
+        goals.push(Goal {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            target_amount: row.get(2)?,
+            target_date: row.get(3)?,
+            status: row.get(4)?,
+            created_at: row.get(5)?,
+        });
+    }
+    Ok(goals)
+}
+
+#[tauri::command]
+pub async fn export_transactions_csv(
+    state: State<'_, DbState>,
+    filter: TransactionFilter,
+) -> AppResult<CsvExport> {
+    let conn = get_conn(&state).await?;
+
+    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at \
+                   FROM transactions WHERE 1=1"
+        .to_string();
+    let mut params: Vec<libsql::Value> = Vec::new();
+
+    if let Some(period) = &filter.period {
+        let (start, end) = period_to_dates(period);
+        sql.push_str(" AND date >= ? AND date <= ?");
+        params.push(start.into());
+        params.push(end.into());
+    }
+    if let Some(kind) = &filter.kind {
+        sql.push_str(" AND type = ?");
+        params.push(kind.clone().into());
+    }
+    if let Some(cat) = &filter.category {
+        sql.push_str(" AND category = ?");
+        params.push(cat.clone().into());
+    }
+    if filter.only_extraordinary == Some(true) {
+        sql.push_str(" AND is_extraordinary = 1");
+    }
+    if let Some(note) = &filter.search_note {
+        sql.push_str(" AND note LIKE ?");
+        params.push(format!("%{note}%").into());
+    }
+    sql.push_str(" ORDER BY date DESC, id DESC");
+
+    let mut rows = conn.query(&sql, params).await?;
+    let mut csv = String::from(
+        "ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,ID Objetivo,Creado en\n",
+    );
+
+    while let Some(row) = rows.next().await? {
+        let tx = row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?;
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{}\n",
+            tx.id,
+            tx.date,
+            tx.kind,
+            csv_escape(&tx.category),
+            tx.amount,
+            csv_escape(tx.note.as_deref().unwrap_or("")),
+            if tx.is_extraordinary { "Sí" } else { "No" },
+            tx.goal_id.map(|id| id.to_string()).unwrap_or_default(),
+            tx.created_at,
+        ));
+    }
+
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    Ok(CsvExport {
+        content: csv,
+        suggested_filename: format!("transacciones_{today}.csv"),
+    })
 }
 
 #[tauri::command]
