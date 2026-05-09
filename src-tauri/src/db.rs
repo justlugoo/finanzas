@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS config (
 
 INSERT OR IGNORE INTO budgets (category, monthly_amount) VALUES
     ('Mesada',          300000),
+    ('Carrera',              0),
     ('Carrera mamá',    259800),
     ('Carrera cuñada',  259800),
     ('Eventual',             0),
@@ -64,14 +65,19 @@ INSERT OR IGNORE INTO budgets (category, monthly_amount) VALUES
 
 INSERT OR IGNORE INTO config (key, value) VALUES
     ('mesada_mensual',                  '300000'),
-    ('consumo_moto_km_galon',           '415'),
+    ('consumo_moto_km_galon',           '350'),
     ('umbral_alerta_gasolina_pct',      '5'),
     ('umbral_alerta_meta_pct',          '100'),
-    ('scraping_gasolina_activo',        'false');
+    ('scraping_gasolina_activo',        'false'),
+    ('km_carrera_mama_redondo',         '8'),
+    ('km_carrera_cunada_redondo',       '16'),
+    ('km_universidad_redondo',          '11.4');
 
 INSERT INTO gas_prices (date, price_per_gallon, source)
 SELECT '2026-05-08', 15881, 'manual'
 WHERE NOT EXISTS (SELECT 1 FROM gas_prices);
+
+UPDATE config SET value = '350' WHERE key = 'consumo_moto_km_galon' AND value = '415';
 ";
 
 pub fn local_db_path() -> PathBuf {

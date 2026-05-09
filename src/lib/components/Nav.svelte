@@ -2,9 +2,11 @@
   import { page } from '$app/stores';
 
   const tabs = [
-    { href: '/',          label: 'Resumen'   },
-    { href: '/registrar', label: 'Registrar' },
-    { href: '/historial', label: 'Historial' },
+    { href: '/',           label: 'Resumen'   },
+    { href: '/registrar',  label: 'Registrar' },
+    { href: '/historial',  label: 'Historial' },
+    { href: '/objetivos',  label: 'Objetivos' },
+    { href: '/config',     label: 'Config'    },
   ];
 </script>
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { Transaction, TransactionInput, CsvExport, ImportResult } from "$lib/types";
+  import DatePicker from "$lib/components/DatePicker.svelte";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -31,7 +32,8 @@
   let editError    = $state<string | null>(null);
 
   // ── Confirmación eliminar ─────────────────────────────────────────────────
-  let deletingId   = $state<number | null>(null);
+  let deletingId         = $state<number | null>(null);
+  let deletingInProgress = $state<number | null>(null);
 
   // ── Exportar / Importar ───────────────────────────────────────────────────
   let exporting      = $state(false);
@@ -86,7 +88,7 @@
           loading    = false;
         }
       } catch (e) {
-        if (!cancelled) { error = JSON.stringify(e); loading = false; }
+        if (!cancelled) { console.error("[historial] load error:", e); error = "No se pudieron cargar las transacciones."; loading = false; }
       }
     }
 
@@ -122,6 +124,7 @@
         note: editNote.trim() || null,
         is_extraordinary: editExtraord,
         goal_id: editingTx.goal_id,
+        gas_km: null,
       };
       const updated = await invoke<Transaction>("update_transaction", {
         id: editingTx.id,
@@ -130,20 +133,23 @@
       txs = txs.map((t) => t.id === updated.id ? updated : t);
       editingTx = null;
     } catch (e) {
-      editError = typeof e === "string" ? e : JSON.stringify(e);
+      console.error("[historial] save edit error:", e);
+      editError = "No se pudo guardar el cambio. Intenta de nuevo.";
     } finally {
       editSaving = false;
     }
   }
 
   async function confirmDelete(id: number) {
+    deletingInProgress = id;
     try {
       await invoke("delete_transaction", { id });
       txs = txs.filter((t) => t.id !== id);
     } catch (e) {
-      error = JSON.stringify(e);
+      error = "No se pudo eliminar la transacción. Intenta de nuevo.";
     } finally {
       deletingId = null;
+      deletingInProgress = null;
     }
   }
 
@@ -165,7 +171,7 @@
         importResult = result;
         if (result.imported > 0) reloadKey += 1;
       } catch (err) {
-        error = JSON.stringify(err);
+        error = typeof err === "string" ? err : "Error al importar el archivo.";
       } finally {
         importing = false;
         if (fileInputEl) fileInputEl.value = "";
@@ -188,7 +194,8 @@
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      error = JSON.stringify(e);
+      console.error("[historial] export error:", e);
+      error = "Error al exportar. Intenta de nuevo.";
     } finally {
       exporting = false;
     }
@@ -300,8 +307,12 @@
                 {#if deletingId === tx.id}
                   <span class="confirm-del">
                     ¿Eliminar?
-                    <button class="action-link danger" onclick={() => confirmDelete(tx.id)}>Sí</button>
-                    <button class="action-link" onclick={() => { deletingId = null; }}>No</button>
+                    <button
+                      class="action-link danger"
+                      onclick={() => confirmDelete(tx.id)}
+                      disabled={deletingInProgress === tx.id}
+                    >{deletingInProgress === tx.id ? "…" : "Sí"}</button>
+                    <button class="action-link" onclick={() => { deletingId = null; }} disabled={deletingInProgress === tx.id}>No</button>
                   </span>
                 {:else}
                   <button class="action-link" onclick={() => startEdit(tx)}>Editar</button>
@@ -369,8 +380,8 @@
         </div>
 
         <div class="field">
-          <label for="edit-date">Fecha</label>
-          <input id="edit-date" type="date" bind:value={editDate} />
+          <label>Fecha</label>
+          <DatePicker bind:value={editDate} />
         </div>
 
         <div class="field">
@@ -625,6 +636,7 @@
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
 
   label { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
+
 
   input[type="text"],
   input[type="number"],

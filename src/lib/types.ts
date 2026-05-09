@@ -25,6 +25,7 @@ export interface TransactionInput {
   note: string | null;
   is_extraordinary: boolean;
   goal_id: number | null;
+  gas_km: number | null;
 }
 
 export type Period =
@@ -83,6 +84,35 @@ export interface GoalWithProgress {
   monthly_required: number | null;
   projected_completion_date: string | null;
   on_track: boolean;
+}
+
+export interface GoalDetail {
+  goal: GoalWithProgress;
+  contributions: Transaction[];
+}
+
+export interface WeeklyGasPoint {
+  week_start: string;
+  avg_price: number;
+  entry_count: number;
+}
+
+export interface TripCostResult {
+  km: number;
+  cost: number;
+  price_per_gallon: number;
+  consumo_km_galon: number;
+}
+
+export interface RoutesCost {
+  precio_galon: number;
+  carrera_mama: number;
+  carrera_cunada: number;
+  universidad: number;
+  consumo_km_galon: number;
+  km_universidad: number;
+  km_carrera_mama: number;
+  km_carrera_cunada: number;
 }
 
 export interface GasPrice {

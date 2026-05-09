@@ -1,0 +1,577 @@
+<script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+  import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost } from "$lib/types";
+
+  let currentPrice   = $state<GasPrice | null>(null);
+  let priceHistory   = $state<GasPrice[]>([]);
+  let weeklyData     = $state<WeeklyGasPoint[]>([]);
+  let budgets        = $state<Budget[]>([]);
+  let routeCosts     = $state<RoutesCost | null>(null);
+  let loading        = $state(true);
+  let pageError      = $state<string | null>(null);
+
+  // ── Actualizar precio ─────────────────────────────────────────────────────
+  let newPriceRaw = $state("");
+  let saving      = $state(false);
+  let saveMsg     = $state<string | null>(null);
+  let saveError   = $state<string | null>(null);
+
+  let newPrice = $derived(parseInt(newPriceRaw.replace(/\D/g, ""), 10) || 0);
+
+  // ── Edición inline de presupuestos ────────────────────────────────────────
+  let editingBudget       = $state<string | null>(null);
+  let editBudgetRaw       = $state("");
+  let savingBudget        = $state(false);
+  let savedBudgetCategory = $state<string | null>(null);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function formatCOP(n: number): string {
+    return new Intl.NumberFormat("es-CO", {
+      style: "currency", currency: "COP", minimumFractionDigits: 0,
+    }).format(n);
+  }
+
+  function handlePriceInput(e: Event & { currentTarget: HTMLInputElement }) {
+    const digits = e.currentTarget.value.replace(/\D/g, "");
+    newPriceRaw = digits;
+    e.currentTarget.value = digits ? new Intl.NumberFormat("es-CO").format(parseInt(digits, 10)) : "";
+  }
+
+  // ── Carga inicial ─────────────────────────────────────────────────────────
+  $effect(() => {
+    async function load() {
+      loading = true; pageError = null;
+      try {
+        const [price, history, weekly, buds] = await Promise.all([
+          invoke<GasPrice | null>("get_current_gas_price"),
+          invoke<GasPrice[]>("list_gas_prices", { limit: 20 }),
+          invoke<WeeklyGasPoint[]>("get_weekly_gas_comparison"),
+          invoke<Budget[]>("list_budgets"),
+        ]);
+
+        // Auto-seed si no hay precio registrado
+        if (price === null) {
+          try {
+            const seeded = await invoke<GasPrice>("register_gas_price_manual", { price: 15881 });
+            currentPrice = seeded;
+            priceHistory = [seeded];
+          } catch {
+            currentPrice = null;
+            priceHistory = history;
+          }
+        } else {
+          currentPrice = price;
+          priceHistory = history;
+        }
+
+        weeklyData = weekly;
+        budgets    = buds;
+        routeCosts = await invoke<RoutesCost>("get_route_costs");
+      } catch (e) {
+        console.error("[config] load error:", e);
+        pageError = "Error al cargar la configuración. Recarga la app.";
+      } finally {
+        loading = false;
+      }
+    }
+    load();
+  });
+
+  // ── Guardar precio ────────────────────────────────────────────────────────
+  async function handleSavePrice(ev: Event) {
+    ev.preventDefault();
+    if (newPrice <= 0) { saveError = "El precio debe ser mayor que 0."; return; }
+    saving = true; saveError = null; saveMsg = null;
+    try {
+      const saved = await invoke<GasPrice>("register_gas_price_manual", { price: newPrice });
+      currentPrice = saved;
+      priceHistory = [saved, ...priceHistory.filter(p => p.date !== saved.date)].slice(0, 20);
+      routeCosts   = await invoke<RoutesCost>("get_route_costs");
+      saveMsg = `Precio actualizado: ${formatCOP(saved.price_per_gallon)}/galón`;
+      newPriceRaw = "";
+      setTimeout(() => { saveMsg = null; }, 3000);
+    } catch (e) {
+      console.error("[config] save price error:", e);
+      saveError = "No se pudo guardar el precio. Intenta de nuevo.";
+    } finally {
+      saving = false;
+    }
+  }
+
+  // ── Edición de presupuesto ────────────────────────────────────────────────
+  function startEditBudget(category: string, amount: number) {
+    editingBudget = category;
+    editBudgetRaw = amount > 0 ? amount.toString() : "";
+  }
+
+  function handleBudgetInput(e: Event & { currentTarget: HTMLInputElement }) {
+    editBudgetRaw = e.currentTarget.value.replace(/\D/g, "");
+    e.currentTarget.value = editBudgetRaw;
+  }
+
+  async function saveEditBudget(category: string) {
+    const amount = parseInt(editBudgetRaw, 10);
+    if (isNaN(amount) || amount < 0) { editingBudget = null; return; }
+    savingBudget = true;
+    try {
+      const updated = await invoke<Budget>("update_budget", { category, monthlyAmount: amount });
+      budgets = budgets.map(b => b.category === category ? updated : b);
+      editingBudget = null;
+      savedBudgetCategory = category;
+      setTimeout(() => { savedBudgetCategory = null; }, 1000);
+    } catch (e) {
+      console.error("[config] save budget error:", e);
+      pageError = "No se pudo guardar el presupuesto. Intenta de nuevo.";
+      editingBudget = null;
+    } finally {
+      savingBudget = false;
+    }
+  }
+
+  function handleBudgetKeydown(e: KeyboardEvent, category: string) {
+    if (e.key === "Enter")  saveEditBudget(category);
+    if (e.key === "Escape") { editingBudget = null; }
+  }
+</script>
+
+<main>
+  <h1>Configuración</h1>
+
+  {#if pageError}
+    <div class="banner error"><strong>Error</strong> {pageError}</div>
+  {/if}
+
+  {#if loading}
+    <p class="muted">Cargando…</p>
+  {:else}
+
+    <!-- ══ Gasolina ══════════════════════════════════════════════════════════ -->
+    <section class="section">
+      <h2>Gasolina</h2>
+
+      <!-- Precio actual -->
+      <div class="gas-card">
+        {#if currentPrice}
+          <div class="gas-price-big">
+            {formatCOP(currentPrice.price_per_gallon)}<span class="unit">/galón</span>
+          </div>
+          <div class="gas-meta">
+            <span>{currentPrice.date}</span>
+            <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
+          </div>
+        {:else}
+          <p class="muted">Sin precio registrado.</p>
+        {/if}
+      </div>
+
+      <!-- Costos por ruta -->
+      {#if routeCosts}
+        <div class="subsection">
+          <h3>Costos por ruta <span class="hint-inline">· {formatCOP(routeCosts.precio_galon)}/gal · {routeCosts.consumo_km_galon} km/gal</span></h3>
+          <div class="route-costs">
+            {#each [
+              { label: "Carrera mamá",   km: "8",    cost: routeCosts.carrera_mama   },
+              { label: "Carrera cuñada", km: "16",   cost: routeCosts.carrera_cunada },
+              { label: "Universidad",    km: "11.4", cost: routeCosts.universidad    },
+            ] as route}
+              <div class="route-row">
+                <span class="route-name">{route.label}</span>
+                <span class="route-km">{route.km} km</span>
+                <span class="route-cost">{formatCOP(route.cost)}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Actualizar precio -->
+      <div class="subsection">
+        <h3>Actualizar precio hoy</h3>
+        {#if saveMsg}
+          <div class="banner success small">{saveMsg}</div>
+        {/if}
+        {#if saveError}
+          <div class="banner error small">{saveError}</div>
+        {/if}
+        <form onsubmit={handleSavePrice} class="inline-form">
+          <input
+            type="text"
+            inputmode="numeric"
+            placeholder="Precio por galón"
+            value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
+            oninput={handlePriceInput}
+          />
+          <button type="submit" class="btn-primary" disabled={saving || newPrice <= 0}>
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </form>
+      </div>
+
+      <!-- Historial -->
+      {#if priceHistory.length > 0}
+        <div class="subsection">
+          <h3>Historial de precios</h3>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th class="right">Precio/galón</th>
+                  <th>Fuente</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each priceHistory as p (p.id)}
+                  <tr>
+                    <td>{p.date}</td>
+                    <td class="right">{formatCOP(p.price_per_gallon)}</td>
+                    <td><span class="source-badge source-{p.source}">{p.source}</span></td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Comparación semanal -->
+      {#if weeklyData.length > 0}
+        <div class="subsection">
+          <h3>Comparación semanal</h3>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Semana (lunes)</th>
+                  <th class="right">Precio promedio</th>
+                  <th class="right">Registros</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each weeklyData as w, i}
+                  {@const prev = weeklyData[i + 1]}
+                  <tr>
+                    <td>{w.week_start}</td>
+                    <td class="right">
+                      {formatCOP(w.avg_price)}
+                      {#if prev}
+                        {@const delta = w.avg_price - prev.avg_price}
+                        <span class="delta" class:up={delta > 0} class:down={delta < 0}>
+                          {delta > 0 ? "↑" : delta < 0 ? "↓" : "—"}
+                        </span>
+                      {/if}
+                    </td>
+                    <td class="right muted">{w.entry_count}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {/if}
+    </section>
+
+    <!-- ══ Presupuestos ══════════════════════════════════════════════════════ -->
+    <section class="section">
+      <h2>Presupuestos mensuales</h2>
+      <p class="hint">Haz clic en un monto para editarlo.</p>
+      {#if budgets.length === 0}
+        <p class="muted">Sin presupuestos registrados.</p>
+      {:else}
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Categoría</th>
+                <th class="right">Monto mensual</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each budgets as b (b.category)}
+                <tr class:row-saved={savedBudgetCategory === b.category}>
+                  <td>{b.category}</td>
+                  <td class="right">
+                    {#if editingBudget === b.category}
+                      <div class="budget-edit-row">
+                        <input
+                          type="text"
+                          inputmode="numeric"
+                          class="inline-input"
+                          value={editBudgetRaw}
+                          oninput={handleBudgetInput}
+                          onkeydown={(e) => handleBudgetKeydown(e, b.category)}
+                          disabled={savingBudget}
+                          autofocus
+                        />
+                        <button
+                          class="budget-icon-btn budget-save"
+                          onclick={() => saveEditBudget(b.category)}
+                          disabled={savingBudget}
+                          title="Guardar"
+                        >✓</button>
+                        <button
+                          class="budget-icon-btn budget-cancel"
+                          onclick={() => { editingBudget = null; }}
+                          disabled={savingBudget}
+                          title="Cancelar"
+                        >✕</button>
+                      </div>
+                    {:else}
+                      <button
+                        class="amount-btn"
+                        onclick={() => startEditBudget(b.category, b.monthly_amount)}
+                      >
+                        {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
+                      </button>
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    </section>
+
+  {/if}
+</main>
+
+<style>
+  main {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  h1 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+  }
+
+  h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
+  h3 { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.5rem; }
+
+  .hint-inline { font-weight: 400; color: var(--text-muted); }
+
+  .section {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .subsection { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  /* ── Precio actual ── */
+  .gas-card {
+    background: var(--bg-elevated);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+  }
+
+  .gas-price-big {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+
+  .unit { font-size: 0.85rem; font-weight: 400; color: var(--text-muted); margin-left: 0.25rem; }
+
+  .gas-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .source-badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+  }
+  .source-manual   { background: color-mix(in srgb, var(--accent)  20%, transparent); color: var(--accent);  }
+  .source-scraping { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+
+  /* ── Costos por ruta ── */
+  .route-costs {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .route-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+
+  .route-row:last-child { border-bottom: none; }
+
+  .route-name { flex: 1; color: var(--text-primary); font-weight: 500; }
+  .route-km   { color: var(--text-muted); font-size: 0.78rem; min-width: 45px; }
+  .route-cost { color: var(--accent); font-weight: 700; font-size: 0.9rem; min-width: 80px; text-align: right; }
+
+  /* ── Formulario inline ── */
+  .inline-form { display: flex; gap: 0.5rem; }
+
+  /* ── Tablas ── */
+  .table-wrap { overflow-x: auto; }
+
+  .data-table {
+    width: 100%;
+    font-size: 0.82rem;
+    border-collapse: collapse;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 0.4rem 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .data-table th { color: var(--text-muted); font-weight: 500; font-size: 0.72rem; }
+  .data-table td { color: var(--text-secondary); }
+
+  .right { text-align: right; }
+
+  .delta { font-size: 0.7rem; margin-left: 0.2rem; }
+  .delta.up   { color: var(--danger);  }
+  .delta.down { color: var(--success); }
+
+  /* ── Presupuesto editable ── */
+  .row-saved td { transition: background 0.3s; background: color-mix(in srgb, var(--success) 12%, transparent) !important; }
+
+  .amount-btn {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    transition: background 0.15s, color 0.15s;
+    cursor: pointer;
+  }
+  .amount-btn:hover { background: var(--bg-elevated); color: var(--accent); }
+
+  .budget-edit-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    justify-content: flex-end;
+  }
+
+  .inline-input {
+    -webkit-appearance: none;
+    appearance: none;
+    background-color: #14141f;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: #e8e8f0;
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.2rem 0.4rem;
+    outline: none;
+    width: 100px;
+    text-align: right;
+  }
+
+  .budget-icon-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+  }
+  .budget-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .budget-save {
+    background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated));
+    color: var(--success);
+    border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+  }
+  .budget-save:hover:not(:disabled) { background: color-mix(in srgb, var(--success) 30%, var(--bg-elevated)); }
+
+  .budget-cancel {
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .budget-cancel:hover:not(:disabled) { color: var(--danger); }
+
+  /* ── Inputs ── */
+  input[type="text"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background-color: #14141f;
+    border: 1px solid #2a2a40;
+    border-radius: var(--radius);
+    color: #e8e8f0;
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 0.5rem 0.75rem;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+  }
+  input:focus { border-color: var(--accent); }
+
+  /* ── Botones ── */
+  .btn-primary {
+    padding: 0.5rem 1rem;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border-radius: var(--radius);
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Banners ── */
+  .banner {
+    border-radius: var(--radius);
+    padding: 0.55rem 0.9rem;
+    font-size: 0.82rem;
+  }
+  .banner.error {
+    background: color-mix(in srgb, var(--danger) 15%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+    color: var(--danger);
+  }
+  .banner.success {
+    background: color-mix(in srgb, var(--success) 15%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+    color: var(--success);
+    font-weight: 500;
+  }
+  .banner.small { padding: 0.35rem 0.75rem; }
+
+  .hint { font-size: 0.75rem; color: var(--text-muted); }
+  .muted { color: var(--text-muted); font-size: 0.82rem; }
+</style>

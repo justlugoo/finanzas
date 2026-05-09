@@ -46,6 +46,19 @@ pub fn run() {
             commands::import_transactions_csv,
             commands::has_turso_credentials,
             commands::set_turso_credentials,
+            commands::list_goals,
+            commands::create_goal,
+            commands::update_goal,
+            commands::delete_goal,
+            commands::get_goal_detail,
+            commands::get_current_gas_price,
+            commands::list_gas_prices,
+            commands::register_gas_price_manual,
+            commands::get_weekly_gas_comparison,
+            commands::calculate_trip_cost,
+            commands::get_config_value,
+            commands::get_route_costs,
+            commands::update_budget,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

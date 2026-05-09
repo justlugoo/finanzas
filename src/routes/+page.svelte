@@ -21,6 +21,25 @@
   let comparison   = $state<MonthComparison | null>(null);
   let loading      = $state(true);
   let error        = $state<string | null>(null);
+  let budgetView   = $state<"ingresos" | "gastos">("ingresos");
+
+  const INCOME_FIXED    = ["Mesada", "Carrera", "Carrera mamá", "Carrera cuñada"];
+  const INCOME_VARIABLE = ["Eventual", "Otro ingreso"];
+
+  let incomeFixed = $derived(
+    INCOME_FIXED
+      .map(name => categories.find(c => c.category === name))
+      .filter((c): c is CategoryProgress => c !== undefined),
+  );
+  let incomeVariable = $derived(
+    INCOME_VARIABLE.map(name =>
+      categories.find(c => c.category === name) ??
+      ({ category: name, monthly_target: 0, current_amount: 0, percentage: 0, is_over: false, kind: "ingreso" } as CategoryProgress)
+    ),
+  );
+  let expenseTracked = $derived(
+    categories.filter(c => !INCOME_FIXED.includes(c.category) && !INCOME_VARIABLE.includes(c.category)),
+  );
 
   const prevMonthName = (() => {
     const now = new Date();
@@ -45,7 +64,7 @@
           if (err?.kind === "DatabaseError" && err?.message?.includes("no inicializada")) {
             await new Promise((r) => setTimeout(r, 300));
           } else {
-            if (!cancelled) { error = JSON.stringify(e); loading = false; }
+            if (!cancelled) { console.error("[dashboard] init error:", e); error = "Error inicializando la app. Recarga."; loading = false; }
             return;
           }
         }
@@ -69,7 +88,7 @@
           loading    = false;
         }
       } catch (e: unknown) {
-        if (!cancelled) { error = JSON.stringify(e); loading = false; }
+        if (!cancelled) { console.error("[dashboard] load error:", e); error = "Error cargando datos. Recarga la app."; loading = false; }
       }
     }
 
@@ -144,38 +163,99 @@
     <div class="placeholder-row short"></div>
   {/if}
 
-  <!-- Barras de categoría -->
+  <!-- Presupuestos con toggle Ingresos/Gastos -->
   <section class="section">
-    <h2>Presupuestos</h2>
+    <div class="section-header">
+      <h2>Presupuestos</h2>
+      <div class="budget-toggle">
+        <button class:active={budgetView === "ingresos"} onclick={() => { budgetView = "ingresos"; }}>Ingresos</button>
+        <button class:active={budgetView === "gastos"}   onclick={() => { budgetView = "gastos"; }}>Gastos</button>
+      </div>
+    </div>
+
     {#if loading}
       <div class="placeholder-list">
         {#each [1,2,3,4] as _}<div class="placeholder-row"></div>{/each}
       </div>
-    {:else if categories.length === 0}
-      <p class="empty">Sin categorías para este período.</p>
-    {:else}
-      <ul class="category-list">
-        {#each categories as cat}
-          {@const pct = Math.min(cat.percentage, 100)}
-          <li class="category-row">
-            <div class="cat-header">
-              <span class="cat-name">{cat.category}</span>
-              <span class="cat-amounts">
-                <span class:over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
+
+    {:else if budgetView === "ingresos"}
+      {#if incomeFixed.length === 0 && incomeVariable.length === 0}
+        <p class="empty">Sin ingresos registrados en este período.</p>
+      {:else}
+        <ul class="category-list">
+          {#if incomeFixed.length > 0}
+            <li class="group-label">FIJOS</li>
+            {#each incomeFixed as cat}
+              {@const pct = Math.min(cat.percentage, 100)}
+              <li class="category-row">
+                <div class="cat-header">
+                  <span class="cat-name">{cat.category}</span>
+                  <span class="cat-amounts">
+                    <span class:income-over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
+                    {#if cat.monthly_target > 0}
+                      <span class="cat-target"> / {formatCOP(cat.monthly_target)}</span>
+                    {/if}
+                  </span>
+                </div>
                 {#if cat.monthly_target > 0}
-                  <span class="cat-target"> / {formatCOP(cat.monthly_target)}</span>
+                  <div class="bar-track">
+                    <div class="bar-fill" class:bar-income-over={cat.is_over} style="width: {pct}%"></div>
+                  </div>
+                  <span class="cat-pct" class:income-over={cat.is_over}>{cat.percentage.toFixed(0)}% META</span>
                 {/if}
-              </span>
-            </div>
-            <div class="bar-track">
-              <div class="bar-fill" class:bar-over={cat.is_over} style="width: {pct}%"></div>
-            </div>
-            {#if cat.monthly_target > 0}
-              <span class="cat-pct" class:over={cat.is_over}>{cat.percentage.toFixed(0)}%</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+              </li>
+            {/each}
+          {/if}
+          {#if incomeVariable.length > 0}
+            <li class="group-label">VARIABLES</li>
+            {#each incomeVariable as cat}
+              <li class="category-row">
+                <div class="cat-header">
+                  <span class="cat-name">{cat.category}</span>
+                  <span class="cat-amounts">{formatCOP(cat.current_amount)}</span>
+                </div>
+                {#if cat.monthly_target > 0}
+                  {@const pct = Math.min(cat.percentage, 100)}
+                  <div class="bar-track">
+                    <div class="bar-fill" class:bar-income-over={cat.is_over} style="width: {pct}%"></div>
+                  </div>
+                  <span class="cat-pct" class:income-over={cat.is_over}>{cat.percentage.toFixed(0)}% META</span>
+                {:else}
+                  <span class="cat-no-meta">sin meta definida</span>
+                {/if}
+              </li>
+            {/each}
+          {/if}
+        </ul>
+      {/if}
+
+    {:else}
+      {#if expenseTracked.length === 0}
+        <p class="empty">Sin gastos registrados en este período.</p>
+      {:else}
+        <ul class="category-list">
+          {#each expenseTracked as cat}
+            {@const pct = Math.min(cat.percentage, 100)}
+            <li class="category-row">
+              <div class="cat-header">
+                <span class="cat-name">{cat.category}</span>
+                <span class="cat-amounts">
+                  <span class:over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
+                  {#if cat.monthly_target > 0}
+                    <span class="cat-target"> / {formatCOP(cat.monthly_target)}</span>
+                  {/if}
+                </span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill" class:bar-over={cat.is_over} style="width: {pct}%"></div>
+              </div>
+              {#if cat.monthly_target > 0}
+                <span class="cat-pct" class:over={cat.is_over}>{cat.percentage.toFixed(0)}% LÍMITE</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </section>
 
@@ -330,6 +410,42 @@
 
   @keyframes shimmer { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.7; } }
 
+  /* Presupuestos header + toggle */
+  .section-header { display: flex; align-items: center; justify-content: space-between; }
+
+  .budget-toggle {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-elevated);
+    padding: 3px;
+    border-radius: 6px;
+  }
+
+  .budget-toggle button {
+    padding: 0.2rem 0.65rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .budget-toggle button.active { background: var(--accent); color: #fff; }
+  .budget-toggle button:not(.active):hover { color: var(--text-primary); }
+
+  /* Grupo label dentro de category-list */
+  .group-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    list-style: none;
+    padding: 0.35rem 0 0;
+  }
+
   /* Categorías */
   .category-list { list-style: none; display: flex; flex-direction: column; gap: 0.6rem; }
 
@@ -362,9 +478,20 @@
   .bar-track { grid-column: 1 / 2; height: 5px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
   .bar-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.4s ease; min-width: 2px; }
   .bar-fill.bar-over { background: var(--danger); }
+  .bar-fill.bar-income-over { background: var(--success); }
 
   .cat-pct { grid-column: 2 / 3; grid-row: 2 / 3; font-size: 0.72rem; color: var(--text-muted); text-align: right; }
   .cat-pct.over { color: var(--danger); font-weight: 600; }
+  .cat-pct.income-over { color: var(--success); font-weight: 600; }
+
+  .cat-amounts .income-over { color: var(--success); font-weight: 600; }
+
+  .cat-no-meta {
+    grid-column: 1 / 3;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
 
   /* Transacciones */
   .tx-list { list-style: none; display: flex; flex-direction: column; gap: 1px; background: var(--border); border-radius: var(--radius); overflow: hidden; }
