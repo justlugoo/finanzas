@@ -19,10 +19,30 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            Some(vec!["--autostart"]),
         ))
         .setup(|app| {
             app.manage(DbState(Arc::new(RwLock::new(None))));
+
+            // Si el arg --autostart está presente → arrancó con el sistema.
+            // Ocultamos la ventana; el usuario la abre desde el tray.
+            let launched_at_startup = std::env::args().any(|a| a == "--autostart");
+            if launched_at_startup {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+            }
+
+            // Re-registrar autostart si ya estaba habilitado, para que el
+            // .desktop file incluya el nuevo arg --autostart.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let mgr = app.autolaunch();
+                if mgr.is_enabled().unwrap_or(false) && !launched_at_startup {
+                    let _ = mgr.enable();
+                }
+            }
+
             let handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
@@ -167,9 +187,11 @@ pub fn run() {
 async fn init_db() -> Result<libsql::Database, Box<dyn std::error::Error + Send + Sync>> {
     let creds = credentials::load_credentials()?;
     let database = db::open_database(&creds).await?;
-    database.sync().await?;
-    // Aplica schema localmente (idempotente). Garantiza que las tablas
-    // existan incluso cuando la replica local es nueva y el sync no trae DDL.
+    // Sync no-fatal: al arrancar con el sistema puede que la red no esté lista.
+    // Si falla, continuamos con la réplica local y el background-sync lo resolverá.
+    if let Err(e) = database.sync().await {
+        eprintln!("[finanzas] sync inicial falló (¿sin red?): {e} — usando réplica local");
+    }
     let conn = database.connect()?;
     db::apply_schema(&conn).await?;
     Ok(database)
