@@ -177,6 +177,24 @@ pub struct RoutesCost {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+fn scale_monthly(monthly: i64, period: &Period) -> i64 {
+    if monthly == 0 { return 0; }
+    let today = Local::now().date_naive();
+    let dim = days_in_month(today.year(), today.month()) as f64;
+    match period {
+        Period::Daily   => (monthly as f64 / dim).round() as i64,
+        Period::Weekly  => (monthly as f64 * 7.0 / dim).round() as i64,
+        Period::Monthly => monthly,
+        Period::Yearly  => monthly * 12,
+        Period::Custom { start, end } => {
+            let s = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap_or(today);
+            let e = NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap_or(today);
+            let days = ((e - s).num_days() + 1).max(1) as f64;
+            (monthly as f64 * days / 30.0).round() as i64
+        }
+    }
+}
+
 fn days_in_month(year: i32, month: u32) -> u32 {
     let next = if month == 12 {
         NaiveDate::from_ymd_opt(year + 1, 1, 1)
@@ -525,8 +543,12 @@ pub async fn list_transactions(
         params.push(kind.clone().into());
     }
     if let Some(cat) = &filter.category {
-        sql.push_str(" AND category = ?");
-        params.push(cat.clone().into());
+        if cat == "Carrera" {
+            sql.push_str(" AND (category = 'Carrera mamá' OR category = 'Carrera cuñada')");
+        } else {
+            sql.push_str(" AND category = ?");
+            params.push(cat.clone().into());
+        }
     }
     if filter.only_extraordinary == Some(true) {
         sql.push_str(" AND is_extraordinary = 1");
@@ -695,9 +717,10 @@ pub async fn get_category_progress(
     let mut progress = Vec::new();
     while let Some(row) = rows.next().await? {
         let category: String = row.get(0)?;
-        let monthly_target: i64 = row.get(1)?;
+        let monthly_raw: i64 = row.get(1)?;
         let current_amount: i64 = row.get(2)?;
         let kind: String = row.get(3)?;
+        let monthly_target = scale_monthly(monthly_raw, &period);
 
         let percentage = if monthly_target > 0 {
             (current_amount as f64 / monthly_target as f64) * 100.0
@@ -897,8 +920,12 @@ pub async fn export_transactions_csv(
         params.push(kind.clone().into());
     }
     if let Some(cat) = &filter.category {
-        sql.push_str(" AND category = ?");
-        params.push(cat.clone().into());
+        if cat == "Carrera" {
+            sql.push_str(" AND (category = 'Carrera mamá' OR category = 'Carrera cuñada')");
+        } else {
+            sql.push_str(" AND category = ?");
+            params.push(cat.clone().into());
+        }
     }
     if filter.only_extraordinary == Some(true) {
         sql.push_str(" AND is_extraordinary = 1");

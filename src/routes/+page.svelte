@@ -23,8 +23,35 @@
   let error        = $state<string | null>(null);
   let budgetView   = $state<"ingresos" | "gastos">("ingresos");
 
-  const INCOME_FIXED    = ["Mesada", "Carrera", "Carrera mamá", "Carrera cuñada"];
+  const INCOME_FIXED    = ["Mesada", "Carrera"];
   const INCOME_VARIABLE = ["Eventual", "Otro ingreso"];
+
+  function mergeCategorias(cats: CategoryProgress[]): CategoryProgress[] {
+    const mama   = cats.find(c => c.category === "Carrera mamá");
+    const cunada = cats.find(c => c.category === "Carrera cuñada");
+    const rest   = cats.filter(c => c.category !== "Carrera" && c.category !== "Carrera mamá" && c.category !== "Carrera cuñada");
+
+    const sub: { label: string; amount: number }[] = [];
+    if (mama)   sub.push({ label: "mamá",   amount: mama.current_amount   });
+    if (cunada) sub.push({ label: "cuñada", amount: cunada.current_amount });
+
+    if (!mama && !cunada) return cats;
+
+    const current = (mama?.current_amount ?? 0) + (cunada?.current_amount ?? 0);
+    const target  = (mama?.monthly_target ?? 0) + (cunada?.monthly_target ?? 0);
+    const pct     = target > 0 ? (current / target) * 100 : 0;
+
+    const carrera: CategoryProgress = {
+      category: "Carrera",
+      current_amount: current,
+      monthly_target: target,
+      percentage: pct,
+      is_over: target > 0 && current > target,
+      kind: "ingreso",
+      sub_breakdown: sub,
+    };
+    return [...rest, carrera];
+  }
 
   let incomeFixed = $derived(
     INCOME_FIXED
@@ -82,7 +109,7 @@
         ]);
         if (!cancelled) {
           summary    = sum;
-          categories = cats;
+          categories = mergeCategorias(cats);
           recent     = txs.slice(0, 5);
           comparison = cmp;
           loading    = false;
@@ -107,9 +134,15 @@
     const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
     return `${parseInt(day)} ${meses[parseInt(m) - 1]}`;
   }
+
+  function formatCategory(cat: string): string {
+    if (cat === "Carrera mamá")   return "Carrera · mamá";
+    if (cat === "Carrera cuñada") return "Carrera · cuñada";
+    return cat;
+  }
 </script>
 
-<main>
+<div class="page-shell">
   <header>
     <h1>Resumen</h1>
     <nav class="period-selector">
@@ -189,7 +222,17 @@
               {@const pct = Math.min(cat.percentage, 100)}
               <li class="category-row">
                 <div class="cat-header">
-                  <span class="cat-name">{cat.category}</span>
+                  <div class="cat-name-col">
+                    <span class="cat-name">{cat.category}</span>
+                    {#if cat.sub_breakdown && cat.sub_breakdown.length > 0}
+                      <div class="cat-sub">
+                        {#each cat.sub_breakdown as s, i}
+                          {#if i > 0}<span class="cat-sub-sep">·</span>{/if}
+                          <span>{s.label}: {formatCOP(s.amount)}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
                   <span class="cat-amounts">
                     <span class:income-over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
                     {#if cat.monthly_target > 0}
@@ -198,10 +241,12 @@
                   </span>
                 </div>
                 {#if cat.monthly_target > 0}
-                  <div class="bar-track">
-                    <div class="bar-fill" class:bar-income-over={cat.is_over} style="width: {pct}%"></div>
+                  <div class="progress-row">
+                    <div class="bar-track">
+                      <div class="bar-fill" class:bar-income-over={cat.is_over} style="width: {pct}%"></div>
+                    </div>
+                    <span class="cat-pct" class:income-over={cat.is_over}>{cat.percentage.toFixed(0)}% META</span>
                   </div>
-                  <span class="cat-pct" class:income-over={cat.is_over}>{cat.percentage.toFixed(0)}% META</span>
                 {/if}
               </li>
             {/each}
@@ -211,15 +256,19 @@
             {#each incomeVariable as cat}
               <li class="category-row">
                 <div class="cat-header">
-                  <span class="cat-name">{cat.category}</span>
+                  <div class="cat-name-col">
+                    <span class="cat-name">{cat.category}</span>
+                  </div>
                   <span class="cat-amounts">{formatCOP(cat.current_amount)}</span>
                 </div>
                 {#if cat.monthly_target > 0}
                   {@const pct = Math.min(cat.percentage, 100)}
-                  <div class="bar-track">
-                    <div class="bar-fill" class:bar-income-over={cat.is_over} style="width: {pct}%"></div>
+                  <div class="progress-row">
+                    <div class="bar-track">
+                      <div class="bar-fill" class:bar-income-over={cat.is_over} style="width: {pct}%"></div>
+                    </div>
+                    <span class="cat-pct" class:income-over={cat.is_over}>{cat.percentage.toFixed(0)}% META</span>
                   </div>
-                  <span class="cat-pct" class:income-over={cat.is_over}>{cat.percentage.toFixed(0)}% META</span>
                 {:else}
                   <span class="cat-no-meta">sin meta definida</span>
                 {/if}
@@ -238,7 +287,9 @@
             {@const pct = Math.min(cat.percentage, 100)}
             <li class="category-row">
               <div class="cat-header">
-                <span class="cat-name">{cat.category}</span>
+                <div class="cat-name-col">
+                  <span class="cat-name">{cat.category}</span>
+                </div>
                 <span class="cat-amounts">
                   <span class:over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
                   {#if cat.monthly_target > 0}
@@ -246,11 +297,13 @@
                   {/if}
                 </span>
               </div>
-              <div class="bar-track">
-                <div class="bar-fill" class:bar-over={cat.is_over} style="width: {pct}%"></div>
-              </div>
               {#if cat.monthly_target > 0}
-                <span class="cat-pct" class:over={cat.is_over}>{cat.percentage.toFixed(0)}% LÍMITE</span>
+                <div class="progress-row">
+                  <div class="bar-track">
+                    <div class="bar-fill" class:bar-over={cat.is_over} style="width: {pct}%"></div>
+                  </div>
+                  <span class="cat-pct" class:over={cat.is_over}>{cat.percentage.toFixed(0)}% LÍMITE</span>
+                </div>
               {/if}
             </li>
           {/each}
@@ -273,7 +326,7 @@
         {#each recent as tx}
           <li class="tx-row">
             <span class="tx-date">{formatDate(tx.date)}</span>
-            <span class="tx-category">{tx.category}</span>
+            <span class="tx-category">{formatCategory(tx.category)}</span>
             <span class="tx-amount" class:income={tx.type === "ingreso"} class:expense={tx.type === "gasto"}>
               {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
             </span>
@@ -282,16 +335,18 @@
       </ul>
     {/if}
   </section>
-</main>
+</div>
 
 <style>
-  main {
-    max-width: 760px;
+  .page-shell {
+    width: 100%;
+    max-width: 720px;
     margin: 0 auto;
     padding: 1.5rem;
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    box-sizing: border-box;
   }
 
   header {
@@ -435,7 +490,7 @@
   .budget-toggle button.active { background: var(--accent); color: #fff; }
   .budget-toggle button:not(.active):hover { color: var(--text-primary); }
 
-  /* Grupo label dentro de category-list */
+  /* Grupo label */
   .group-label {
     font-size: 0.65rem;
     font-weight: 700;
@@ -454,40 +509,66 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 0.65rem 0.875rem;
-    display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto;
-    gap: 0.35rem 0.5rem;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
-  .cat-header { display: contents; }
-  .cat-name { font-size: 0.875rem; color: var(--text-primary); align-self: center; }
+  .cat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .cat-name-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .cat-name { font-size: 0.875rem; color: var(--text-primary); }
+
+  .cat-sub {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.5rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+
+  .cat-sub-sep { color: var(--border); }
 
   .cat-amounts {
     font-size: 0.8rem;
     font-variant-numeric: tabular-nums;
     text-align: right;
-    align-self: center;
+    white-space: nowrap;
+    flex-shrink: 0;
+    color: var(--text-secondary);
   }
 
   .cat-amounts .over { color: var(--danger); font-weight: 600; }
-  .cat-amounts:not(:has(.over)) { color: var(--text-secondary); }
+  .cat-amounts .income-over { color: var(--success); font-weight: 600; }
   .cat-target { color: var(--text-muted); }
 
-  .bar-track { grid-column: 1 / 2; height: 5px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .bar-track { flex: 1; height: 5px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
   .bar-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.4s ease; min-width: 2px; }
   .bar-fill.bar-over { background: var(--danger); }
   .bar-fill.bar-income-over { background: var(--success); }
 
-  .cat-pct { grid-column: 2 / 3; grid-row: 2 / 3; font-size: 0.72rem; color: var(--text-muted); text-align: right; }
+  .cat-pct { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
   .cat-pct.over { color: var(--danger); font-weight: 600; }
   .cat-pct.income-over { color: var(--success); font-weight: 600; }
 
-  .cat-amounts .income-over { color: var(--success); font-weight: 600; }
-
   .cat-no-meta {
-    grid-column: 1 / 3;
     font-size: 0.72rem;
     color: var(--text-muted);
     font-style: italic;

@@ -51,6 +51,7 @@ export interface CategoryProgress {
   percentage: number;
   is_over: boolean;
   kind: string;
+  sub_breakdown?: { label: string; amount: number }[];
 }
 
 export interface MonthComparison {

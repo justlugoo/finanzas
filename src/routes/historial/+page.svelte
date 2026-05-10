@@ -21,15 +21,16 @@
   let error        = $state<string | null>(null);
 
   // ── Edición ───────────────────────────────────────────────────────────────
-  let editingTx    = $state<Transaction | null>(null);
-  let editAmount   = $state("");
-  let editCategory = $state("");
-  let editDate     = $state("");
-  let editNote     = $state("");
-  let editKind     = $state<"ingreso" | "gasto">("gasto");
-  let editExtraord = $state(false);
-  let editSaving   = $state(false);
-  let editError    = $state<string | null>(null);
+  let editingTx          = $state<Transaction | null>(null);
+  let editAmount         = $state("");
+  let editCategory       = $state("");
+  let editCarreraPersona = $state<"mama" | "cunada" | null>(null);
+  let editDate           = $state("");
+  let editNote           = $state("");
+  let editKind           = $state<"ingreso" | "gasto">("gasto");
+  let editExtraord       = $state(false);
+  let editSaving         = $state(false);
+  let editError          = $state<string | null>(null);
 
   // ── Confirmación eliminar ─────────────────────────────────────────────────
   let deletingId         = $state<number | null>(null);
@@ -58,6 +59,18 @@
     return `${parseInt(day)} ${meses[parseInt(m) - 1]}`;
   }
 
+  function formatCategory(cat: string): string {
+    if (cat === "Carrera mamá")   return "Carrera · mamá";
+    if (cat === "Carrera cuñada") return "Carrera · cuñada";
+    return cat;
+  }
+
+  function transformCategories(raw: string[]): string[] {
+    const hasCarrera = raw.some(c => c === "Carrera mamá" || c === "Carrera cuñada");
+    const filtered = raw.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada");
+    return hasCarrera ? [...filtered, "Carrera"].sort() : filtered;
+  }
+
   function buildFilter() {
     return {
       period: { type: activePeriod },
@@ -67,7 +80,6 @@
   }
 
   $effect(() => {
-    // dependencias reactivas
     const _period = activePeriod;
     const _kind   = filterKind;
     const _cat    = filterCat;
@@ -84,7 +96,7 @@
         ]);
         if (!cancelled) {
           txs        = data;
-          categories = cats;
+          categories = transformCategories(cats);
           loading    = false;
         }
       } catch (e) {
@@ -99,12 +111,22 @@
   function startEdit(tx: Transaction) {
     editingTx    = tx;
     editKind     = tx.type as "ingreso" | "gasto";
-    editCategory = tx.category;
     editDate     = tx.date;
     editNote     = tx.note ?? "";
     editExtraord = tx.is_extraordinary;
     editAmount   = tx.amount.toString();
     editError    = null;
+
+    if (tx.category === "Carrera mamá") {
+      editCategory = "Carrera";
+      editCarreraPersona = "mama";
+    } else if (tx.category === "Carrera cuñada") {
+      editCategory = "Carrera";
+      editCarreraPersona = "cunada";
+    } else {
+      editCategory = tx.category;
+      editCarreraPersona = null;
+    }
   }
 
   function cancelEdit() { editingTx = null; }
@@ -115,11 +137,17 @@
     if (!amt || amt <= 0) { editError = "Monto inválido."; return; }
     editSaving = true;
     editError  = null;
+
+    const effectiveCat =
+      editCategory === "Carrera" && editCarreraPersona === "mama"   ? "Carrera mamá"  :
+      editCategory === "Carrera" && editCarreraPersona === "cunada" ? "Carrera cuñada" :
+      editCategory;
+
     try {
       const input: TransactionInput = {
         date: editDate,
         type: editKind,
-        category: editCategory,
+        category: effectiveCat,
         amount: amt,
         note: editNote.trim() || null,
         is_extraordinary: editExtraord,
@@ -215,7 +243,6 @@
     </div>
   </div>
 
-  <!-- File input oculto para importar -->
   <input
     type="file"
     accept=".csv,text/csv"
@@ -298,7 +325,7 @@
                   {tx.type === "ingreso" ? "Ingreso" : "Gasto"}
                 </span>
               </td>
-              <td>{tx.category}</td>
+              <td>{formatCategory(tx.category)}</td>
               <td class="right amount-cell" class:income={tx.type === "ingreso"} class:expense={tx.type === "gasto"}>
                 {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
               </td>
@@ -367,12 +394,22 @@
 
         <div class="field">
           <label for="edit-cat">Categoría</label>
-          <select id="edit-cat" bind:value={editCategory}>
+          <select id="edit-cat" bind:value={editCategory} onchange={() => { editCarreraPersona = null; }}>
             {#each categories as cat}
               <option value={cat}>{cat}</option>
             {/each}
           </select>
         </div>
+
+        {#if editCategory === "Carrera" && editKind === "ingreso"}
+          <div class="field">
+            <span class="field-label">Persona</span>
+            <div class="carrera-toggle">
+              <button type="button" class:active={editCarreraPersona === "mama"}   onclick={() => { editCarreraPersona = "mama"; }}>Mamá</button>
+              <button type="button" class:active={editCarreraPersona === "cunada"} onclick={() => { editCarreraPersona = "cunada"; }}>Cuñada</button>
+            </div>
+          </div>
+        {/if}
 
         <div class="field">
           <label for="edit-amount">Monto</label>
@@ -397,7 +434,11 @@
 
       <div class="modal-actions">
         <button class="btn-cancel" onclick={cancelEdit}>Cancelar</button>
-        <button class="btn-save" onclick={saveEdit} disabled={editSaving}>
+        <button
+          class="btn-save"
+          onclick={saveEdit}
+          disabled={editSaving || (editCategory === "Carrera" && editKind === "ingreso" && !editCarreraPersona)}
+        >
           {editSaving ? "Guardando…" : "Guardar"}
         </button>
       </div>
@@ -413,6 +454,8 @@
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .toolbar {
@@ -635,8 +678,7 @@
 
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
 
-  label { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
-
+  label, .field-label { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
 
   input[type="text"],
   input[type="number"],
@@ -678,6 +720,30 @@
   .toggle-btn { padding: 0.45rem; border-radius: 5px; font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
   .toggle-btn.income.active  { background: color-mix(in srgb, var(--success) 20%, var(--bg-surface)); color: var(--success); }
   .toggle-btn.expense.active { background: color-mix(in srgb, var(--danger)  20%, var(--bg-surface)); color: var(--danger); }
+
+  /* Carrera sub-selector en modal */
+  .carrera-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    background: var(--bg-elevated);
+    border-radius: var(--radius);
+    padding: 3px;
+    gap: 3px;
+  }
+
+  .carrera-toggle button {
+    padding: 0.4rem;
+    border-radius: 5px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .carrera-toggle button.active {
+    background: color-mix(in srgb, var(--accent) 20%, var(--bg-surface));
+    color: var(--accent);
+  }
 
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 0.25rem; }
 
