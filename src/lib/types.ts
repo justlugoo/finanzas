@@ -15,6 +15,7 @@ export interface Transaction {
   is_extraordinary: boolean;
   goal_id: number | null;
   created_at: string;
+  is_debt: boolean;
 }
 
 export interface TransactionInput {
@@ -26,6 +27,13 @@ export interface TransactionInput {
   is_extraordinary: boolean;
   goal_id: number | null;
   gas_km: number | null;
+  is_debt?: boolean;
+}
+
+export interface CurrentBalance {
+  total_income: number;
+  total_expenses: number;
+  balance: number;
 }
 
 export type Period =
@@ -76,6 +84,7 @@ export interface Goal {
   target_date: string | null;
   status: string;
   created_at: string;
+  is_debt_goal: boolean;
 }
 
 export interface GoalWithProgress {

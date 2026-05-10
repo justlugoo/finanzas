@@ -27,6 +27,14 @@ pub struct Transaction {
     pub is_extraordinary: bool,
     pub goal_id: Option<i64>,
     pub created_at: String,
+    pub is_debt: bool,
+}
+
+#[derive(Serialize, Debug)]
+pub struct CurrentBalance {
+    pub total_income: i64,
+    pub total_expenses: i64,
+    pub balance: i64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -41,6 +49,8 @@ pub struct TransactionInput {
     pub goal_id: Option<i64>,
     #[serde(default)]
     pub gas_km: Option<f64>,
+    #[serde(default)]
+    pub is_debt: bool,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -51,6 +61,7 @@ pub struct TransactionFilter {
     pub category: Option<String>,
     pub search_note: Option<String>,
     pub only_extraordinary: Option<bool>,
+    pub only_debt: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -114,6 +125,7 @@ pub struct Goal {
     pub target_date: Option<String>,
     pub status: String,
     pub created_at: String,
+    pub is_debt_goal: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -439,6 +451,7 @@ fn row_to_transaction(row: &libsql::Row) -> Result<Transaction, libsql::Error> {
         is_extraordinary: row.get::<i64>(6)? != 0,
         goal_id: row.get(7)?,
         created_at: row.get(8)?,
+        is_debt: row.get::<i64>(9).unwrap_or(0) != 0,
     })
 }
 
@@ -502,8 +515,8 @@ pub async fn create_transaction(
 
     let main_insert = conn
         .execute(
-            "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id, is_debt) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             libsql::params![
                 input.date.clone(),
                 input.kind.clone(),
@@ -511,7 +524,8 @@ pub async fn create_transaction(
                 input.amount,
                 input.note.clone(),
                 input.is_extraordinary as i64,
-                input.goal_id
+                input.goal_id,
+                input.is_debt as i64
             ],
         )
         .await;
@@ -536,7 +550,7 @@ pub async fn create_transaction(
 
     let mut rows = conn
         .query(
-            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at \
+            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
              FROM transactions WHERE id = ?",
             libsql::params![id],
         )
@@ -547,6 +561,18 @@ pub async fn create_transaction(
         .await?
         .ok_or_else(|| AppError::NotFound("transacción recién insertada no encontrada".into()))?;
     let tx = row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?;
+
+    // ── Auto-crear objetivo de deuda ──────────────────────────────────────
+    if input.is_debt && input.kind == "gasto" {
+        let debt_name = match &input.note {
+            Some(n) if !n.trim().is_empty() => format!("Deuda: {}", n.trim()),
+            _ => format!("Deuda: {}", input.category),
+        };
+        let _ = conn.execute(
+            "INSERT INTO goals (name, target_amount, is_debt_goal) VALUES (?, ?, 1)",
+            libsql::params![debt_name, input.amount],
+        ).await;
+    }
 
     // ── Trigger 1: presupuesto excedido ───────────────────────────────────
     if input.kind == "gasto" {
@@ -634,7 +660,7 @@ pub async fn list_transactions(
 ) -> AppResult<Vec<Transaction>> {
     let conn = get_conn(&state).await?;
 
-    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at \
+    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
                    FROM transactions WHERE 1=1"
         .to_string();
     let mut params: Vec<libsql::Value> = Vec::new();
@@ -660,6 +686,9 @@ pub async fn list_transactions(
     if filter.only_extraordinary == Some(true) {
         sql.push_str(" AND is_extraordinary = 1");
     }
+    if filter.only_debt == Some(true) {
+        sql.push_str(" AND is_debt = 1");
+    }
     if let Some(note) = &filter.search_note {
         sql.push_str(" AND note LIKE ?");
         params.push(format!("%{note}%").into());
@@ -672,6 +701,34 @@ pub async fn list_transactions(
         txs.push(row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?);
     }
     Ok(txs)
+}
+
+#[tauri::command]
+pub async fn get_current_balance(state: State<'_, DbState>) -> AppResult<CurrentBalance> {
+    let conn = get_conn(&state).await?;
+    let mut rows = conn
+        .query(
+            "SELECT
+                COALESCE(SUM(CASE WHEN type='ingreso' THEN amount ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN type='gasto'   THEN amount ELSE 0 END), 0)
+             FROM transactions",
+            (),
+        )
+        .await?;
+
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| AppError::DatabaseError("balance sin resultados".into()))?;
+
+    let total_income: i64 = row.get(0)?;
+    let total_expenses: i64 = row.get(1)?;
+
+    Ok(CurrentBalance {
+        total_income,
+        total_expenses,
+        balance: total_income - total_expenses,
+    })
 }
 
 #[tauri::command]
@@ -693,7 +750,7 @@ pub async fn update_transaction(
     let affected = conn
         .execute(
             "UPDATE transactions \
-             SET date=?, type=?, category=?, amount=?, note=?, is_extraordinary=?, goal_id=? \
+             SET date=?, type=?, category=?, amount=?, note=?, is_extraordinary=?, goal_id=?, is_debt=? \
              WHERE id=?",
             libsql::params![
                 input.date.clone(),
@@ -703,6 +760,7 @@ pub async fn update_transaction(
                 input.note.clone(),
                 input.is_extraordinary as i64,
                 input.goal_id,
+                input.is_debt as i64,
                 id
             ],
         )
@@ -714,7 +772,7 @@ pub async fn update_transaction(
 
     let mut rows = conn
         .query(
-            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at \
+            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
              FROM transactions WHERE id = ?",
             libsql::params![id],
         )
@@ -979,7 +1037,7 @@ pub async fn list_active_goals(state: State<'_, DbState>) -> AppResult<Vec<Goal>
     let conn = get_conn(&state).await?;
     let mut rows = conn
         .query(
-            "SELECT id, name, target_amount, target_date, status, created_at \
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
              FROM goals WHERE status = 'activo' ORDER BY name",
             (),
         )
@@ -994,6 +1052,7 @@ pub async fn list_active_goals(state: State<'_, DbState>) -> AppResult<Vec<Goal>
             target_date: row.get(3)?,
             status: row.get(4)?,
             created_at: row.get(5)?,
+            is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
         });
     }
     Ok(goals)
@@ -1006,7 +1065,7 @@ pub async fn export_transactions_csv(
 ) -> AppResult<CsvExport> {
     let conn = get_conn(&state).await?;
 
-    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at \
+    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
                    FROM transactions WHERE 1=1"
         .to_string();
     let mut params: Vec<libsql::Value> = Vec::new();
@@ -1200,14 +1259,14 @@ pub async fn list_goals(
 
     let mut rows = if let Some(ref s) = status {
         conn.query(
-            "SELECT id, name, target_amount, target_date, status, created_at \
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
              FROM goals WHERE status = ? ORDER BY name",
             libsql::params![s.clone()],
         )
         .await?
     } else {
         conn.query(
-            "SELECT id, name, target_amount, target_date, status, created_at \
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
              FROM goals ORDER BY name",
             (),
         )
@@ -1223,6 +1282,7 @@ pub async fn list_goals(
             target_date: row.get(3)?,
             status: row.get(4)?,
             created_at: row.get(5)?,
+            is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
         };
         result.push(build_goal_progress(&conn, goal).await?);
     }
@@ -1251,7 +1311,7 @@ pub async fn create_goal(
     let id = conn.last_insert_rowid();
     let mut rows = conn
         .query(
-            "SELECT id, name, target_amount, target_date, status, created_at FROM goals WHERE id = ?",
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal FROM goals WHERE id = ?",
             libsql::params![id],
         )
         .await?;
@@ -1267,6 +1327,7 @@ pub async fn create_goal(
         target_date: row.get(3)?,
         status: row.get(4)?,
         created_at: row.get(5)?,
+        is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
     };
 
     let result = build_goal_progress(&conn, goal).await?;
@@ -1311,7 +1372,7 @@ pub async fn update_goal(
 
     let mut rows = conn
         .query(
-            "SELECT id, name, target_amount, target_date, status, created_at FROM goals WHERE id = ?",
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal FROM goals WHERE id = ?",
             libsql::params![id],
         )
         .await?;
@@ -1327,6 +1388,7 @@ pub async fn update_goal(
         target_date: row.get(3)?,
         status: row.get(4)?,
         created_at: row.get(5)?,
+        is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
     };
 
     let result = build_goal_progress(&conn, goal).await?;
@@ -1361,7 +1423,7 @@ pub async fn get_goal_detail(state: State<'_, DbState>, id: i64) -> AppResult<Go
 
     let mut rows = conn
         .query(
-            "SELECT id, name, target_amount, target_date, status, created_at FROM goals WHERE id = ?",
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal FROM goals WHERE id = ?",
             libsql::params![id],
         )
         .await?;
@@ -1377,13 +1439,14 @@ pub async fn get_goal_detail(state: State<'_, DbState>, id: i64) -> AppResult<Go
         target_date: row.get(3)?,
         status: row.get(4)?,
         created_at: row.get(5)?,
+        is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
     };
 
     let goal_with_progress = build_goal_progress(&conn, goal).await?;
 
     let mut tx_rows = conn
         .query(
-            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at \
+            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
              FROM transactions WHERE goal_id = ? ORDER BY date DESC, id DESC",
             libsql::params![id],
         )

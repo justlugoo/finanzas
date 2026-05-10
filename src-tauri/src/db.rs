@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS goals (
     target_date     TEXT,
     status          TEXT    NOT NULL DEFAULT 'activo'
                             CHECK (status IN ('activo', 'completado', 'pausado')),
-    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    is_debt_goal    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -30,7 +31,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     is_extraordinary    INTEGER NOT NULL DEFAULT 0
                                 CHECK (is_extraordinary IN (0, 1)),
     goal_id             INTEGER,
-    created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+    is_debt             INTEGER NOT NULL DEFAULT 0
+                                CHECK (is_debt IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tx_date          ON transactions(date);
@@ -126,5 +129,19 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
     conn.execute_batch(SCHEMA)
         .await
         .map(|_| ())
-        .map_err(|e| AppError::DatabaseError(e.to_string()))
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+
+    // Migración: añade is_debt si la tabla existía antes de esta versión
+    let _ = conn.execute(
+        "ALTER TABLE transactions ADD COLUMN is_debt INTEGER NOT NULL DEFAULT 0",
+        (),
+    ).await;
+
+    // Migración: añade is_debt_goal a goals si la tabla existía antes
+    let _ = conn.execute(
+        "ALTER TABLE goals ADD COLUMN is_debt_goal INTEGER NOT NULL DEFAULT 0",
+        (),
+    ).await;
+
+    Ok(())
 }

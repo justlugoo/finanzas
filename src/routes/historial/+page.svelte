@@ -33,6 +33,9 @@
   let editSaving         = $state(false);
   let editError          = $state<string | null>(null);
 
+  // ── Filtro deudas ─────────────────────────────────────────────────────────
+  let filterDebt = $state(false);
+
   // ── Confirmación eliminar ─────────────────────────────────────────────────
   let deletingId         = $state<number | null>(null);
   let deletingInProgress = $state<number | null>(null);
@@ -74,9 +77,10 @@
 
   function buildFilter() {
     return {
-      period: { type: activePeriod },
-      kind:     filterKind   || null,
-      category: filterCat    || null,
+      period:     { type: activePeriod },
+      kind:       filterKind  || null,
+      category:   filterCat   || null,
+      only_debt:  filterDebt  || null,
     };
   }
 
@@ -84,6 +88,7 @@
     const _period = activePeriod;
     const _kind   = filterKind;
     const _cat    = filterCat;
+    const _debt   = filterDebt;
     const _reload = reloadKey;
     const _v      = txState.version;
     let cancelled = false;
@@ -155,6 +160,7 @@
         is_extraordinary: editExtraord,
         goal_id: editingTx.goal_id,
         gas_km: null,
+        is_debt: editingTx.is_debt,
       };
       const updated = await invoke<Transaction>("update_transaction", {
         id: editingTx.id,
@@ -296,6 +302,15 @@
         <option value={cat}>{cat}</option>
       {/each}
     </select>
+
+    <button
+      type="button"
+      class="filter-debt-btn"
+      class:active={filterDebt}
+      onclick={() => { filterDebt = !filterDebt; }}
+    >
+      Solo deudas
+    </button>
   </div>
 
   <!-- Tabla -->
@@ -322,10 +337,13 @@
           {#each txs as tx (tx.id)}
             <tr>
               <td class="date-cell">{formatDate(tx.date)}</td>
-              <td>
+              <td class="type-cell">
                 <span class="badge" class:badge-income={tx.type === "ingreso"} class:badge-expense={tx.type === "gasto"}>
                   {tx.type === "ingreso" ? "Ingreso" : "Gasto"}
                 </span>
+                {#if tx.is_debt}
+                  <span class="badge badge-debt">deuda</span>
+                {/if}
               </td>
               <td>{formatCategory(tx.category)}</td>
               <td class="right amount-cell" class:income={tx.type === "ingreso"} class:expense={tx.type === "gasto"}>
@@ -559,6 +577,24 @@
   .filter-select:focus { border-color: var(--accent); }
   .filter-select option { background-color: #14141f; color: #e8e8f0; }
 
+  .filter-debt-btn {
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+    font-weight: 500;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .filter-debt-btn:hover { color: var(--text-primary); }
+  .filter-debt-btn.active {
+    background: color-mix(in srgb, var(--danger) 15%, var(--bg-elevated));
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    color: var(--danger);
+  }
+
   /* ── Tabla ── */
   .table-wrap {
     overflow-x: auto;
@@ -612,6 +648,9 @@
 
   .badge-income  { background: color-mix(in srgb, var(--success) 20%, var(--bg-elevated)); color: var(--success); }
   .badge-expense { background: color-mix(in srgb, var(--danger)  20%, var(--bg-elevated)); color: var(--danger); }
+  .badge-debt    { background: color-mix(in srgb, var(--danger)  12%, transparent); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.65rem; }
+
+  .type-cell { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; }
 
   /* ── Acciones ── */
   .actions-cell { white-space: nowrap; }

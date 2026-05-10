@@ -217,7 +217,12 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="goal-card" onclick={() => openDetail(g.goal.id)}>
           <div class="card-top">
-            <span class="goal-name">{g.goal.name}</span>
+            <div class="card-title-row">
+              <span class="goal-name">{g.goal.name}</span>
+              {#if g.goal.is_debt_goal}
+                <span class="debt-badge">DEUDA</span>
+              {/if}
+            </div>
             {#if g.goal.status === "activo" && !g.on_track}
               <span class="status-badge status-off-track">Atrasado</span>
             {:else}
@@ -239,6 +244,9 @@
             <span class="current">{formatCOP(g.current_amount)}</span>
             <span class="sep">/</span>
             <span class="target">{formatCOP(g.goal.target_amount)}</span>
+            {#if g.goal.is_debt_goal}
+              <span class="debt-label">abonado</span>
+            {/if}
           </div>
 
           {#if g.goal.target_date}
@@ -517,7 +525,34 @@
     gap: 0.5rem;
   }
 
-  .goal-name { font-size: 0.95rem; font-weight: 600; color: var(--text-primary); }
+  .card-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .goal-name { font-size: 0.95rem; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .debt-badge {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--danger) 15%, transparent);
+    color: var(--danger);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .debt-label {
+    font-size: 0.72rem;
+    color: var(--danger);
+    font-weight: 500;
+  }
 
   .status-badge {
     font-size: 0.65rem;

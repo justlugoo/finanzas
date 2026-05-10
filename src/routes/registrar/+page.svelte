@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { Goal, Transaction, RoutesCost } from "$lib/types";
+  import type { Goal, Transaction, RoutesCost, CurrentBalance } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
 
@@ -33,6 +33,14 @@
   let saving    = $state(false);
   let saved     = $state<Transaction | null>(null);
   let saveError = $state<string | null>(null);
+
+  // ── Dialog de deuda ────────────────────────────────────────────────────────
+  let showDebtDialog    = $state(false);
+  let debtDialogBalance = $state(0);
+  let debtDialogAmount  = $state(0);
+
+  let regularGoals = $derived(goals.filter(g => !g.is_debt_goal));
+  let debtGoals    = $derived(goals.filter(g =>  g.is_debt_goal));
 
   let amount = $derived(parseInt(amountRaw.replace(/\D/g, ""), 10) || 0);
 
@@ -141,6 +149,54 @@
       saveError = "Selecciona a quién fue la carrera."; return;
     }
 
+    if (kind === "gasto") {
+      try {
+        const bal = await invoke<CurrentBalance>("get_current_balance");
+        if (bal.balance < amount) {
+          debtDialogBalance = bal.balance;
+          debtDialogAmount  = amount;
+          showDebtDialog    = true;
+          return;
+        }
+      } catch {
+        // Si falla la consulta de balance, se procede sin verificar
+      }
+    }
+
+    await doSave(false);
+  }
+
+  async function doSaveWithAutoIngreso() {
+    showDebtDialog = false;
+    saving    = true;
+    saveError = null;
+    saved     = null;
+    try {
+      // 1. Registrar ingreso "externo" por el mismo monto para no afectar el saldo
+      await invoke<Transaction>("create_transaction", {
+        input: {
+          date,
+          type: "ingreso",
+          category: "Otro ingreso",
+          amount,
+          note: note.trim() ? `Externo para: ${note.trim()}` : `Externo para ${effectiveCategory}`,
+          is_extraordinary: false,
+          goal_id: null,
+          gas_km: null,
+          is_debt: false,
+        },
+      });
+      // 2. Registrar el gasto normalmente
+      await doSave(false);
+    } catch (e) {
+      console.error("[registrar] autoIngreso error:", e);
+      saving = false;
+      saveError = "No se pudo registrar. Intenta de nuevo.";
+    }
+  }
+
+  async function doSave(isDebt: boolean) {
+    showDebtDialog = false;
     saving    = true;
     saveError = null;
     saved     = null;
@@ -166,6 +222,7 @@
           is_extraordinary: extraordinary,
           goal_id: goalId,
           gas_km: gasKmToSend,
+          is_debt: isDebt,
         },
       });
 
@@ -180,7 +237,7 @@
       carreraPersona   = null;
       carreraOtraKmRaw = "";
       date          = todayISO();
-      setTimeout(() => { saved = null; savedGasKm = 0; }, 3000);
+      setTimeout(() => { saved = null; savedGasKm = 0; }, 6000);
     } catch (e) {
       console.error("[registrar] save error:", e);
       saveError = "No se pudo guardar. Intenta de nuevo.";
@@ -199,21 +256,59 @@
 
   {#if saved}
     <div class="banner success">
-      ✓ {saved.type === "ingreso" ? "Ingreso" : "Gasto"} de {formatCOP(saved.amount)} guardado
-      {#if saved.type === "ingreso" && (saved.category === "Carrera mamá" || saved.category === "Carrera cuñada") && routeCosts}
-        <span class="auto-gas-note">
-          + Gasolina: {formatCOP(saved.category === "Carrera mamá" ? routeCosts.carrera_mama : routeCosts.carrera_cunada)}
-        </span>
-      {:else if savedGasKm > 0 && routeCosts}
-        <span class="auto-gas-note">
-          + Gasolina: {formatCOP(Math.round(savedGasKm / routeCosts.consumo_km_galon * routeCosts.precio_galon))}
-        </span>
-      {/if}
+      <div class="banner-body">
+        ✓ {saved.type === "ingreso" ? "Ingreso" : "Gasto"} de {formatCOP(saved.amount)} guardado
+        {#if saved.is_debt}
+          <span class="debt-tag">deuda</span>
+        {/if}
+        {#if saved.type === "ingreso" && (saved.category === "Carrera mamá" || saved.category === "Carrera cuñada") && routeCosts}
+          <span class="auto-gas-note">
+            + Gasolina: {formatCOP(saved.category === "Carrera mamá" ? routeCosts.carrera_mama : routeCosts.carrera_cunada)}
+          </span>
+        {:else if savedGasKm > 0 && routeCosts}
+          <span class="auto-gas-note">
+            + Gasolina: {formatCOP(Math.round(savedGasKm / routeCosts.consumo_km_galon * routeCosts.precio_galon))}
+          </span>
+        {/if}
+      </div>
+      <button class="banner-close" onclick={() => { saved = null; savedGasKm = 0; }}>×</button>
     </div>
   {/if}
 
   {#if saveError}
     <div class="banner error"><strong>Error al guardar</strong><pre>{saveError}</pre></div>
+  {/if}
+
+  <!-- Dialog: saldo insuficiente -->
+  {#if showDebtDialog}
+    <div
+      class="dialog-overlay"
+      role="presentation"
+      onclick={(e) => { if (e.target === e.currentTarget) showDebtDialog = false; }}
+    >
+      <div class="dialog" role="dialog" aria-modal="true">
+        <h2 class="dialog-title">Saldo insuficiente</h2>
+        <p class="dialog-msg">
+          Tu saldo actual es <strong>{formatCOP(debtDialogBalance)}</strong>
+          y este gasto es de <strong>{formatCOP(debtDialogAmount)}</strong>.
+        </p>
+        <p class="dialog-msg">¿Cómo quieres registrarlo?</p>
+        <div class="dialog-actions dialog-actions-col">
+          <button
+            class="dialog-btn-debt"
+            onclick={() => doSave(true)}
+          >Es una deuda — lo pagaré después</button>
+          <button
+            class="dialog-btn-external"
+            onclick={doSaveWithAutoIngreso}
+          >No es deuda — tengo el dinero de otro lado</button>
+          <button
+            class="dialog-btn-cancel"
+            onclick={() => { showDebtDialog = false; }}
+          >Cancelar</button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   <form onsubmit={handleSubmit} class="form">
@@ -373,15 +468,26 @@
       >?</span>
     </label>
 
-    <!-- Objetivo (solo gastos) -->
-    {#if kind === "gasto"}
+    <!-- Objetivo / Deuda (solo en gastos) -->
+    {#if kind === "gasto" && goals.length > 0}
       <div class="field">
-        <label for="goal">Objetivo asociado <span class="optional">(opcional)</span></label>
+        <label for="goal">Asociar a <span class="optional">(opcional)</span></label>
         <select id="goal" bind:value={goalId}>
           <option value={null}>— Ninguno —</option>
-          {#each goals as g}
-            <option value={g.id}>{g.name}</option>
-          {/each}
+          {#if regularGoals.length > 0}
+            <optgroup label="Objetivos">
+              {#each regularGoals as g}
+                <option value={g.id}>{g.name}</option>
+              {/each}
+            </optgroup>
+          {/if}
+          {#if debtGoals.length > 0}
+            <optgroup label="Deudas">
+              {#each debtGoals as g}
+                <option value={g.id}>{g.name}</option>
+              {/each}
+            </optgroup>
+          {/if}
         </select>
       </div>
     {/if}
@@ -431,11 +537,131 @@
     border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
     color: var(--success);
     font-weight: 500;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+
+  .banner-body { display: flex; flex-direction: column; gap: 0.2rem; flex: 1; }
+
+  .banner-close {
+    background: none;
+    border: none;
+    color: currentColor;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 0 0 0.5rem;
+    cursor: pointer;
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
+  .banner-close:hover { opacity: 1; }
+
+  .debt-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: color-mix(in srgb, var(--danger) 20%, transparent);
+    color: var(--danger);
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+    border-radius: 999px;
+    padding: 0.1rem 0.45rem;
   }
 
   .banner pre { font-size: 0.72rem; opacity: 0.8; white-space: pre-wrap; word-break: break-all; }
 
   .auto-gas-note { font-size: 0.78rem; opacity: 0.85; }
+
+  /* ── Dialog de deuda ── */
+  .dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 1rem;
+  }
+
+  .dialog {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) * 1.5);
+    padding: 1.5rem;
+    max-width: 380px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .dialog-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+  }
+
+  .dialog-msg {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .dialog-msg strong { color: var(--text-primary); }
+
+  .dialog-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.25rem;
+  }
+
+  .dialog-actions-col {
+    flex-direction: column;
+  }
+
+  .dialog-btn-cancel {
+    padding: 0.5rem 0.9rem;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    transition: background 0.15s, color 0.15s;
+    text-align: center;
+  }
+  .dialog-btn-cancel:hover { color: var(--text-primary); background: var(--bg-surface); }
+
+  .dialog-btn-debt {
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--danger);
+    transition: opacity 0.15s;
+    text-align: center;
+  }
+  .dialog-btn-debt:hover { opacity: 0.85; }
+
+  .dialog-btn-external {
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    transition: opacity 0.15s;
+    text-align: center;
+  }
+  .dialog-btn-external:hover { opacity: 0.85; }
 
   /* ── Formulario ── */
   .form {
