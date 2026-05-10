@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tauri::State;
 use serde::{Deserialize, Serialize};
 use chrono::{Local, Datelike, NaiveDate, Duration};
 use crate::error::{AppError, AppResult};
 
-pub struct DbState(pub Arc<Mutex<Option<libsql::Database>>>);
+pub struct DbState(pub Arc<RwLock<Option<libsql::Database>>>);
 
 // ── Tipos compartidos ─────────────────────────────────────────────────────
 
@@ -293,7 +293,7 @@ async fn get_conn(state: &State<'_, DbState>) -> AppResult<libsql::Connection> {
         if attempt > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
-        let guard = state.0.lock().await;
+        let guard = state.0.read().await;
         let db = guard
             .as_ref()
             .ok_or_else(|| AppError::DatabaseError("base de datos no inicializada".into()))?;
@@ -305,9 +305,9 @@ async fn get_conn(state: &State<'_, DbState>) -> AppResult<libsql::Connection> {
     Err(AppError::DatabaseError(last_err))
 }
 
-fn spawn_sync(arc: Arc<Mutex<Option<libsql::Database>>>) {
+fn spawn_sync(arc: Arc<RwLock<Option<libsql::Database>>>) {
     tauri::async_runtime::spawn(async move {
-        let guard = arc.lock().await;
+        let guard = arc.read().await;
         if let Some(db) = guard.as_ref() {
             if let Err(e) = db.sync().await {
                 eprintln!("[finanzas] background sync error: {e}");

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tauri::Manager;
 use commands::DbState;
 
@@ -12,14 +12,14 @@ pub mod commands;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            app.manage(DbState(Arc::new(Mutex::new(None))));
+            app.manage(DbState(Arc::new(RwLock::new(None))));
             let handle = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
                 match init_db().await {
                     Ok(database) => {
                         let state = handle.state::<DbState>();
-                        let mut guard = state.0.lock().await;
+                        let mut guard = state.0.write().await;
                         *guard = Some(database);
                         println!("[finanzas] DB lista");
                     }
