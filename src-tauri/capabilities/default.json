@@ -4,6 +4,7 @@
   "description": "Capacidades por defecto para la ventana principal",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "notification:default"
   ]
 }

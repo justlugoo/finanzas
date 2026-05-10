@@ -140,6 +140,50 @@
     if (e.key === "Enter")  saveEditBudget(category);
     if (e.key === "Escape") { editingBudget = null; }
   }
+
+  // ── Autoarranque ──────────────────────────────────────────────────────────
+  let autostartEnabled = $state(false);
+  let autostartLoading = $state(true);
+  let autostartError   = $state<string | null>(null);
+
+  $effect(() => {
+    invoke<boolean>("get_autostart_enabled")
+      .then(v => { autostartEnabled = v; autostartLoading = false; })
+      .catch(() => { autostartLoading = false; });
+  });
+
+  async function toggleAutostart() {
+    autostartError = null;
+    const next = !autostartEnabled;
+    try {
+      await invoke("set_autostart_enabled", { enabled: next });
+      autostartEnabled = next;
+    } catch (e) {
+      console.error("[config] autostart error:", e);
+      autostartError = "No se pudo cambiar el autoarranque.";
+    }
+  }
+
+  // ── Backup ────────────────────────────────────────────────────────────────
+  let backupPath  = $state<string | null>(null);
+  let backupError = $state<string | null>(null);
+  let backupBusy  = $state(false);
+
+  async function handleBackup() {
+    backupBusy = true;
+    backupPath  = null;
+    backupError = null;
+    try {
+      const path = await invoke<string>("backup_database");
+      backupPath = path;
+      setTimeout(() => { backupPath = null; }, 6000);
+    } catch (e) {
+      console.error("[config] backup error:", e);
+      backupError = "No se pudo crear el backup. Verifica que la carpeta Documents exista.";
+    } finally {
+      backupBusy = false;
+    }
+  }
 </script>
 
 <main>
@@ -373,6 +417,54 @@
     </section>
 
   {/if}
+
+  <!-- ══ Sistema ═════════════════════════════════════════════════════════ -->
+  <section class="section">
+    <h2>Sistema</h2>
+
+    <!-- Autoarranque -->
+    <div class="subsection">
+      <div class="row-between">
+        <div>
+          <span class="row-label">Iniciar con el sistema</span>
+          <span class="row-hint">Abrir Finanzas automáticamente al iniciar sesión</span>
+        </div>
+        {#if autostartLoading}
+          <span class="muted">…</span>
+        {:else}
+          <button
+            type="button"
+            class="toggle"
+            class:on={autostartEnabled}
+            onclick={toggleAutostart}
+            aria-label="Autoarranque"
+          ></button>
+        {/if}
+      </div>
+      {#if autostartError}
+        <div class="banner error small">{autostartError}</div>
+      {/if}
+    </div>
+
+    <!-- Backup -->
+    <div class="subsection">
+      <h3>Base de datos local</h3>
+      {#if backupPath}
+        <div class="banner success small">Backup guardado en: {backupPath}</div>
+      {/if}
+      {#if backupError}
+        <div class="banner error small">{backupError}</div>
+      {/if}
+      <button
+        type="button"
+        class="btn-secondary"
+        onclick={handleBackup}
+        disabled={backupBusy}
+      >
+        {backupBusy ? "Exportando…" : "💾 Exportar backup"}
+      </button>
+    </div>
+  </section>
 </main>
 
 <style>
@@ -618,4 +710,60 @@
 
   .hint { font-size: 0.75rem; color: var(--text-muted); }
   .muted { color: var(--text-muted); font-size: 0.82rem; }
+
+  /* ── Sistema ── */
+  .row-between {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .row-label { font-size: 0.875rem; font-weight: 500; color: var(--text-primary); }
+  .row-hint  { font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 0.1rem; }
+
+  .toggle {
+    width: 40px;
+    height: 22px;
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    position: relative;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .toggle.on {
+    background: color-mix(in srgb, var(--accent) 25%, var(--bg-elevated));
+    border-color: var(--accent);
+  }
+  .toggle.on::after {
+    transform: translateX(18px);
+    background: var(--accent);
+  }
+
+  .btn-secondary {
+    padding: 0.5rem 1rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    align-self: flex-start;
+    transition: color 0.15s, background 0.15s;
+  }
+  .btn-secondary:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
+  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
 </style>

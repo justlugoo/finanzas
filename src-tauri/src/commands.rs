@@ -177,6 +177,23 @@ pub struct RoutesCost {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+fn format_cop_simple(n: i64) -> String {
+    let s = n.abs().to_string();
+    let mut chars: Vec<char> = Vec::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { chars.push('.'); }
+        chars.push(c);
+    }
+    format!("${}", chars.into_iter().rev().collect::<String>())
+}
+
+fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("[finanzas] notification error: {e}");
+    }
+}
+
 fn scale_monthly(monthly: i64, period: &Period) -> i64 {
     if monthly == 0 { return 0; }
     let today = Local::now().date_naive();
@@ -432,6 +449,7 @@ pub async fn list_budgets(state: State<'_, DbState>) -> AppResult<Vec<Budget>> {
 
 #[tauri::command]
 pub async fn create_transaction(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     input: TransactionInput,
 ) -> AppResult<Transaction> {
@@ -515,6 +533,81 @@ pub async fn create_transaction(
         .await?
         .ok_or_else(|| AppError::NotFound("transacción recién insertada no encontrada".into()))?;
     let tx = row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?;
+
+    // ── Trigger 1: presupuesto excedido ───────────────────────────────────
+    if input.kind == "gasto" {
+        let today = Local::now().date_naive();
+        let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        let today_str = today.format("%Y-%m-%d").to_string();
+
+        if let Ok(mut rows) = conn.query(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions \
+             WHERE category = ? AND type = 'gasto' AND date >= ? AND date <= ?",
+            libsql::params![input.category.clone(), month_start, today_str],
+        ).await {
+            if let Ok(Some(row)) = rows.next().await {
+                let spent: i64 = row.get(0).unwrap_or(0);
+                if let Ok(mut brows) = conn.query(
+                    "SELECT monthly_amount FROM budgets WHERE category = ?",
+                    libsql::params![input.category.clone()],
+                ).await {
+                    if let Ok(Some(brow)) = brows.next().await {
+                        let limit: i64 = brow.get(0).unwrap_or(0);
+                        if limit > 0 && spent > limit {
+                            send_notification(
+                                &app,
+                                "⚠ Presupuesto excedido",
+                                &format!(
+                                    "Llevas {} en {} — límite mensual: {}",
+                                    format_cop_simple(spent),
+                                    input.category,
+                                    format_cop_simple(limit),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Trigger 2: objetivo completado ────────────────────────────────────
+    if let Some(gid) = input.goal_id {
+        if let Ok(mut grows) = conn.query(
+            "SELECT name, target_amount FROM goals WHERE id = ? AND status != 'completado'",
+            libsql::params![gid],
+        ).await {
+            if let Ok(Some(grow)) = grows.next().await {
+                let goal_name: String = grow.get(0).unwrap_or_default();
+                let target: i64 = grow.get(1).unwrap_or(0);
+                if target > 0 {
+                    if let Ok(mut srows) = conn.query(
+                        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE goal_id = ?",
+                        libsql::params![gid],
+                    ).await {
+                        let current: i64 = srows
+                            .next().await.ok().flatten()
+                            .and_then(|r| r.get(0).ok())
+                            .unwrap_or(0);
+                        if current >= target {
+                            let _ = conn.execute(
+                                "UPDATE goals SET status = 'completado' WHERE id = ?",
+                                libsql::params![gid],
+                            ).await;
+                            send_notification(
+                                &app,
+                                "🎯 Objetivo completado",
+                                &format!("¡Alcanzaste tu meta: {}!", goal_name),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     spawn_sync(Arc::clone(&state.0));
     Ok(tx)
@@ -1344,6 +1437,7 @@ pub async fn list_gas_prices(
 
 #[tauri::command]
 pub async fn register_gas_price_manual(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     price: i64,
 ) -> AppResult<GasPrice> {
@@ -1355,6 +1449,14 @@ pub async fn register_gas_price_manual(
 
     let today = Local::now().format("%Y-%m-%d").to_string();
     let conn = get_conn(&state).await?;
+
+    // Leer precio anterior antes de insertar
+    let prev_price: Option<i64> = {
+        let mut rows = conn
+            .query("SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1", ())
+            .await?;
+        rows.next().await?.and_then(|r| r.get(0).ok())
+    };
 
     conn.execute(
         "INSERT OR REPLACE INTO gas_prices (date, price_per_gallon, source) VALUES (?, ?, 'manual')",
@@ -1380,6 +1482,25 @@ pub async fn register_gas_price_manual(
         price_per_gallon: row.get(2)?,
         source: row.get(3)?,
     };
+
+    // ── Trigger 3: cambio significativo de precio ─────────────────────────
+    if let Some(anterior) = prev_price {
+        if anterior > 0 {
+            let delta = (price - anterior).abs() as f64 / anterior as f64;
+            if delta > 0.05 {
+                let direccion = if price > anterior { "subió" } else { "bajó" };
+                let delta_pct = (delta * 100.0).round() as i64;
+                send_notification(
+                    &app,
+                    "⛽ Precio de gasolina",
+                    &format!(
+                        "El precio {} {}% → {}/gal",
+                        direccion, delta_pct, format_cop_simple(price),
+                    ),
+                );
+            }
+        }
+    }
 
     spawn_sync(Arc::clone(&state.0));
     Ok(result)
@@ -1562,4 +1683,45 @@ pub async fn set_turso_credentials(url: String, token: String) -> AppResult<()> 
     let content = format!("turso_url = \"{url}\"\nturso_auth_token = \"{token}\"\n");
     std::fs::write(&path, content)?;
     Ok(())
+}
+
+// ── Autostart ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_autostart_enabled(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> AppResult<()> {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    if enabled {
+        al.enable().map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    } else {
+        al.disable().map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
+    Ok(())
+}
+
+// ── Backup ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn backup_database() -> AppResult<String> {
+    let src = crate::db::local_db_path();
+    if !src.exists() {
+        return Err(AppError::NotFound(
+            "archivo de base de datos local no encontrado".into(),
+        ));
+    }
+
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let dest_dir = dirs::document_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Documents"));
+    let dest = dest_dir.join(format!("finanzas_backup_{today}.db"));
+
+    std::fs::copy(&src, &dest)?;
+
+    Ok(dest.to_string_lossy().to_string())
 }

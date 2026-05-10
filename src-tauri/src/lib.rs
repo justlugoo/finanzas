@@ -1,6 +1,11 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
-use tauri::Manager;
+use tauri::{
+    Manager,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+};
 use commands::DbState;
 
 mod error;
@@ -11,6 +16,11 @@ pub mod commands;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![]),
+        ))
         .setup(|app| {
             app.manage(DbState(Arc::new(RwLock::new(None))));
             let handle = app.handle().clone();
@@ -28,6 +38,76 @@ pub fn run() {
                     }
                 }
             });
+
+            // ── System tray ───────────────────────────────────────────────
+            let tray_ok = Arc::new(AtomicBool::new(false));
+
+            let open_item = MenuItem::with_id(app, "open", "Abrir Finanzas", true, None::<&str>)?;
+            let sep       = PredefinedMenuItem::separator(app)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_item, &sep, &quit_item])?;
+
+            let mut tray_builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            if win.is_visible().unwrap_or(false) {
+                                let _ = win.hide();
+                            } else {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            match tray_builder.build(app) {
+                Ok(_) => {
+                    tray_ok.store(true, Ordering::Relaxed);
+                    println!("[finanzas] tray activo");
+                }
+                Err(e) => {
+                    eprintln!("[finanzas] tray no disponible (GNOME sin AppIndicator?): {e}");
+                }
+            }
+
+            // ── Intercept window close: hide if tray active, close otherwise
+            let tray_ok2   = Arc::clone(&tray_ok);
+            let app_handle = app.handle().clone();
+            if let Some(main_win) = app.get_webview_window("main") {
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        if tray_ok2.load(Ordering::Relaxed) {
+                            api.prevent_close();
+                            if let Some(win) = app_handle.get_webview_window("main") {
+                                let _ = win.hide();
+                            }
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -59,6 +139,9 @@ pub fn run() {
             commands::get_config_value,
             commands::get_route_costs,
             commands::update_budget,
+            commands::get_autostart_enabled,
+            commands::set_autostart_enabled,
+            commands::backup_database,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

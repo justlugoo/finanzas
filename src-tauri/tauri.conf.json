@@ -28,5 +28,9 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png"]
+  },
+  "plugins": {
+    "notification": { "all": true },
+    "autostart": { "all": true }
   }
 }
