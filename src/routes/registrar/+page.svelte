@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { Goal, Transaction, RoutesCost } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import { bumpTxVersion } from "$lib/txState.svelte";
 
   // ── Estado del formulario ──────────────────────────────────────────────────
   let kind       = $state<"ingreso" | "gasto">("gasto");
@@ -35,11 +36,11 @@
 
   let amount = $derived(parseInt(amountRaw.replace(/\D/g, ""), 10) || 0);
 
-  // Categorías visibles en el dropdown (ocultar variantes individuales de Carrera en ingreso)
+  // Categorías visibles en el dropdown
   let displayCategories = $derived(
     kind === "ingreso"
       ? categories.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
-      : categories,
+      : categories.filter(c => c !== "Gasolina"),
   );
 
   // Categoría efectiva enviada al backend
@@ -86,7 +87,7 @@
           categories = data;
           const filtered = k === "ingreso"
             ? data.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
-            : data;
+            : data.filter(c => c !== "Gasolina");
           if (!filtered.includes(category)) category = filtered[0] ?? "";
         }
       } catch (e) {
@@ -167,6 +168,7 @@
         },
       });
 
+      bumpTxVersion();
       savedGasKm = (category === "Carrera" && carreraPersona === "otra") ? carreraOtraKm : gasKm;
       saved         = tx;
       amountRaw     = "";

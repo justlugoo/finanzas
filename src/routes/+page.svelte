@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { PeriodSummary, CategoryProgress, Transaction, MonthComparison } from "$lib/types";
+  import { txState } from "$lib/txState.svelte";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -68,6 +69,21 @@
     categories.filter(c => !INCOME_FIXED.includes(c.category) && !INCOME_VARIABLE.includes(c.category)),
   );
 
+  let incomeTotals = $derived.by(() => {
+    const all = [...incomeFixed, ...incomeVariable];
+    const target  = all.reduce((s, c) => s + c.monthly_target, 0);
+    const current = all.reduce((s, c) => s + c.current_amount, 0);
+    const pct     = target > 0 ? (current / target) * 100 : 0;
+    return { target, current, pct };
+  });
+
+  let expenseTotals = $derived.by(() => {
+    const target  = expenseTracked.reduce((s, c) => s + c.monthly_target, 0);
+    const current = expenseTracked.reduce((s, c) => s + c.current_amount, 0);
+    const pct     = target > 0 ? (current / target) * 100 : 0;
+    return { target, current, pct };
+  });
+
   const prevMonthName = (() => {
     const now = new Date();
     const m = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
@@ -76,6 +92,7 @@
 
   $effect(() => {
     const period = activePeriod;
+    const _v = txState.version;
     let cancelled = false;
 
     async function load() {
@@ -276,6 +293,25 @@
             {/each}
           {/if}
         </ul>
+        {#if incomeTotals.target > 0}
+          {@const barPct = Math.min(incomeTotals.pct, 100)}
+          {@const over   = incomeTotals.current > incomeTotals.target}
+          <div class="totals-row">
+            <div class="totals-header">
+              <span class="totals-label">TOTAL INGRESOS</span>
+              <span class="totals-amounts">
+                <span class:income-over={over}>{formatCOP(incomeTotals.current)}</span>
+                <span class="totals-target"> / {formatCOP(incomeTotals.target)}</span>
+              </span>
+            </div>
+            <div class="progress-row">
+              <div class="bar-track">
+                <div class="bar-fill bar-income-over" style="width: {barPct}%"></div>
+              </div>
+              <span class="cat-pct" class:income-over={over}>{incomeTotals.pct.toFixed(0)}% META</span>
+            </div>
+          </div>
+        {/if}
       {/if}
 
     {:else}
@@ -308,6 +344,25 @@
             </li>
           {/each}
         </ul>
+        {#if expenseTotals.target > 0}
+          {@const barPct = Math.min(expenseTotals.pct, 100)}
+          {@const over   = expenseTotals.current > expenseTotals.target}
+          <div class="totals-row">
+            <div class="totals-header">
+              <span class="totals-label">TOTAL GASTOS</span>
+              <span class="totals-amounts">
+                <span class:over={over}>{formatCOP(expenseTotals.current)}</span>
+                <span class="totals-target"> / {formatCOP(expenseTotals.target)}</span>
+              </span>
+            </div>
+            <div class="progress-row">
+              <div class="bar-track">
+                <div class="bar-fill" class:bar-over={over} style="width: {barPct}%"></div>
+              </div>
+              <span class="cat-pct" class:over={over}>{expenseTotals.pct.toFixed(0)}% LÍMITE</span>
+            </div>
+          </div>
+        {/if}
       {/if}
     {/if}
   </section>
@@ -573,6 +628,46 @@
     color: var(--text-muted);
     font-style: italic;
   }
+
+  /* Totales de sección */
+  .totals-row {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.65rem 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.25rem;
+  }
+
+  .totals-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .totals-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .totals-amounts {
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--text-secondary);
+  }
+
+  .totals-amounts .over         { color: var(--danger);  }
+  .totals-amounts .income-over  { color: var(--success); }
+  .totals-target { color: var(--text-muted); font-weight: 400; }
 
   /* Transacciones */
   .tx-list { list-style: none; display: flex; flex-direction: column; gap: 1px; background: var(--border); border-radius: var(--radius); overflow: hidden; }

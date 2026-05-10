@@ -704,13 +704,8 @@ pub async fn get_category_progress(
                     GROUP BY type ORDER BY COUNT(*) DESC LIMIT 1
                 ), 'gasto') AS inferred_kind
              FROM budgets b
-             WHERE b.monthly_amount > 0
-                OR EXISTS (
-                    SELECT 1 FROM transactions
-                    WHERE category = b.category AND date >= ? AND date <= ?
-                )
              ORDER BY b.category",
-            libsql::params![start.clone(), end.clone(), start.clone(), end.clone(), start, end],
+            libsql::params![start.clone(), end.clone(), start, end],
         )
         .await?;
 

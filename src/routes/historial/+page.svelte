@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { Transaction, TransactionInput, CsvExport, ImportResult } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import { txState } from "$lib/txState.svelte";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -84,6 +85,7 @@
     const _kind   = filterKind;
     const _cat    = filterCat;
     const _reload = reloadKey;
+    const _v      = txState.version;
     let cancelled = false;
 
     async function load() {

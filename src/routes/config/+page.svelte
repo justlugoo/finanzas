@@ -24,6 +24,14 @@
   let savingBudget        = $state(false);
   let savedBudgetCategory = $state<string | null>(null);
 
+  // Agrupa Carrera mamá/cuñada bajo un header unificado
+  let carreraMama   = $derived(budgets.find(b => b.category === "Carrera mamá")   ?? null);
+  let carreraCunada = $derived(budgets.find(b => b.category === "Carrera cuñada") ?? null);
+  let carreraTotal  = $derived((carreraMama?.monthly_amount ?? 0) + (carreraCunada?.monthly_amount ?? 0));
+  let otherBudgets  = $derived(
+    budgets.filter(b => b.category !== "Carrera" && b.category !== "Carrera mamá" && b.category !== "Carrera cuñada")
+  );
+
   // ── Helpers ───────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
     return new Intl.NumberFormat("es-CO", {
@@ -287,40 +295,71 @@
               </tr>
             </thead>
             <tbody>
-              {#each budgets as b (b.category)}
+              <!-- Carrera unificada -->
+              {#if carreraMama || carreraCunada}
+                <tr class="group-header-row">
+                  <td class="group-label-cell">Carrera</td>
+                  <td class="right muted-value">{carreraTotal > 0 ? formatCOP(carreraTotal) : "—"}</td>
+                </tr>
+                {#if carreraMama}
+                  {@const b = carreraMama}
+                  <tr class:row-saved={savedBudgetCategory === b.category}>
+                    <td class="sub-label-cell">· mamá</td>
+                    <td class="right">
+                      {#if editingBudget === b.category}
+                        <div class="budget-edit-row">
+                          <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
+                            oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
+                            disabled={savingBudget} autofocus />
+                          <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
+                          <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
+                        </div>
+                      {:else}
+                        <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
+                          {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
+                        </button>
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
+                {#if carreraCunada}
+                  {@const b = carreraCunada}
+                  <tr class:row-saved={savedBudgetCategory === b.category}>
+                    <td class="sub-label-cell">· cuñada</td>
+                    <td class="right">
+                      {#if editingBudget === b.category}
+                        <div class="budget-edit-row">
+                          <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
+                            oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
+                            disabled={savingBudget} autofocus />
+                          <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
+                          <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
+                        </div>
+                      {:else}
+                        <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
+                          {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
+                        </button>
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
+              {/if}
+
+              <!-- Resto de categorías -->
+              {#each otherBudgets as b (b.category)}
                 <tr class:row-saved={savedBudgetCategory === b.category}>
                   <td>{b.category}</td>
                   <td class="right">
                     {#if editingBudget === b.category}
                       <div class="budget-edit-row">
-                        <input
-                          type="text"
-                          inputmode="numeric"
-                          class="inline-input"
-                          value={editBudgetRaw}
-                          oninput={handleBudgetInput}
-                          onkeydown={(e) => handleBudgetKeydown(e, b.category)}
-                          disabled={savingBudget}
-                          autofocus
-                        />
-                        <button
-                          class="budget-icon-btn budget-save"
-                          onclick={() => saveEditBudget(b.category)}
-                          disabled={savingBudget}
-                          title="Guardar"
-                        >✓</button>
-                        <button
-                          class="budget-icon-btn budget-cancel"
-                          onclick={() => { editingBudget = null; }}
-                          disabled={savingBudget}
-                          title="Cancelar"
-                        >✕</button>
+                        <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
+                          oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
+                          disabled={savingBudget} autofocus />
+                        <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
+                        <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
                       </div>
                     {:else}
-                      <button
-                        class="amount-btn"
-                        onclick={() => startEditBudget(b.category, b.monthly_amount)}
-                      >
+                      <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
                         {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
                       </button>
                     {/if}
@@ -460,6 +499,11 @@
 
   /* ── Presupuesto editable ── */
   .row-saved td { transition: background 0.3s; background: color-mix(in srgb, var(--success) 12%, transparent) !important; }
+
+  .group-header-row td { background: var(--bg-elevated); padding-top: 0.55rem; padding-bottom: 0.3rem; }
+  .group-label-cell { font-size: 0.78rem; font-weight: 700; color: var(--text-secondary); letter-spacing: 0.02em; }
+  .sub-label-cell { font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.25rem !important; }
+  .muted-value { color: var(--text-muted); font-size: 0.85rem; }
 
   .amount-btn {
     font-size: 0.82rem;
