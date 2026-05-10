@@ -91,7 +91,7 @@ pub fn local_db_path() -> PathBuf {
     dir.join("local.db")
 }
 
-fn cleanup_inconsistent_local_replica(path: &Path) {
+pub fn cleanup_local_replica(path: &Path) {
     let metadata_path = PathBuf::from(format!("{}-info", path.display()));
     let cleanup_files = [
         path.to_path_buf(),
@@ -112,7 +112,7 @@ pub async fn open_database(credentials: &Credentials) -> AppResult<libsql::Datab
     let metadata_path = PathBuf::from(format!("{}-info", path.display()));
 
     if path.exists() ^ metadata_path.exists() {
-        cleanup_inconsistent_local_replica(&path);
+        cleanup_local_replica(&path);
     }
 
     Builder::new_remote_replica(
@@ -122,6 +122,23 @@ pub async fn open_database(credentials: &Credentials) -> AppResult<libsql::Datab
     )
     .build()
     .await
+    .map_err(|e| AppError::DatabaseError(e.to_string()))
+}
+
+/// Pragmas de rendimiento — se aplican a cada conexión nueva.
+/// synchronous=NORMAL: omite fsync por write (WAL es seguro así).
+/// cache_size=-65536: 64 MB de caché de páginas en RAM (default=2 MB).
+/// mmap_size=268435456: 256 MB de mmap; leer es casi acceso a memoria.
+/// temp_store=MEMORY: tablas temporales (sorts/joins) en RAM, no disco.
+pub async fn apply_pragmas(conn: &libsql::Connection) -> AppResult<()> {
+    conn.execute_batch(
+        "PRAGMA synchronous  = NORMAL;
+         PRAGMA cache_size   = -65536;
+         PRAGMA mmap_size    = 268435456;
+         PRAGMA temp_store   = MEMORY;",
+    )
+    .await
+    .map(|_| ())
     .map_err(|e| AppError::DatabaseError(e.to_string()))
 }
 

@@ -22,7 +22,10 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .setup(|app| {
-            app.manage(DbState(Arc::new(RwLock::new(None))));
+            app.manage(DbState {
+                db:   Arc::new(RwLock::new(None)),
+                conn: Arc::new(tokio::sync::Mutex::new(None)),
+            });
 
             // Si el arg --autostart está presente → arrancó con el sistema.
             // Ocultamos la ventana; el usuario la abre desde el tray.
@@ -49,9 +52,17 @@ pub fn run() {
                 match init_db().await {
                     Ok(database) => {
                         let state = handle.state::<DbState>();
-                        let mut guard = state.0.write().await;
-                        *guard = Some(database);
+
+                        {
+                            let mut guard = state.db.write().await;
+                            *guard = Some(database);
+                        }
                         println!("[finanzas] DB lista");
+                        // Sync sólo en arranque (init_db ya lo hizo).
+                        // El sync periódico bloqueaba el mutex de conexión hasta
+                        // 3 s por llamada de red → comandos esperaban → UI se veía
+                        // congelada. Los writes locales son durables en el WAL y se
+                        // pushean a Turso en el próximo arranque.
                     }
                     Err(e) => {
                         eprintln!("[finanzas] Error al iniciar DB: {e:?}");
@@ -186,13 +197,34 @@ pub fn run() {
 
 async fn init_db() -> Result<libsql::Database, Box<dyn std::error::Error + Send + Sync>> {
     let creds = credentials::load_credentials()?;
-    let database = db::open_database(&creds).await?;
-    // Sync no-fatal: al arrancar con el sistema puede que la red no esté lista.
-    // Si falla, continuamos con la réplica local y el background-sync lo resolverá.
+    match try_open_db(&creds).await {
+        Ok(db) => Ok(db),
+        Err(e) if is_corruption_error(&e) => {
+            // Réplica local corrupta: la borramos y reconectamos desde Turso.
+            eprintln!("[finanzas] réplica local corrupta ({e}) — limpiando y reintentando");
+            db::cleanup_local_replica(&db::local_db_path());
+            try_open_db(&creds).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn is_corruption_error(e: &Box<dyn std::error::Error + Send + Sync>) -> bool {
+    let s = e.to_string().to_lowercase();
+    s.contains("file is not a database")
+        || s.contains("not a database")
+        || s.contains("database disk image is malformed")
+}
+
+async fn try_open_db(
+    creds: &credentials::Credentials,
+) -> Result<libsql::Database, Box<dyn std::error::Error + Send + Sync>> {
+    let database = db::open_database(creds).await?;
     if let Err(e) = database.sync().await {
         eprintln!("[finanzas] sync inicial falló (¿sin red?): {e} — usando réplica local");
     }
     let conn = database.connect()?;
+    db::apply_pragmas(&conn).await?;
     db::apply_schema(&conn).await?;
     Ok(database)
 }

@@ -5,7 +5,21 @@ use serde::{Deserialize, Serialize};
 use chrono::{Local, Datelike, NaiveDate, Duration};
 use crate::error::{AppError, AppResult};
 
-pub struct DbState(pub Arc<RwLock<Option<libsql::Database>>>);
+pub struct DbState {
+    pub db:   Arc<RwLock<Option<libsql::Database>>>,
+    /// None mientras el sync está en curso; se recrea en el primer get_conn.
+    pub conn: Arc<tokio::sync::Mutex<Option<libsql::Connection>>>,
+}
+
+/// Guard que mantiene el mutex de la conexión bloqueado y derefa a Connection.
+pub struct ConnGuard(tokio::sync::OwnedMutexGuard<Option<libsql::Connection>>);
+
+impl std::ops::Deref for ConnGuard {
+    type Target = libsql::Connection;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("conn inicializado en get_conn")
+    }
+}
 
 // ── Tipos compartidos ─────────────────────────────────────────────────────
 
@@ -330,34 +344,25 @@ fn period_to_dates(period: &Period) -> (String, String) {
     (start.format("%Y-%m-%d").to_string(), end.format("%Y-%m-%d").to_string())
 }
 
-async fn get_conn(state: &State<'_, DbState>) -> AppResult<libsql::Connection> {
-    let mut last_err = String::new();
-    for attempt in 0..3u8 {
-        if attempt > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        }
-        let guard = state.0.read().await;
-        let db = guard
-            .as_ref()
-            .ok_or_else(|| AppError::DatabaseError("base de datos no inicializada".into()))?;
-        match db.connect() {
-            Ok(conn) => return Ok(conn),
-            Err(e) => { last_err = e.to_string(); }
-        }
+async fn get_conn(state: &State<'_, DbState>) -> AppResult<ConnGuard> {
+    // Espera la DB (inicio en frío). Timeout = 3 s.
+    for _ in 0..20u8 {
+        if state.db.read().await.is_some() { break; }
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
     }
-    Err(AppError::DatabaseError(last_err))
+
+    let mut guard = state.conn.clone().lock_owned().await;
+    if guard.is_none() {
+        let db_guard = state.db.read().await;
+        let db = db_guard.as_ref()
+            .ok_or_else(|| AppError::DatabaseError("base de datos no inicializada".into()))?;
+        let conn = db.connect().map_err(|e| AppError::DatabaseError(e.to_string()))?;
+        crate::db::apply_pragmas(&conn).await?;
+        *guard = Some(conn);
+    }
+    Ok(ConnGuard(guard))
 }
 
-fn spawn_sync(arc: Arc<RwLock<Option<libsql::Database>>>) {
-    tauri::async_runtime::spawn(async move {
-        let guard = arc.read().await;
-        if let Some(db) = guard.as_ref() {
-            if let Err(e) = db.sync().await {
-                eprintln!("[finanzas] background sync error: {e}");
-            }
-        }
-    });
-}
 
 async fn build_goal_progress(conn: &libsql::Connection, goal: Goal) -> AppResult<GoalWithProgress> {
     let mut rows = conn
@@ -513,10 +518,16 @@ pub async fn create_transaction(
         conn.execute("BEGIN", ()).await?;
     }
 
-    let main_insert = conn
-        .execute(
-            "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id, is_debt) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    // INSERT + RETURNING: obtiene la fila recién insertada sin un SELECT separado.
+    // El cursor vive en su bloque y se cierra antes de que autogas u otros
+    // cursores se abran.
+    let tx = {
+        let insert_q = conn.query(
+            "INSERT INTO transactions \
+             (date, type, category, amount, note, is_extraordinary, goal_id, is_debt) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             RETURNING id, date, type, category, amount, note, \
+                       is_extraordinary, goal_id, created_at, is_debt",
             libsql::params![
                 input.date.clone(),
                 input.kind.clone(),
@@ -527,16 +538,29 @@ pub async fn create_transaction(
                 input.goal_id,
                 input.is_debt as i64
             ],
-        )
-        .await;
+        ).await;
 
-    if let Err(e) = main_insert {
-        if auto_gas { let _ = conn.execute("ROLLBACK", ()).await; }
-        return Err(AppError::DatabaseError(e.to_string()));
-    }
-
-    let id = conn.last_insert_rowid();
-
+        let mut rows = match insert_q {
+            Ok(r) => r,
+            Err(e) => {
+                if auto_gas { let _ = conn.execute("ROLLBACK", ()).await; }
+                return Err(AppError::DatabaseError(e.to_string()));
+            }
+        };
+        let row = match rows.next().await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                if auto_gas { let _ = conn.execute("ROLLBACK", ()).await; }
+                return Err(AppError::DatabaseError("RETURNING vacío tras INSERT".into()));
+            }
+            Err(e) => {
+                if auto_gas { let _ = conn.execute("ROLLBACK", ()).await; }
+                return Err(AppError::DatabaseError(e.to_string()));
+            }
+        };
+        row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?
+        // rows drops aquí — cursor cerrado antes de autogas
+    };
     if auto_gas {
         if let Err(e) = insert_auto_gas(&conn, &input.date, &input.category, gas_km_val).await {
             let _ = conn.execute("ROLLBACK", ()).await;
@@ -547,20 +571,6 @@ pub async fn create_transaction(
             return Err(AppError::DatabaseError(e.to_string()));
         }
     }
-
-    let mut rows = conn
-        .query(
-            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
-             FROM transactions WHERE id = ?",
-            libsql::params![id],
-        )
-        .await?;
-
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| AppError::NotFound("transacción recién insertada no encontrada".into()))?;
-    let tx = row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
     // ── Auto-crear objetivo de deuda ──────────────────────────────────────
     if input.is_debt && input.kind == "gasto" {
@@ -574,7 +584,7 @@ pub async fn create_transaction(
         ).await;
     }
 
-    // ── Trigger 1: presupuesto excedido ───────────────────────────────────
+    // ── Trigger 1: presupuesto excedido — cursores secuenciales, no anidados ─
     if input.kind == "gasto" {
         let today = Local::now().date_naive();
         let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
@@ -583,73 +593,91 @@ pub async fn create_transaction(
             .to_string();
         let today_str = today.format("%Y-%m-%d").to_string();
 
-        if let Ok(mut rows) = conn.query(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions \
-             WHERE category = ? AND type = 'gasto' AND date >= ? AND date <= ?",
-            libsql::params![input.category.clone(), month_start, today_str],
-        ).await {
-            if let Ok(Some(row)) = rows.next().await {
-                let spent: i64 = row.get(0).unwrap_or(0);
-                if let Ok(mut brows) = conn.query(
-                    "SELECT monthly_amount FROM budgets WHERE category = ?",
-                    libsql::params![input.category.clone()],
-                ).await {
-                    if let Ok(Some(brow)) = brows.next().await {
-                        let limit: i64 = brow.get(0).unwrap_or(0);
-                        if limit > 0 && spent > limit {
-                            send_notification(
-                                &app,
-                                "⚠ Presupuesto excedido",
-                                &format!(
-                                    "Llevas {} en {} — límite mensual: {}",
-                                    format_cop_simple(spent),
-                                    input.category,
-                                    format_cop_simple(limit),
-                                ),
-                            );
-                        }
-                    }
-                }
+        let spent: i64 = {
+            match conn.query(
+                "SELECT COALESCE(SUM(amount), 0) FROM transactions \
+                 WHERE category = ? AND type = 'gasto' AND date >= ? AND date <= ?",
+                libsql::params![input.category.clone(), month_start, today_str],
+            ).await {
+                Ok(mut rows) => rows.next().await.ok().flatten()
+                    .and_then(|r| r.get(0).ok()).unwrap_or(0),
+                Err(_) => 0,
             }
+            // rows drops aquí
+        };
+
+        let limit: i64 = {
+            match conn.query(
+                "SELECT monthly_amount FROM budgets WHERE category = ?",
+                libsql::params![input.category.clone()],
+            ).await {
+                Ok(mut rows) => rows.next().await.ok().flatten()
+                    .and_then(|r| r.get(0).ok()).unwrap_or(0),
+                Err(_) => 0,
+            }
+            // rows drops aquí
+        };
+
+        if limit > 0 && spent > limit {
+            send_notification(
+                &app,
+                "⚠ Presupuesto excedido",
+                &format!(
+                    "Llevas {} en {} — límite mensual: {}",
+                    format_cop_simple(spent),
+                    input.category,
+                    format_cop_simple(limit),
+                ),
+            );
         }
     }
 
-    // ── Trigger 2: objetivo completado ────────────────────────────────────
+    // ── Trigger 2: objetivo completado — cursores secuenciales, no anidados ─
     if let Some(gid) = input.goal_id {
-        if let Ok(mut grows) = conn.query(
-            "SELECT name, target_amount FROM goals WHERE id = ? AND status != 'completado'",
-            libsql::params![gid],
-        ).await {
-            if let Ok(Some(grow)) = grows.next().await {
-                let goal_name: String = grow.get(0).unwrap_or_default();
-                let target: i64 = grow.get(1).unwrap_or(0);
-                if target > 0 {
-                    if let Ok(mut srows) = conn.query(
+        let goal_info: Option<(String, i64)> = {
+            match conn.query(
+                "SELECT name, target_amount FROM goals WHERE id = ? AND status != 'completado'",
+                libsql::params![gid],
+            ).await {
+                Ok(mut rows) => rows.next().await.ok().flatten().map(|r| {
+                    let name: String = r.get(0).unwrap_or_default();
+                    let target: i64 = r.get(1).unwrap_or(0);
+                    (name, target)
+                }),
+                Err(_) => None,
+            }
+            // rows drops aquí
+        };
+
+        if let Some((goal_name, target)) = goal_info {
+            if target > 0 {
+                let current: i64 = {
+                    match conn.query(
                         "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE goal_id = ?",
                         libsql::params![gid],
                     ).await {
-                        let current: i64 = srows
-                            .next().await.ok().flatten()
-                            .and_then(|r| r.get(0).ok())
-                            .unwrap_or(0);
-                        if current >= target {
-                            let _ = conn.execute(
-                                "UPDATE goals SET status = 'completado' WHERE id = ?",
-                                libsql::params![gid],
-                            ).await;
-                            send_notification(
-                                &app,
-                                "🎯 Objetivo completado",
-                                &format!("¡Alcanzaste tu meta: {}!", goal_name),
-                            );
-                        }
+                        Ok(mut rows) => rows.next().await.ok().flatten()
+                            .and_then(|r| r.get(0).ok()).unwrap_or(0),
+                        Err(_) => 0,
                     }
+                    // rows drops aquí
+                };
+
+                if current >= target {
+                    let _ = conn.execute(
+                        "UPDATE goals SET status = 'completado' WHERE id = ?",
+                        libsql::params![gid],
+                    ).await;
+                    send_notification(
+                        &app,
+                        "🎯 Objetivo completado",
+                        &format!("¡Alcanzaste tu meta: {}!", goal_name),
+                    );
                 }
             }
         }
     }
 
-    spawn_sync(Arc::clone(&state.0));
     Ok(tx)
 }
 
@@ -747,11 +775,14 @@ pub async fn update_transaction(
     }
 
     let conn = get_conn(&state).await?;
-    let affected = conn
-        .execute(
+
+    let tx = {
+        let mut rows = conn.query(
             "UPDATE transactions \
              SET date=?, type=?, category=?, amount=?, note=?, is_extraordinary=?, goal_id=?, is_debt=? \
-             WHERE id=?",
+             WHERE id=? \
+             RETURNING id, date, type, category, amount, note, \
+                       is_extraordinary, goal_id, created_at, is_debt",
             libsql::params![
                 input.date.clone(),
                 input.kind.clone(),
@@ -763,28 +794,12 @@ pub async fn update_transaction(
                 input.is_debt as i64,
                 id
             ],
-        )
-        .await?;
+        ).await?;
+        let row = rows.next().await?
+            .ok_or_else(|| AppError::NotFound(format!("transacción {id} no existe")))?;
+        row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?
+    };
 
-    if affected == 0 {
-        return Err(AppError::NotFound(format!("transacción {id} no existe")));
-    }
-
-    let mut rows = conn
-        .query(
-            "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
-             FROM transactions WHERE id = ?",
-            libsql::params![id],
-        )
-        .await?;
-
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("transacción {id} no existe")))?;
-    let tx = row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?;
-
-    spawn_sync(Arc::clone(&state.0));
     Ok(tx)
 }
 
@@ -799,7 +814,6 @@ pub async fn delete_transaction(state: State<'_, DbState>, id: i64) -> AppResult
         .await?;
 
     if affected > 0 {
-        spawn_sync(Arc::clone(&state.0));
     }
     Ok(())
 }
@@ -998,6 +1012,7 @@ pub async fn list_categories(
         None => {
             let mut rows = conn.query("SELECT category FROM budgets ORDER BY category", ()).await?;
             while let Some(row) = rows.next().await? { cats.insert(row.get(0)?); }
+            drop(rows);
             let mut rows = conn.query("SELECT DISTINCT category FROM transactions ORDER BY category", ()).await?;
             while let Some(row) = rows.next().await? { cats.insert(row.get(0)?); }
         }
@@ -1243,7 +1258,6 @@ pub async fn import_transactions_csv(
         }
     }
 
-    if imported > 0 { spawn_sync(Arc::clone(&state.0)); }
 
     Ok(ImportResult { imported, skipped, errors })
 }
@@ -1273,9 +1287,11 @@ pub async fn list_goals(
         .await?
     };
 
-    let mut result = Vec::new();
+    // Drain the cursor fully before opening any nested queries on the same
+    // connection — libsql doesn't support concurrent active statements.
+    let mut goals: Vec<Goal> = Vec::new();
     while let Some(row) = rows.next().await? {
-        let goal = Goal {
+        goals.push(Goal {
             id: row.get(0)?,
             name: row.get(1)?,
             target_amount: row.get(2)?,
@@ -1283,7 +1299,12 @@ pub async fn list_goals(
             status: row.get(4)?,
             created_at: row.get(5)?,
             is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
-        };
+        });
+    }
+    drop(rows);
+
+    let mut result = Vec::new();
+    for goal in goals {
         result.push(build_goal_progress(&conn, goal).await?);
     }
     Ok(result)
@@ -1331,7 +1352,6 @@ pub async fn create_goal(
     };
 
     let result = build_goal_progress(&conn, goal).await?;
-    spawn_sync(Arc::clone(&state.0));
     Ok(result)
 }
 
@@ -1392,7 +1412,6 @@ pub async fn update_goal(
     };
 
     let result = build_goal_progress(&conn, goal).await?;
-    spawn_sync(Arc::clone(&state.0));
     Ok(result)
 }
 
@@ -1413,7 +1432,6 @@ pub async fn delete_goal(state: State<'_, DbState>, id: i64) -> AppResult<()> {
         return Err(AppError::NotFound(format!("objetivo {id} no existe")));
     }
 
-    spawn_sync(Arc::clone(&state.0));
     Ok(())
 }
 
@@ -1579,7 +1597,6 @@ pub async fn register_gas_price_manual(
         }
     }
 
-    spawn_sync(Arc::clone(&state.0));
     Ok(result)
 }
 
@@ -1742,7 +1759,6 @@ pub async fn update_budget(
         return Err(AppError::NotFound(format!("categoría '{category}' no existe en presupuestos")));
     }
 
-    spawn_sync(Arc::clone(&state.0));
     Ok(Budget { category, monthly_amount })
 }
 
