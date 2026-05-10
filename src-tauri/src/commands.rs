@@ -188,9 +188,23 @@ fn format_cop_simple(n: i64) -> String {
 }
 
 fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
-    use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        eprintln!("[finanzas] notification error: {e}");
+    // En Linux, GNOME silencia las notificaciones D-Bus de apps sin .desktop
+    // registrado (modo dev). notify-send las muestra siempre.
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        let _ = std::process::Command::new("notify-send")
+            .arg("--app-name=Finanzas")
+            .arg(title)
+            .arg(body)
+            .spawn();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(e) = app.notification().builder().title(title).body(body).show() {
+            eprintln!("[finanzas] notification error: {e}");
+        }
     }
 }
 

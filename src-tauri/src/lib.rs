@@ -40,60 +40,76 @@ pub fn run() {
             });
 
             // ── System tray ───────────────────────────────────────────────
+            // En Linux sin AppIndicator (GNOME puro, Fedora sin extensión),
+            // libappindicator-sys *panea* al cargar la librería dinámica.
+            // Capturamos el pánico para que la app arranque igual sin tray.
             let tray_ok = Arc::new(AtomicBool::new(false));
 
-            let open_item = MenuItem::with_id(app, "open", "Abrir Finanzas", true, None::<&str>)?;
-            let sep       = PredefinedMenuItem::separator(app)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open_item, &sep, &quit_item])?;
+            let tray_result: Result<(), String> =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                    let open_item =
+                        MenuItem::with_id(app, "open", "Abrir Finanzas", true, None::<&str>)
+                            .map_err(|e| e.to_string())?;
+                    let sep = PredefinedMenuItem::separator(app)
+                        .map_err(|e| e.to_string())?;
+                    let quit_item =
+                        MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)
+                            .map_err(|e| e.to_string())?;
+                    let menu = Menu::with_items(app, &[&open_item, &sep, &quit_item])
+                        .map_err(|e| e.to_string())?;
 
-            let mut tray_builder = TrayIconBuilder::new()
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(win) = app.get_webview_window("main") {
-                            if win.is_visible().unwrap_or(false) {
-                                let _ = win.hide();
-                            } else {
-                                let _ = win.show();
-                                let _ = win.set_focus();
+                    let mut builder = TrayIconBuilder::new()
+                        .menu(&menu)
+                        .on_menu_event(|app, event| match event.id.as_ref() {
+                            "open" => {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.set_focus();
+                                }
                             }
-                        }
+                            "quit" => app.exit(0),
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } = event
+                            {
+                                let app = tray.app_handle();
+                                if let Some(win) = app.get_webview_window("main") {
+                                    if win.is_visible().unwrap_or(false) {
+                                        let _ = win.hide();
+                                    } else {
+                                        let _ = win.show();
+                                        let _ = win.set_focus();
+                                    }
+                                }
+                            }
+                        });
+
+                    if let Some(icon) = app.default_window_icon() {
+                        builder = builder.icon(icon.clone());
                     }
-                });
 
-            if let Some(icon) = app.default_window_icon() {
-                tray_builder = tray_builder.icon(icon.clone());
-            }
+                    builder.build(app).map_err(|e| e.to_string())?;
+                    Ok(())
+                }))
+                .unwrap_or_else(|_| Err("AppIndicator no disponible".to_string()));
 
-            match tray_builder.build(app) {
-                Ok(_) => {
+            match tray_result {
+                Ok(()) => {
                     tray_ok.store(true, Ordering::Relaxed);
                     println!("[finanzas] tray activo");
                 }
                 Err(e) => {
-                    eprintln!("[finanzas] tray no disponible (GNOME sin AppIndicator?): {e}");
+                    eprintln!("[finanzas] tray no disponible ({e}) — cerrando la ventana cierra la app");
                 }
             }
 
-            // ── Intercept window close: hide if tray active, close otherwise
+            // ── Intercept window close: hide si tray activo, cerrar si no ─
             let tray_ok2   = Arc::clone(&tray_ok);
             let app_handle = app.handle().clone();
             if let Some(main_win) = app.get_webview_window("main") {
