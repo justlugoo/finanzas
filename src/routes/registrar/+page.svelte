@@ -3,6 +3,7 @@
   import type { Goal, Transaction, RoutesCost, CurrentBalance } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
+  import { cache } from "$lib/appStore.svelte";
 
   // ── Estado del formulario ──────────────────────────────────────────────────
   let kind       = $state<"ingreso" | "gasto">("gasto");
@@ -23,11 +24,12 @@
   let gasKm      = $derived(parseFloat(gasKmRaw) || 0);
   let savedGasKm = $state(0);
 
-  // ── Datos cargados ─────────────────────────────────────────────────────────
+  // ── Datos cargados (leídos del caché global) ──────────────────────────────
   let categories = $state<string[]>([]);
-  let goals      = $state<Goal[]>([]);
-  let routeCosts = $state<RoutesCost | null>(null);
   let loadError  = $state<string | null>(null);
+
+  let goals      = $derived(cache.activeGoals);
+  let routeCosts = $derived(cache.routeCosts);
 
   // ── Feedback ───────────────────────────────────────────────────────────────
   let saving    = $state(false);
@@ -84,31 +86,18 @@
     e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
   }
 
-  // Recargar categorías cuando cambia el tipo
+  // Categorías desde el caché (sin invoke al abrir la pantalla)
   $effect(() => {
     const k = kind;
-    let cancelled = false;
+    const ready = cache.ready;
+    if (!ready) return;
 
-    async function loadCats() {
-      try {
-        const data = await invoke<string[]>("list_categories", { kind: k });
-        if (!cancelled) {
-          categories = data;
-          const filtered = k === "ingreso"
-            ? data.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
-            : data.filter(c => c !== "Gasolina");
-          if (!filtered.includes(category)) category = filtered[0] ?? "";
-        }
-      } catch (e) {
-        if (!cancelled) {
-          console.error("[registrar] load categories error:", e);
-          loadError = "Error cargando categorías. Recarga la app.";
-        }
-      }
-    }
-
-    loadCats();
-    return () => { cancelled = true; };
+    const data = k === "ingreso" ? cache.catsIngreso : cache.catsGasto;
+    categories = data;
+    const filtered = k === "ingreso"
+      ? data.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
+      : data.filter(c => c !== "Gasolina");
+    if (!filtered.includes(category)) category = filtered[0] ?? "";
   });
 
   // Resetear sub-selector al cambiar categoría o tipo
@@ -121,15 +110,6 @@
     }
   });
 
-  // Cargar objetivos y costos de ruta una vez
-  $effect(() => {
-    invoke<Goal[]>("list_active_goals")
-      .then((g) => { goals = g; })
-      .catch(() => {});
-    invoke<RoutesCost>("get_route_costs")
-      .then((r) => { routeCosts = r; })
-      .catch(() => {});
-  });
 
   function selectGasPreset(km: number) {
     const str = km.toString();
@@ -197,7 +177,6 @@
 
   async function doSave(isDebt: boolean) {
     showDebtDialog = false;
-    saving    = true;
     saveError = null;
     saved     = null;
 
@@ -211,35 +190,52 @@
       }
     }
 
+    // Capturar estado para revertir si falla
+    const snap = { amountRaw, note, extraordinary, goalId, gasKmRaw,
+                   carreraPersona, carreraOtraKmRaw, date };
+    const snapGasKm = (category === "Carrera" && carreraPersona === "otra") ? carreraOtraKm : gasKm;
+
+    // Reset optimista del formulario
+    saving           = true;
+    amountRaw        = "";
+    note             = "";
+    extraordinary    = false;
+    goalId           = null;
+    gasKmRaw         = "";
+    carreraPersona   = null;
+    carreraOtraKmRaw = "";
+    date             = todayISO();
+
     try {
       const tx = await invoke<Transaction>("create_transaction", {
         input: {
-          date,
+          date: snap.date,
           type: kind,
           category: effectiveCategory,
           amount,
-          note: note.trim() || null,
-          is_extraordinary: extraordinary,
-          goal_id: goalId,
+          note: snap.note.trim() || null,
+          is_extraordinary: snap.extraordinary,
+          goal_id: snap.goalId,
           gas_km: gasKmToSend,
           is_debt: isDebt,
         },
       });
 
       bumpTxVersion();
-      savedGasKm = (category === "Carrera" && carreraPersona === "otra") ? carreraOtraKm : gasKm;
-      saved         = tx;
-      amountRaw     = "";
-      note          = "";
-      extraordinary = false;
-      goalId        = null;
-      gasKmRaw      = "";
-      carreraPersona   = null;
-      carreraOtraKmRaw = "";
-      date          = todayISO();
+      savedGasKm = snapGasKm;
+      saved      = tx;
       setTimeout(() => { saved = null; savedGasKm = 0; }, 6000);
     } catch (e) {
       console.error("[registrar] save error:", e);
+      // Revertir formulario
+      amountRaw        = snap.amountRaw;
+      note             = snap.note;
+      extraordinary    = snap.extraordinary;
+      goalId           = snap.goalId;
+      gasKmRaw         = snap.gasKmRaw;
+      carreraPersona   = snap.carreraPersona;
+      carreraOtraKmRaw = snap.carreraOtraKmRaw;
+      date             = snap.date;
       saveError = "No se pudo guardar. Intenta de nuevo.";
     } finally {
       saving = false;

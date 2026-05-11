@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost } from "$lib/types";
+  import { cache } from "$lib/appStore.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
@@ -90,15 +91,27 @@
     ev.preventDefault();
     if (newPrice <= 0) { saveError = "El precio debe ser mayor que 0."; return; }
     saving = true; saveError = null; saveMsg = null;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const snapPrice   = currentPrice;
+    const snapHistory = priceHistory;
+    const optimistic: GasPrice = { id: 0, date: today, price_per_gallon: newPrice, source: "manual" };
+    currentPrice = optimistic;
+    priceHistory = [optimistic, ...priceHistory.filter(p => p.date !== today)].slice(0, 20);
+    newPriceRaw  = "";
+
     try {
       const saved = await invoke<GasPrice>("register_gas_price_manual", { price: newPrice });
       currentPrice = saved;
-      priceHistory = [saved, ...priceHistory.filter(p => p.date !== saved.date)].slice(0, 20);
+      priceHistory = [saved, ...priceHistory.filter(p => p.id !== 0 && p.date !== saved.date)].slice(0, 20);
       routeCosts   = await invoke<RoutesCost>("get_route_costs");
+      cache.currentGasPrice = saved;
       saveMsg = `Precio actualizado: ${formatCOP(saved.price_per_gallon)}/galón`;
-      newPriceRaw = "";
       setTimeout(() => { saveMsg = null; }, 3000);
     } catch (e) {
+      currentPrice = snapPrice;
+      priceHistory = snapHistory;
+      newPriceRaw  = newPrice.toString();
       console.error("[config] save price error:", e);
       saveError = "No se pudo guardar el precio. Intenta de nuevo.";
     } finally {
@@ -121,16 +134,21 @@
     const amount = parseInt(editBudgetRaw, 10);
     if (isNaN(amount) || amount < 0) { editingBudget = null; return; }
     savingBudget = true;
+
+    const prevBudgets = budgets;
+    budgets = budgets.map(b => b.category === category ? { ...b, monthly_amount: amount } : b);
+    editingBudget = null;
+
     try {
       const updated = await invoke<Budget>("update_budget", { category, monthlyAmount: amount });
       budgets = budgets.map(b => b.category === category ? updated : b);
-      editingBudget = null;
+      cache.budgets = budgets;
       savedBudgetCategory = category;
       setTimeout(() => { savedBudgetCategory = null; }, 1000);
     } catch (e) {
+      budgets = prevBudgets;
       console.error("[config] save budget error:", e);
       pageError = "No se pudo guardar el presupuesto. Intenta de nuevo.";
-      editingBudget = null;
     } finally {
       savingBudget = false;
     }
