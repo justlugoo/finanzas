@@ -1765,22 +1765,6 @@ pub async fn update_budget(
     Ok(Budget { category, monthly_amount })
 }
 
-#[tauri::command]
-pub async fn has_turso_credentials() -> bool {
-    crate::credentials::has_credentials()
-}
-
-#[tauri::command]
-pub async fn set_turso_credentials(url: String, token: String) -> AppResult<()> {
-    let path = crate::credentials::credentials_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let content = format!("turso_url = \"{url}\"\nturso_auth_token = \"{token}\"\n");
-    std::fs::write(&path, content)?;
-    Ok(())
-}
-
 // ── Autostart ──────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1854,7 +1838,10 @@ pub async fn set_autostart_enabled(_app: tauri::AppHandle, enabled: bool) -> App
 
 #[tauri::command]
 pub async fn backup_database() -> AppResult<String> {
-    let src = crate::db::local_db_path();
+    let src = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("finanzas")
+        .join("local.db");
     if !src.exists() {
         return Err(AppError::NotFound(
             "archivo de base de datos local no encontrado".into(),
@@ -1885,15 +1872,6 @@ pub async fn factory_reset(state: State<'_, DbState>) -> AppResult<()> {
             libsql::params![],
         ).await?;
     }
-    // Invalidate cached connection so it is recreated after sync.
-    *state.conn.lock().await = None;
-
-    let db_guard = state.db.read().await;
-    if let Some(db) = db_guard.as_ref() {
-        if let Err(e) = db.sync().await {
-            eprintln!("[finanzas] factory_reset sync falló (¿sin red?): {e}");
-        }
-    }
     Ok(())
 }
 
@@ -1912,12 +1890,5 @@ pub async fn delete_transactions_bulk(state: State<'_, DbState>, ids: Vec<i64>) 
         let conn = get_conn(&state).await?;
         conn.execute(&sql, params).await?
     };
-
-    let db_guard = state.db.read().await;
-    if let Some(db) = db_guard.as_ref() {
-        if let Err(e) = db.sync().await {
-            eprintln!("[finanzas] delete_transactions_bulk sync falló: {e}");
-        }
-    }
     Ok(affected as i64)
 }

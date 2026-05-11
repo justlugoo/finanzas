@@ -7,10 +7,6 @@ pub enum AppError {
     NotFound(String),
     ValidationError(String),
     DatabaseError(String),
-    NetworkError(String),
-    SyncError(String),
-    ScrapingError(String),
-    InvalidCredentials(String),
     IoError(String),
 }
 

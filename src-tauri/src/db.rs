@@ -1,6 +1,4 @@
 use libsql::Builder;
-use std::path::{Path, PathBuf};
-use crate::credentials::Credentials;
 use crate::error::{AppError, AppResult};
 
 // Schema sin PRAGMAs — idempotente, se aplica en cada arranque
@@ -83,46 +81,16 @@ WHERE NOT EXISTS (SELECT 1 FROM gas_prices);
 UPDATE config SET value = '350' WHERE key = 'consumo_moto_km_galon' AND value = '415';
 ";
 
-pub fn local_db_path() -> PathBuf {
-    let dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("finanzas");
-    std::fs::create_dir_all(&dir).ok();
-    dir.join("local.db")
-}
-
-pub fn cleanup_local_replica(path: &Path) {
-    let metadata_path = PathBuf::from(format!("{}-info", path.display()));
-    let cleanup_files = [
-        path.to_path_buf(),
-        metadata_path,
-        PathBuf::from(format!("{}-shm", path.display())),
-        PathBuf::from(format!("{}-wal", path.display())),
-    ];
-
-    for file in cleanup_files.iter() {
-        if file.exists() {
-            let _ = std::fs::remove_file(file);
-        }
-    }
-}
-
-pub async fn open_database(credentials: &Credentials) -> AppResult<libsql::Database> {
-    let path = local_db_path();
-    let metadata_path = PathBuf::from(format!("{}-info", path.display()));
-
-    if path.exists() ^ metadata_path.exists() {
-        cleanup_local_replica(&path);
-    }
-
-    Builder::new_remote_replica(
-        path.to_string_lossy().to_string(),
-        credentials.turso_url.clone(),
-        credentials.turso_auth_token.clone(),
-    )
-    .build()
-    .await
-    .map_err(|e| AppError::DatabaseError(e.to_string()))
+pub async fn open_database() -> AppResult<libsql::Database> {
+    let mut path = dirs::data_local_dir()
+        .ok_or_else(|| AppError::DatabaseError("no se pudo determinar directorio local".into()))?;
+    path.push("finanzas");
+    std::fs::create_dir_all(&path)?;
+    path.push("local.db");
+    Builder::new_local(path)
+        .build()
+        .await
+        .map_err(|e| AppError::DatabaseError(e.to_string()))
 }
 
 /// Pragmas de rendimiento — se aplican a cada conexión nueva.
@@ -132,7 +100,8 @@ pub async fn open_database(credentials: &Credentials) -> AppResult<libsql::Datab
 /// temp_store=MEMORY: tablas temporales (sorts/joins) en RAM, no disco.
 pub async fn apply_pragmas(conn: &libsql::Connection) -> AppResult<()> {
     conn.execute_batch(
-        "PRAGMA synchronous  = NORMAL;
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous  = NORMAL;
          PRAGMA cache_size   = -65536;
          PRAGMA mmap_size    = 268435456;
          PRAGMA temp_store   = MEMORY;",
