@@ -40,6 +40,48 @@
   let deletingId         = $state<number | null>(null);
   let deletingInProgress = $state<number | null>(null);
 
+  // ── Selección múltiple ────────────────────────────────────────────────────
+  let selectMode        = $state(false);
+  let selectedIds       = $state<Set<number>>(new Set());
+  let bulkConfirming    = $state(false);
+  let bulkDeleting      = $state(false);
+  let bulkSuccessMsg    = $state<string | null>(null);
+
+  let allSelected = $derived(txs.length > 0 && selectedIds.size === txs.length);
+
+  function enterSelectMode()  { selectMode = true; selectedIds = new Set(); bulkConfirming = false; }
+  function exitSelectMode()   { selectMode = false; selectedIds = new Set(); bulkConfirming = false; }
+
+  function toggleSelect(id: number) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    selectedIds = next;
+  }
+
+  function toggleSelectAll() {
+    selectedIds = allSelected ? new Set() : new Set(txs.map(t => t.id));
+  }
+
+  async function bulkDelete() {
+    if (selectedIds.size === 0 || bulkDeleting) return;
+    bulkDeleting = true;
+    bulkConfirming = false;
+    try {
+      const ids = [...selectedIds];
+      const deleted = await invoke<number>("delete_transactions_bulk", { ids });
+      txs = txs.filter(t => !selectedIds.has(t.id));
+      bulkSuccessMsg = `${deleted} transacción${deleted !== 1 ? "es" : ""} eliminada${deleted !== 1 ? "s" : ""}.`;
+      exitSelectMode();
+      setTimeout(() => { bulkSuccessMsg = null; }, 3000);
+    } catch (e) {
+      console.error("[historial] bulk delete error:", e);
+      error = "No se pudieron eliminar las transacciones. Intenta de nuevo.";
+      exitSelectMode();
+    } finally {
+      bulkDeleting = false;
+    }
+  }
+
   // ── Exportar / Importar ───────────────────────────────────────────────────
   let exporting      = $state(false);
   let importing      = $state(false);
@@ -242,12 +284,19 @@
   <div class="toolbar">
     <h1>Historial</h1>
     <div class="toolbar-actions">
-      <button class="action-btn" onclick={triggerImport} disabled={importing}>
-        {importing ? "Importando…" : "Importar CSV"}
-      </button>
-      <button class="action-btn" onclick={exportCSV} disabled={exporting || txs.length === 0}>
-        {exporting ? "Exportando…" : "Exportar CSV"}
-      </button>
+      {#if !selectMode}
+        <button class="action-btn" onclick={triggerImport} disabled={importing}>
+          {importing ? "Importando…" : "Importar CSV"}
+        </button>
+        <button class="action-btn" onclick={exportCSV} disabled={exporting || txs.length === 0}>
+          {exporting ? "Exportando…" : "Exportar CSV"}
+        </button>
+        <button class="action-btn" onclick={enterSelectMode} disabled={txs.length === 0}>
+          Seleccionar
+        </button>
+      {:else}
+        <button class="action-btn" onclick={exitSelectMode} disabled={bulkDeleting}>Cancelar</button>
+      {/if}
     </div>
   </div>
 
@@ -261,6 +310,33 @@
 
   {#if error}
     <div class="banner error"><strong>Error</strong><pre>{error}</pre></div>
+  {/if}
+
+  {#if bulkSuccessMsg}
+    <div class="banner success">{bulkSuccessMsg}</div>
+  {/if}
+
+  {#if selectMode}
+    <div class="bulk-bar">
+      <span class="bulk-count">{selectedIds.size} seleccionada{selectedIds.size !== 1 ? "s" : ""}</span>
+      <div class="bulk-actions">
+        {#if bulkConfirming}
+          <span class="bulk-confirm-text">¿Eliminar {selectedIds.size} transacción{selectedIds.size !== 1 ? "es" : ""}? No se puede deshacer.</span>
+          <button class="action-btn danger" onclick={bulkDelete} disabled={bulkDeleting}>
+            {bulkDeleting ? "Eliminando…" : "Confirmar"}
+          </button>
+          <button class="action-btn" onclick={() => { bulkConfirming = false; }} disabled={bulkDeleting}>Cancelar</button>
+        {:else}
+          <button
+            class="action-btn danger"
+            onclick={() => { bulkConfirming = true; }}
+            disabled={selectedIds.size === 0}
+          >
+            Eliminar seleccionadas
+          </button>
+        {/if}
+      </div>
+    </div>
   {/if}
 
   {#if importResult}
@@ -325,17 +401,27 @@
       <table>
         <thead>
           <tr>
+            {#if selectMode}
+              <th class="check-col">
+                <input type="checkbox" checked={allSelected} onchange={toggleSelectAll} />
+              </th>
+            {/if}
             <th>Fecha</th>
             <th>Tipo</th>
             <th>Categoría</th>
             <th class="right">Monto</th>
             <th>Nota</th>
-            <th></th>
+            {#if !selectMode}<th></th>{/if}
           </tr>
         </thead>
         <tbody>
           {#each txs as tx (tx.id)}
-            <tr>
+            <tr class:row-selected={selectedIds.has(tx.id)}>
+              {#if selectMode}
+                <td class="check-col">
+                  <input type="checkbox" checked={selectedIds.has(tx.id)} onchange={() => toggleSelect(tx.id)} />
+                </td>
+              {/if}
               <td class="date-cell">{formatDate(tx.date)}</td>
               <td class="type-cell">
                 <span class="badge" class:badge-income={tx.type === "ingreso"} class:badge-expense={tx.type === "gasto"}>
@@ -350,32 +436,34 @@
                 {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
               </td>
               <td class="note-cell">{tx.note ?? ""}</td>
-              <td class="actions-cell">
-                {#if deletingId === tx.id}
-                  <span class="confirm-del">
-                    ¿Eliminar?
-                    <button
-                      class="action-link danger"
-                      onclick={() => confirmDelete(tx.id)}
-                      disabled={deletingInProgress === tx.id}
-                    >{deletingInProgress === tx.id ? "…" : "Sí"}</button>
-                    <button class="action-link" onclick={() => { deletingId = null; }} disabled={deletingInProgress === tx.id}>No</button>
-                  </span>
-                {:else}
-                  <button class="action-link" onclick={() => startEdit(tx)}>Editar</button>
-                  <button class="action-link danger" onclick={() => { deletingId = tx.id; }}>Eliminar</button>
-                {/if}
-              </td>
+              {#if !selectMode}
+                <td class="actions-cell">
+                  {#if deletingId === tx.id}
+                    <span class="confirm-del">
+                      ¿Eliminar?
+                      <button
+                        class="action-link danger"
+                        onclick={() => confirmDelete(tx.id)}
+                        disabled={deletingInProgress === tx.id}
+                      >{deletingInProgress === tx.id ? "…" : "Sí"}</button>
+                      <button class="action-link" onclick={() => { deletingId = null; }} disabled={deletingInProgress === tx.id}>No</button>
+                    </span>
+                  {:else}
+                    <button class="action-link" onclick={() => startEdit(tx)}>Editar</button>
+                    <button class="action-link danger" onclick={() => { deletingId = tx.id; }}>Eliminar</button>
+                  {/if}
+                </td>
+              {/if}
             </tr>
           {/each}
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="3" class="total-label">Total período</td>
+            <td colspan={selectMode ? 4 : 3} class="total-label">Total período</td>
             <td class="right total-value" class:income={total >= 0} class:expense={total < 0}>
               {total >= 0 ? "+" : "−"}{formatCOP(Math.abs(total))}
             </td>
-            <td colspan="2"></td>
+            <td colspan={selectMode ? 1 : 2}></td>
           </tr>
         </tfoot>
       </table>
@@ -811,4 +899,69 @@
 
   .btn-save:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-save:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Selección múltiple ── */
+  .bulk-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.875rem;
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+  }
+  .bulk-count { color: var(--text-primary); font-weight: 600; }
+  .bulk-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .bulk-confirm-text { font-size: 0.82rem; color: var(--text-secondary); }
+  .action-btn.danger {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  }
+  .action-btn.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
+    color: var(--danger);
+  }
+  .check-col { width: 36px; text-align: center; padding: 0 0.25rem; }
+  .check-col input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    cursor: pointer;
+    position: relative;
+    vertical-align: middle;
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .check-col input[type="checkbox"]:hover {
+    border-color: var(--accent);
+  }
+  .check-col input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .check-col input[type="checkbox"]:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: 2px solid #fff;
+    border-top: none;
+    border-left: none;
+    transform: rotate(45deg);
+  }
+  .row-selected td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .banner.success {
+    background: color-mix(in srgb, var(--success) 15%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+    color: var(--success);
+    font-weight: 500;
+  }
 </style>

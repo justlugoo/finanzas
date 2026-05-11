@@ -206,6 +206,8 @@ pub fn run() {
             commands::set_autostart_enabled,
             commands::backup_database,
             commands::get_current_balance,
+            commands::factory_reset,
+            commands::delete_transactions_bulk,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

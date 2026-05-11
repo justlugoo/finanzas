@@ -1867,3 +1867,54 @@ pub async fn backup_database() -> AppResult<String> {
 
     Ok(dest.to_string_lossy().to_string())
 }
+
+// ── Factory reset ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn factory_reset(state: State<'_, DbState>) -> AppResult<()> {
+    {
+        let conn = get_conn(&state).await?;
+        conn.execute("DELETE FROM transactions", libsql::params![]).await?;
+        conn.execute("DELETE FROM goals",        libsql::params![]).await?;
+        conn.execute("DELETE FROM gas_prices",   libsql::params![]).await?;
+        conn.execute(
+            "INSERT INTO gas_prices (date, price_per_gallon, source) VALUES (date('now'), 15881, 'manual')",
+            libsql::params![],
+        ).await?;
+    }
+    // Invalidate cached connection so it is recreated after sync.
+    *state.conn.lock().await = None;
+
+    let db_guard = state.db.read().await;
+    if let Some(db) = db_guard.as_ref() {
+        if let Err(e) = db.sync().await {
+            eprintln!("[finanzas] factory_reset sync falló (¿sin red?): {e}");
+        }
+    }
+    Ok(())
+}
+
+// ── Bulk delete transactions ────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn delete_transactions_bulk(state: State<'_, DbState>, ids: Vec<i64>) -> AppResult<i64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("DELETE FROM transactions WHERE id IN ({placeholders})");
+    let params: Vec<libsql::Value> = ids.iter().map(|&id| libsql::Value::Integer(id)).collect();
+
+    let affected = {
+        let conn = get_conn(&state).await?;
+        conn.execute(&sql, params).await?
+    };
+
+    let db_guard = state.db.read().await;
+    if let Some(db) = db_guard.as_ref() {
+        if let Err(e) = db.sync().await {
+            eprintln!("[finanzas] delete_transactions_bulk sync falló: {e}");
+        }
+    }
+    Ok(affected as i64)
+}

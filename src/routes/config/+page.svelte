@@ -170,6 +170,37 @@
   let backupError = $state<string | null>(null);
   let backupBusy  = $state(false);
 
+  // ── Factory reset ─────────────────────────────────────────────────────────
+  let resetStep       = $state<0 | 1 | 2>(0); // 0=cerrado, 1=confirmar, 2=escribir
+  let resetInput      = $state("");
+  let resetBusy       = $state(false);
+  let resetSuccess    = $state(false);
+  const RESET_PHRASE  = "BORRAR TODO";
+
+  function openReset()  { resetStep = 1; resetInput = ""; resetSuccess = false; }
+  function closeReset() { if (!resetBusy) { resetStep = 0; resetInput = ""; } }
+
+  async function doFactoryReset() {
+    if (resetInput !== RESET_PHRASE || resetBusy) return;
+    resetBusy = true;
+    try {
+      await invoke("factory_reset");
+      resetSuccess = true;
+      resetStep = 0;
+      resetInput = "";
+      setTimeout(() => {
+        resetSuccess = false;
+        window.location.href = "/resumen";
+      }, 2000);
+    } catch (e) {
+      console.error("[config] factory_reset error:", e);
+      pageError = "Error al restablecer los datos. Intenta de nuevo.";
+      resetStep = 0;
+    } finally {
+      resetBusy = false;
+    }
+  }
+
   async function handleBackup() {
     backupBusy = true;
     backupPath  = null;
@@ -423,6 +454,7 @@
   <section class="section">
     <h2>Sistema</h2>
 
+
     <!-- Autoarranque -->
     <div class="subsection">
       <div class="row-between">
@@ -466,7 +498,63 @@
       </button>
     </div>
   </section>
+
+  <!-- ══ Datos ════════════════════════════════════════════════════════════ -->
+  <section class="section danger-zone">
+    <h2>Datos</h2>
+    {#if resetSuccess}
+      <div class="banner success small">Datos eliminados. La app está lista para usar.</div>
+    {/if}
+    <div class="subsection">
+      <p class="danger-hint">Elimina permanentemente todas las transacciones, objetivos e historial de gasolina. Los presupuestos y la configuración no se borran.</p>
+      <button type="button" class="btn-danger" onclick={openReset}>
+        🗑 Restablecer datos de fábrica
+      </button>
+    </div>
+  </section>
 </main>
+
+<!-- Dialog factory reset paso 1 -->
+{#if resetStep === 1}
+  <div class="modal-overlay" role="button" tabindex="-1" onclick={closeReset} onkeydown={(e) => { if (e.key === "Escape") closeReset(); }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+      <h2>¿Restablecer datos de fábrica?</h2>
+      <p class="modal-body">Esto eliminará <strong>TODAS</strong> las transacciones, objetivos e historial de gasolina. Esta acción no se puede deshacer.</p>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick={closeReset}>Cancelar</button>
+        <button class="btn-danger-confirm" onclick={() => { resetStep = 2; }}>Sí, continuar</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Dialog factory reset paso 2 -->
+{#if resetStep === 2}
+  <div class="modal-overlay" role="button" tabindex="-1" onclick={closeReset} onkeydown={(e) => { if (e.key === "Escape") closeReset(); }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+      <h2>Confirmación final</h2>
+      <p class="modal-body">Escribe <strong>{RESET_PHRASE}</strong> para confirmar:</p>
+      <input
+        type="text"
+        class="reset-input"
+        bind:value={resetInput}
+        placeholder={RESET_PHRASE}
+        disabled={resetBusy}
+        onkeydown={(e) => { if (e.key === "Enter") doFactoryReset(); }}
+      />
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick={closeReset} disabled={resetBusy}>Cancelar</button>
+        <button
+          class="btn-danger-confirm"
+          onclick={doFactoryReset}
+          disabled={resetInput !== RESET_PHRASE || resetBusy}
+        >
+          {resetBusy ? "Borrando…" : "Confirmar y borrar"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   main {
@@ -767,4 +855,90 @@
   }
   .btn-secondary:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
   .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Datos ── */
+  .danger-zone {
+    border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  }
+  .danger-zone h2 { color: var(--danger); }
+  .danger-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+  .btn-danger {
+    padding: 0.5rem 1rem;
+    background: color-mix(in srgb, var(--danger) 15%, var(--bg-elevated));
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+    border-radius: var(--radius);
+    color: var(--danger);
+    font-size: 0.85rem;
+    font-weight: 600;
+    align-self: flex-start;
+    transition: background 0.15s;
+  }
+  .btn-danger:hover { background: color-mix(in srgb, var(--danger) 25%, var(--bg-elevated)); }
+
+  /* ── Modal ── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    width: min(420px, 90vw);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .modal h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
+  .modal-body { font-size: 0.875rem; color: var(--text-secondary); margin: 0; line-height: 1.5; }
+  .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+  .btn-cancel {
+    padding: 0.45rem 1rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+  .btn-cancel:hover:not(:disabled) { color: var(--text-primary); }
+  .btn-cancel:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-danger-confirm {
+    padding: 0.45rem 1rem;
+    background: var(--danger);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: opacity 0.15s;
+  }
+  .btn-danger-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-danger-confirm:hover:not(:disabled) { opacity: 0.85; }
+  .reset-input {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 0.5rem 0.75rem;
+    outline: none;
+    width: 100%;
+    transition: border-color 0.15s;
+    box-sizing: border-box;
+  }
+  .reset-input:focus { border-color: var(--danger); }
 </style>
