@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type {
     Goal, GoalWithProgress, Transaction, TransactionPage,
-    RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress,
+    RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute,
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
@@ -29,10 +29,11 @@
   let savedGasKm = $state(0);
 
   // ── Datos cargados ─────────────────────────────────────────────────────────
-  let categories = $state<string[]>([]);
-  let goals      = $state<Goal[]>([]);
-  let routeCosts = $state<RoutesCost | null>(null);
-  let loadError  = $state<string | null>(null);
+  let categories    = $state<string[]>([]);
+  let goals         = $state<Goal[]>([]);
+  let routeCosts    = $state<RoutesCost | null>(null);
+  let customRoutes  = $state<CustomRoute[]>([]);
+  let loadError     = $state<string | null>(null);
 
   // ── Cache de categorías ────────────────────────────────────────────────────
   let _catsIngreso: string[] = [];
@@ -168,10 +169,11 @@
     }
   });
 
-  // Cargar objetivos y costos de ruta una vez
+  // Cargar objetivos, costos de ruta y rutas personalizadas una vez
   $effect(() => {
     invoke<Goal[]>("list_active_goals").then(g => { goals = g; }).catch(() => {});
     invoke<RoutesCost>("get_route_costs").then(r => { routeCosts = r; }).catch(() => {});
+    invoke<CustomRoute[]>("get_custom_routes").then(r => { customRoutes = r; }).catch(() => {});
   });
 
   // Cargar estadísticas generales del panel derecho
@@ -514,6 +516,15 @@
               class:active={gasKmRaw === routeCosts.km_universidad.toString()}
               onclick={() => selectGasPreset(routeCosts!.km_universidad)}
             >Universidad</button>
+            {#each customRoutes as route (route.id)}
+              <button
+                type="button"
+                class="gas-preset-btn"
+                class:active={gasKmRaw === route.km_round_trip.toString()}
+                onclick={() => selectGasPreset(route.km_round_trip)}
+                title={route.description ?? route.name}
+              >{route.name}</button>
+            {/each}
             <div class="gas-km-input">
               <input
                 type="text"

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { page } from '$app/stores';
+  import { txState } from "$lib/txState.svelte";
   import type { CurrentBalance, PeriodSummary, TransactionPage, GoalWithProgress, Transaction } from "$lib/types";
   import '../app.css';
 
@@ -29,18 +30,19 @@
   // ── Reload data on route change ────────────────────────────────────────────
   $effect(() => {
     const _path = $page.url.pathname;
+    const _v    = txState.version;
     let cancelled = false;
 
     Promise.all([
       invoke<CurrentBalance>("get_current_balance"),
       invoke<PeriodSummary>("get_period_summary", { period: { type: "Monthly" } }),
-      invoke<TransactionPage>("list_transactions", { filter: { page: 1, page_size: 1 } }),
+      invoke<TransactionPage>("list_transactions", { filter: { page: 1, page_size: 10 } }),
       invoke<GoalWithProgress[]>("list_goals", { status: "active" }),
     ]).then(([bal, summary, recent, goals]) => {
       if (cancelled) return;
       balance      = bal.balance;
       monthSummary = summary;
-      lastTx       = recent.transactions[0] ?? null;
+      lastTx       = recent.transactions.find(tx => !tx.note?.startsWith('Auto:') && !tx.note?.startsWith('Externo para')) ?? null;
       nextGoal     = goals.find(g => !g.goal.is_debt_goal) ?? null;
     }).catch(() => {});
 

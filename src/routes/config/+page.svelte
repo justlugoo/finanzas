@@ -1,14 +1,23 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost } from "$lib/types";
+  import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute } from "$lib/types";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
   let weeklyData     = $state<WeeklyGasPoint[]>([]);
   let budgets        = $state<Budget[]>([]);
   let routeCosts     = $state<RoutesCost | null>(null);
+  let customRoutes   = $state<CustomRoute[]>([]);
   let loading        = $state(true);
   let pageError      = $state<string | null>(null);
+
+  // ── Rutas personalizadas ──────────────────────────────────────────────────
+  let newRouteName  = $state("");
+  let newRouteKmRaw = $state("");
+  let newRouteDesc  = $state("");
+  let addingRoute   = $state(false);
+  let routeError    = $state<string | null>(null);
+  let deletingRouteId = $state<number | null>(null);
 
   // ── Actualizar precio ─────────────────────────────────────────────────────
   let newPriceRaw = $state("");
@@ -50,11 +59,12 @@
     async function load() {
       loading = true; pageError = null;
       try {
-        const [price, history, weekly, buds] = await Promise.all([
+        const [price, history, weekly, buds, routes] = await Promise.all([
           invoke<GasPrice | null>("get_current_gas_price"),
           invoke<GasPrice[]>("list_gas_prices", { limit: 20 }),
           invoke<WeeklyGasPoint[]>("get_weekly_gas_comparison"),
           invoke<Budget[]>("list_budgets"),
+          invoke<CustomRoute[]>("get_custom_routes"),
         ]);
 
         // Auto-seed si no hay precio registrado
@@ -72,9 +82,10 @@
           priceHistory = history;
         }
 
-        weeklyData = weekly;
-        budgets    = buds;
-        routeCosts = await invoke<RoutesCost>("get_route_costs");
+        weeklyData   = weekly;
+        budgets      = buds;
+        customRoutes = routes;
+        routeCosts   = await invoke<RoutesCost>("get_route_costs");
       } catch (e) {
         console.error("[config] load error:", e);
         pageError = "Error al cargar la configuración. Recarga la app.";
@@ -220,6 +231,39 @@
       backupBusy = false;
     }
   }
+
+  async function addCustomRoute(ev: Event) {
+    ev.preventDefault();
+    const km = parseFloat(newRouteKmRaw.replace(",", "."));
+    if (!newRouteName.trim()) { routeError = "El nombre es obligatorio."; return; }
+    if (!km || km <= 0) { routeError = "Los km deben ser mayores que 0."; return; }
+    addingRoute = true; routeError = null;
+    try {
+      const saved = await invoke<CustomRoute>("save_custom_route", {
+        route: { name: newRouteName.trim(), km_round_trip: km, description: newRouteDesc.trim() || null },
+      });
+      customRoutes = [...customRoutes, saved].sort((a, b) => a.name.localeCompare(b.name));
+      newRouteName = ""; newRouteKmRaw = ""; newRouteDesc = "";
+    } catch (e) {
+      console.error("[config] save route error:", e);
+      routeError = "No se pudo guardar la ruta.";
+    } finally {
+      addingRoute = false;
+    }
+  }
+
+  async function removeCustomRoute(id: number) {
+    deletingRouteId = id;
+    try {
+      await invoke("delete_custom_route", { id });
+      customRoutes = customRoutes.filter(r => r.id !== id);
+    } catch (e) {
+      console.error("[config] delete route error:", e);
+      pageError = "No se pudo eliminar la ruta.";
+    } finally {
+      deletingRouteId = null;
+    }
+  }
 </script>
 
 <div class="config-shell">
@@ -260,19 +304,49 @@
       {#if routeCosts}
         <div class="subsection">
           <h3>Costos por ruta <span class="hint-inline">· {formatCOP(routeCosts.precio_galon)}/gal · {routeCosts.consumo_km_galon} km/gal</span></h3>
-          <div class="route-costs">
-            {#each [
-              { label: "Carrera mamá",   km: "8",    cost: routeCosts.carrera_mama   },
-              { label: "Carrera cuñada", km: "16",   cost: routeCosts.carrera_cunada },
-              { label: "Universidad",    km: "11.4", cost: routeCosts.universidad    },
-            ] as route}
-              <div class="route-row">
-                <span class="route-name">{route.label}</span>
-                <span class="route-km">{route.km} km</span>
-                <span class="route-cost">{formatCOP(route.cost)}</span>
-              </div>
-            {/each}
-          </div>
+          {#if customRoutes.length > 0}
+            <div class="route-costs">
+              {#each customRoutes as route (route.id)}
+                {@const cost = Math.round(route.km_round_trip / routeCosts.consumo_km_galon * routeCosts.precio_galon)}
+                <div class="route-row">
+                  <span class="route-name">{route.name}</span>
+                  <span class="route-km">{route.km_round_trip} km</span>
+                  <span class="route-cost">{formatCOP(cost)}</span>
+                  <button
+                    class="cr-del"
+                    onclick={() => removeCustomRoute(route.id)}
+                    disabled={deletingRouteId === route.id}
+                    aria-label="Eliminar ruta"
+                  >{deletingRouteId === route.id ? "…" : "✕"}</button>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="muted small">Sin rutas. Agrégalas abajo.</p>
+          {/if}
+          {#if routeError}
+            <div class="banner error small">{routeError}</div>
+          {/if}
+          <form class="route-add-form" onsubmit={addCustomRoute}>
+            <input
+              type="text"
+              placeholder="Nombre"
+              bind:value={newRouteName}
+              class="route-input"
+              disabled={addingRoute}
+            />
+            <input
+              type="text"
+              inputmode="decimal"
+              placeholder="km redondo"
+              bind:value={newRouteKmRaw}
+              class="route-input route-input-km"
+              disabled={addingRoute}
+            />
+            <button type="submit" class="btn-primary small" disabled={addingRoute || !newRouteName.trim() || !newRouteKmRaw}>
+              {addingRoute ? "…" : "Agregar"}
+            </button>
+          </form>
         </div>
       {/if}
 
@@ -598,7 +672,21 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    min-width: 0;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a40 transparent;
   }
+  .config-left::-webkit-scrollbar,
+  .config-right::-webkit-scrollbar { width: 4px; }
+  .config-left::-webkit-scrollbar-track,
+  .config-right::-webkit-scrollbar-track { background: transparent; }
+  .config-left::-webkit-scrollbar-thumb,
+  .config-right::-webkit-scrollbar-thumb {
+    background: #2a2a40;
+    border-radius: 999px;
+  }
+  .config-left::-webkit-scrollbar-thumb:hover,
+  .config-right::-webkit-scrollbar-thumb:hover { background: #3a3a55; }
 
   h1 {
     font-size: 1.1rem;
@@ -683,6 +771,70 @@
   .route-name { flex: 1; color: var(--text-primary); font-weight: 500; }
   .route-km   { color: var(--text-muted); font-size: 0.78rem; min-width: 45px; }
   .route-cost { color: var(--accent); font-weight: 700; font-size: 0.9rem; min-width: 80px; text-align: right; }
+
+  /* ── Rutas personalizadas ── */
+  .route-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .custom-route-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+  }
+  .custom-route-row:last-child { border-bottom: none; }
+
+  .cr-name { font-weight: 500; color: var(--text-primary); flex-shrink: 0; }
+  .cr-km   { font-size: 0.75rem; color: var(--text-muted); flex-shrink: 0; min-width: 50px; }
+  .cr-desc { font-size: 0.75rem; color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .cr-del {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+  }
+  .cr-del:hover:not(:disabled) { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .cr-del:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .route-add-form {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .route-input {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.32rem 0.6rem;
+    outline: none;
+    flex: 1;
+    min-width: 120px;
+    transition: border-color 0.15s;
+  }
+  .route-input:focus { border-color: var(--accent); }
+  .route-input::placeholder { color: var(--text-muted); }
+  .route-input-km { max-width: 100px; flex: none; }
+
+  .small { font-size: 0.78rem; }
+  .btn-primary.small { padding: 0.32rem 0.7rem; font-size: 0.78rem; }
 
   /* ── Formulario inline ── */
   .inline-form { display: flex; gap: 0.5rem; }

@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
-  import { txState } from "$lib/txState.svelte";
+  import { txState, bumpTxVersion } from "$lib/txState.svelte";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -107,6 +107,7 @@
     exitSelectMode();
     try {
       const deleted = await invoke<number>("delete_transactions_bulk", { ids });
+      bumpTxVersion();
       bulkSuccessMsg = `${deleted} transacción${deleted !== 1 ? "es" : ""} eliminada${deleted !== 1 ? "s" : ""}.`;
       setTimeout(() => { bulkSuccessMsg = null; }, 3000);
       totalCount = Math.max(0, totalCount - ids.length);
@@ -268,6 +269,7 @@
       const updated = await invoke<Transaction>("update_transaction", { id: editingTx.id, input });
       txs = txs.map(t => t.id === updated.id ? updated : t);
       editingTx = null;
+      bumpTxVersion();
     } catch (e) {
       console.error("[historial] save edit error:", e);
       editError = "No se pudo guardar el cambio. Intenta de nuevo.";
@@ -284,6 +286,7 @@
     totalCount = Math.max(0, totalCount - 1);
     try {
       await invoke("delete_transaction", { id });
+      bumpTxVersion();
     } catch (e) {
       txs = prev;
       totalCount += 1;
@@ -306,7 +309,7 @@
       try {
         const result = await invoke<ImportResult>("import_transactions_csv", { csvContent: content });
         importResult = result;
-        if (result.imported > 0) { reloadKey += 1; currentPage = 1; }
+        if (result.imported > 0) { bumpTxVersion(); reloadKey += 1; currentPage = 1; }
       } catch (err) {
         error = typeof err === "string" ? err : "Error al importar el archivo.";
       } finally {
@@ -348,53 +351,37 @@
 
   <!-- Toolbar -->
   <div class="toolbar">
-    {#if selectMode}
-      <label class="select-all-check">
-        <input type="checkbox" checked={allSelected} onchange={toggleSelectAll} />
-        <span class="select-all-label">
-          {selectedIds.size > 0 ? `${selectedIds.size} seleccionada${selectedIds.size !== 1 ? "s" : ""}` : "Seleccionar todas"}
-        </span>
-      </label>
-      <button class="action-btn" onclick={exitSelectMode} disabled={bulkDeleting}>Cancelar</button>
-    {:else}
-      <h1>Historial</h1>
-      <div class="toolbar-right">
-        <div class="menu-wrap">
-          <button
-            class="action-btn icon-btn"
-            onclick={() => { menuOpen = !menuOpen; }}
-            aria-label="Menú acciones"
-          >⋯</button>
-          {#if menuOpen}
-            <div
-              class="menu-overlay"
-              role="button"
-              tabindex="-1"
-              onclick={() => { menuOpen = false; }}
-              onkeydown={() => {}}
-            ></div>
-            <div class="menu-dropdown">
-              <button
-                class="menu-item"
-                onclick={() => { menuOpen = false; triggerImport(); }}
-                disabled={importing}
-              >{importing ? "Importando…" : "Importar CSV"}</button>
-              <button
-                class="menu-item"
-                onclick={() => { menuOpen = false; exportCSV(); }}
-                disabled={exporting || txs.length === 0}
-              >{exporting ? "Exportando…" : "Exportar CSV"}</button>
-              <div class="menu-sep"></div>
-              <button
-                class="menu-item"
-                onclick={() => { menuOpen = false; enterSelectMode(); }}
-                disabled={txs.length === 0}
-              >Seleccionar</button>
-            </div>
-          {/if}
-        </div>
+    <h1>Historial</h1>
+    <div class="toolbar-right">
+      <div class="menu-wrap">
+        <button
+          class="action-btn icon-btn"
+          onclick={() => { menuOpen = !menuOpen; }}
+          aria-label="Menú acciones"
+        >⋯</button>
+        {#if menuOpen}
+          <div
+            class="menu-overlay"
+            role="button"
+            tabindex="-1"
+            onclick={() => { menuOpen = false; }}
+            onkeydown={() => {}}
+          ></div>
+          <div class="menu-dropdown">
+            <button
+              class="menu-item"
+              onclick={() => { menuOpen = false; triggerImport(); }}
+              disabled={importing}
+            >{importing ? "Importando…" : "Importar CSV"}</button>
+            <button
+              class="menu-item"
+              onclick={() => { menuOpen = false; exportCSV(); }}
+              disabled={exporting || txs.length === 0}
+            >{exporting ? "Exportando…" : "Exportar CSV"}</button>
+          </div>
+        {/if}
       </div>
-    {/if}
+    </div>
   </div>
 
   <input
@@ -406,6 +393,7 @@
   />
 
   <!-- Filtros -->
+  {#if !selectMode}
   <div class="filters">
     <!-- Período -->
     <nav class="period-selector">
@@ -464,6 +452,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 
   <!-- Stats bar -->
   {#if !loading && periodSummary}
@@ -517,26 +506,10 @@
     </div>
   {/if}
 
-  <!-- Bulk bar -->
-  {#if selectMode && selectedIds.size > 0}
-    <div class="bulk-bar">
-      <span class="bulk-count">{selectedIds.size} seleccionada{selectedIds.size !== 1 ? "s" : ""}</span>
-      <div class="bulk-actions">
-        {#if bulkConfirming}
-          <span class="bulk-confirm-text">¿Eliminar {selectedIds.size}?</span>
-          <button class="action-btn danger" onclick={bulkDelete} disabled={bulkDeleting}>
-            {bulkDeleting ? "Eliminando…" : "Confirmar"}
-          </button>
-          <button class="action-btn" onclick={() => { bulkConfirming = false; }} disabled={bulkDeleting}>
-            Cancelar
-          </button>
-        {:else}
-          <button
-            class="action-btn danger"
-            onclick={() => { bulkConfirming = true; }}
-          >Eliminar seleccionadas</button>
-        {/if}
-      </div>
+  <!-- Seleccionar -->
+  {#if !selectMode && txs.length > 0}
+    <div class="select-row">
+      <button class="select-trigger" onclick={enterSelectMode}>Seleccionar</button>
     </div>
   {/if}
 
@@ -655,6 +628,29 @@
           {/if}
         </div>
       {/each}
+    </div>
+  {/if}
+
+  <!-- Selection bar (bottom, fixed when select mode active) -->
+  {#if selectMode}
+    <div class="selection-bar">
+      <label class="sel-all-label">
+        <input type="checkbox" class="sel-check" checked={allSelected} onchange={toggleSelectAll} />
+        <span>Seleccionar todas</span>
+      </label>
+      <span class="sel-dot">·</span>
+      <span class="sel-count">{selectedIds.size > 0 ? `${selectedIds.size} seleccionada${selectedIds.size !== 1 ? "s" : ""}` : "Ninguna"}</span>
+      {#if bulkConfirming}
+        <span class="sel-dot">·</span>
+        <span class="sel-confirm-text">¿Eliminar {selectedIds.size}?</span>
+        <button class="sel-btn danger" onclick={bulkDelete} disabled={bulkDeleting}>{bulkDeleting ? "Eliminando…" : "Confirmar"}</button>
+        <button class="sel-btn" onclick={() => { bulkConfirming = false; }} disabled={bulkDeleting}>Atrás</button>
+      {:else}
+        <span class="sel-dot">·</span>
+        <button class="sel-btn danger" onclick={() => { bulkConfirming = true; }} disabled={selectedIds.size === 0}>Eliminar seleccionadas</button>
+      {/if}
+      <span class="sel-spacer"></span>
+      <button class="sel-btn secondary" onclick={exitSelectMode} disabled={bulkDeleting}>Cancelar</button>
     </div>
   {/if}
 
@@ -820,8 +816,6 @@
   }
   .action-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
   .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .action-btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
-  .action-btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)); }
 
   .icon-btn { padding: 0.35rem 0.7rem; font-size: 1rem; letter-spacing: -0.1em; }
 
@@ -863,23 +857,6 @@
   .menu-item:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); }
   .menu-item:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .menu-sep {
-    height: 1px;
-    background: var(--border);
-    margin: 0.2rem 0;
-  }
-
-  /* Select-all row in toolbar (select mode) */
-  .select-all-check {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-    font-size: 0.82rem;
-    color: var(--text-secondary);
-  }
-  .select-all-check input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
-  .select-all-label { color: var(--text-secondary); }
 
   /* ── Filtros ── */
   .filters {
@@ -1053,22 +1030,104 @@
   .banner pre { font-size: 0.7rem; opacity: 0.8; white-space: pre-wrap; word-break: break-all; }
   .import-errors { font-size: 0.72rem; opacity: 0.85; margin-top: 0.2rem; padding-left: 1.1rem; }
 
-  /* ── Bulk bar ── */
-  .bulk-bar {
+  /* ── Select row (above timeline) ── */
+  .select-row {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .select-trigger {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius);
+    border: 1px solid transparent;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .select-trigger:hover {
+    color: var(--text-secondary);
+    border-color: var(--border);
+    background: var(--bg-elevated);
+  }
+
+  /* ── Selection bar (bottom) ── */
+  .selection-bar {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.4rem 0.875rem;
+    gap: 0.5rem;
+    padding: 0.45rem 0.875rem;
     background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
     border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
     border-radius: var(--radius);
     font-size: 0.82rem;
   }
-  .bulk-count    { color: var(--text-primary); font-weight: 600; }
-  .bulk-actions  { display: flex; align-items: center; gap: 0.5rem; }
-  .bulk-confirm-text { font-size: 0.78rem; color: var(--text-secondary); }
+
+  .sel-all-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+
+  .sel-check {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .sel-check:checked { background: var(--accent); border-color: var(--accent); }
+  .sel-check:checked::after {
+    content: "";
+    position: absolute;
+    left: 3px; top: 0px;
+    width: 4px; height: 8px;
+    border: 2px solid #fff;
+    border-top: none; border-left: none;
+    transform: rotate(45deg);
+  }
+
+  .sel-dot { color: var(--text-muted); font-size: 0.9rem; flex-shrink: 0; }
+
+  .sel-count {
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .sel-confirm-text { font-size: 0.78rem; color: var(--text-secondary); white-space: nowrap; }
+
+  .sel-spacer { flex: 1; }
+
+  .sel-btn {
+    padding: 0.28rem 0.65rem;
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+  }
+  .sel-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
+  .sel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .sel-btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+  .sel-btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)); }
+  .sel-btn.secondary { color: var(--text-muted); }
 
   /* ── Timeline ── */
   .timeline-wrap {

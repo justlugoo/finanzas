@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS config (
     value   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS custom_routes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT    NOT NULL,
+    km_round_trip   REAL    NOT NULL CHECK (km_round_trip > 0),
+    description     TEXT
+);
+
 INSERT OR IGNORE INTO budgets (category, monthly_amount) VALUES
     ('Mesada',          300000),
     ('Carrera',              0),

@@ -158,3 +158,10 @@ export interface AppError {
   kind: string;
   message?: string;
 }
+
+export interface CustomRoute {
+  id: number;
+  name: string;
+  km_round_trip: number;
+  description: string | null;
+}

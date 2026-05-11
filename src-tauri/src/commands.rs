@@ -1917,3 +1917,78 @@ pub async fn delete_transactions_bulk(state: State<'_, DbState>, ids: Vec<i64>) 
     };
     Ok(affected as i64)
 }
+
+// ── Custom routes ───────────────────────────────────────────────────────────
+
+#[derive(Serialize, Debug)]
+pub struct CustomRoute {
+    pub id: i64,
+    pub name: String,
+    pub km_round_trip: f64,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CustomRouteInput {
+    pub name: String,
+    pub km_round_trip: f64,
+    pub description: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_custom_routes(state: State<'_, DbState>) -> AppResult<Vec<CustomRoute>> {
+    let conn = get_conn(&state).await?;
+    let mut rows = conn
+        .query(
+            "SELECT id, name, km_round_trip, description FROM custom_routes ORDER BY name",
+            libsql::params![],
+        )
+        .await?;
+    let mut routes = Vec::new();
+    while let Some(row) = rows.next().await? {
+        routes.push(CustomRoute {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            km_round_trip: row.get(2)?,
+            description: row.get(3)?,
+        });
+    }
+    Ok(routes)
+}
+
+#[tauri::command]
+pub async fn save_custom_route(
+    state: State<'_, DbState>,
+    route: CustomRouteInput,
+) -> AppResult<CustomRoute> {
+    if route.name.trim().is_empty() {
+        return Err(AppError::ValidationError("el nombre no puede estar vacío".into()));
+    }
+    if route.km_round_trip <= 0.0 {
+        return Err(AppError::ValidationError("los km deben ser mayores que 0".into()));
+    }
+    let conn = get_conn(&state).await?;
+    conn.execute(
+        "INSERT INTO custom_routes (name, km_round_trip, description) VALUES (?, ?, ?)",
+        libsql::params![route.name.trim().to_string(), route.km_round_trip, route.description.clone()],
+    )
+    .await?;
+    let id = conn.last_insert_rowid();
+    Ok(CustomRoute {
+        id,
+        name: route.name.trim().to_string(),
+        km_round_trip: route.km_round_trip,
+        description: route.description,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_custom_route(state: State<'_, DbState>, id: i64) -> AppResult<()> {
+    let conn = get_conn(&state).await?;
+    conn.execute(
+        "DELETE FROM custom_routes WHERE id = ?",
+        libsql::params![id],
+    )
+    .await?;
+    Ok(())
+}
