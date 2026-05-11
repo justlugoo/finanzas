@@ -222,16 +222,20 @@
   }
 </script>
 
-<main>
-  <h1>Configuración</h1>
+<div class="config-shell">
+  <div class="config-header">
+    <h1>Configuración</h1>
+  </div>
 
   {#if pageError}
     <div class="banner error"><strong>Error</strong> {pageError}</div>
   {/if}
 
-  {#if loading}
-    <p class="muted">Cargando…</p>
-  {:else}
+  <div class="config-grid">
+    <div class="config-left">
+      {#if loading}
+        <p class="muted">Cargando…</p>
+      {:else}
 
     <!-- ══ Gasolina ══════════════════════════════════════════════════════════ -->
     <section class="section">
@@ -359,6 +363,11 @@
       {/if}
     </section>
 
+      {/if}
+    </div>
+
+    <div class="config-right">
+      {#if !loading}
     <!-- ══ Presupuestos ══════════════════════════════════════════════════════ -->
     <section class="section">
       <h2>Presupuestos mensuales</h2>
@@ -451,8 +460,7 @@
         </div>
       {/if}
     </section>
-
-  {/if}
+      {/if}
 
   <!-- ══ Sistema ═════════════════════════════════════════════════════════ -->
   <section class="section">
@@ -516,7 +524,9 @@
       </button>
     </div>
   </section>
-</main>
+    </div>
+  </div>
+</div>
 
 <!-- Dialog factory reset paso 1 -->
 {#if resetStep === 1}
@@ -561,17 +571,37 @@
 {/if}
 
 <style>
-  main {
-    max-width: 640px;
-    margin: 0 auto;
-    padding: 1.5rem;
+  .config-shell {
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    height: 100%;
+    overflow: hidden;
+    padding: 0.875rem 1rem;
+    gap: 0.5rem;
+    box-sizing: border-box;
+  }
+
+  .config-header { flex-shrink: 0; }
+
+  .config-grid {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    overflow: hidden;
+  }
+
+  .config-left,
+  .config-right {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
   }
 
   h1 {
-    font-size: 1.25rem;
+    font-size: 1.1rem;
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.02em;

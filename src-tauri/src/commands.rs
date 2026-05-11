@@ -51,6 +51,12 @@ pub struct CurrentBalance {
     pub balance: i64,
 }
 
+#[derive(Serialize, Debug)]
+pub struct TransactionPage {
+    pub transactions: Vec<Transaction>,
+    pub total_count: i64,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct TransactionInput {
     pub date: String,
@@ -76,6 +82,8 @@ pub struct TransactionFilter {
     pub search_note: Option<String>,
     pub only_extraordinary: Option<bool>,
     pub only_debt: Option<bool>,
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -688,50 +696,67 @@ pub async fn create_transaction(
 pub async fn list_transactions(
     state: State<'_, DbState>,
     filter: TransactionFilter,
-) -> AppResult<Vec<Transaction>> {
+) -> AppResult<TransactionPage> {
     let conn = get_conn(&state).await?;
 
-    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
-                   FROM transactions WHERE 1=1"
-        .to_string();
-    let mut params: Vec<libsql::Value> = Vec::new();
+    let mut where_sql = " WHERE 1=1".to_string();
+    let mut base_params: Vec<libsql::Value> = Vec::new();
 
     if let Some(period) = &filter.period {
         let (start, end) = period_to_dates(period);
-        sql.push_str(" AND date >= ? AND date <= ?");
-        params.push(start.into());
-        params.push(end.into());
+        where_sql.push_str(" AND date >= ? AND date <= ?");
+        base_params.push(start.into());
+        base_params.push(end.into());
     }
     if let Some(kind) = &filter.kind {
-        sql.push_str(" AND type = ?");
-        params.push(kind.clone().into());
+        where_sql.push_str(" AND type = ?");
+        base_params.push(kind.clone().into());
     }
     if let Some(cat) = &filter.category {
         if cat == "Carrera" {
-            sql.push_str(" AND (category = 'Carrera mamá' OR category = 'Carrera cuñada')");
+            where_sql.push_str(" AND (category = 'Carrera mamá' OR category = 'Carrera cuñada')");
         } else {
-            sql.push_str(" AND category = ?");
-            params.push(cat.clone().into());
+            where_sql.push_str(" AND category = ?");
+            base_params.push(cat.clone().into());
         }
     }
     if filter.only_extraordinary == Some(true) {
-        sql.push_str(" AND is_extraordinary = 1");
+        where_sql.push_str(" AND is_extraordinary = 1");
     }
     if filter.only_debt == Some(true) {
-        sql.push_str(" AND is_debt = 1");
+        where_sql.push_str(" AND is_debt = 1");
     }
     if let Some(note) = &filter.search_note {
-        sql.push_str(" AND note LIKE ?");
-        params.push(format!("%{note}%").into());
+        where_sql.push_str(" AND note LIKE ?");
+        base_params.push(format!("%{note}%").into());
     }
-    sql.push_str(" ORDER BY date DESC, id DESC");
 
-    let mut rows = conn.query(&sql, params).await?;
-    let mut txs = Vec::new();
+    let total_count: i64 = {
+        let count_sql = format!("SELECT COUNT(*) FROM transactions{where_sql}");
+        let mut rows = conn.query(&count_sql, base_params.clone()).await?;
+        let row = rows.next().await?.ok_or_else(|| AppError::DatabaseError("count query failed".into()))?;
+        row.get(0)?
+    };
+
+    let page      = filter.page.unwrap_or(1).max(1);
+    let page_size = filter.page_size.unwrap_or(200).max(1);
+    let offset    = (page - 1) * page_size;
+
+    let select_sql = format!(
+        "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
+         FROM transactions{where_sql} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?"
+    );
+    let mut params = base_params;
+    params.push(page_size.into());
+    params.push(offset.into());
+
+    let mut rows = conn.query(&select_sql, params).await?;
+    let mut transactions = Vec::new();
     while let Some(row) = rows.next().await? {
-        txs.push(row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?);
+        transactions.push(row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?);
     }
-    Ok(txs)
+
+    Ok(TransactionPage { transactions, total_count })
 }
 
 #[tauri::command]

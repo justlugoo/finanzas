@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { Transaction, TransactionInput, CsvExport, ImportResult } from "$lib/types";
+  import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import { txState } from "$lib/txState.svelte";
 
@@ -10,16 +10,54 @@
     Daily: "Diario", Weekly: "Semanal", Monthly: "Mensual", Yearly: "Anual",
   };
 
+  const PAGE_SIZE = 20;
+
   // ── Filtros ────────────────────────────────────────────────────────────────
-  let activePeriod = $state<PeriodKey>("Monthly");
-  let filterKind   = $state<"" | "ingreso" | "gasto">("");
-  let filterCat    = $state("");
+  let activePeriod  = $state<PeriodKey>("Monthly");
+  let filterKind    = $state<"" | "ingreso" | "gasto">("");
+  let filterCat     = $state("");
+  let filterDebt    = $state(false);
+  let filterSearch  = $state("");
+
+  // ── Paginación ────────────────────────────────────────────────────────────
+  let currentPage = $state(1);
+  let totalCount  = $state(0);
+  let totalPages  = $derived(Math.max(1, Math.ceil(totalCount / PAGE_SIZE)));
+
+  let pageNumbers = $derived.by(() => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    const start = Math.max(1, Math.min(currentPage - 2, totalPages - 4));
+    const end   = Math.min(totalPages, start + 4);
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  });
 
   // ── Datos ─────────────────────────────────────────────────────────────────
-  let txs          = $state<Transaction[]>([]);
-  let categories   = $state<string[]>([]);
-  let loading      = $state(true);
-  let error        = $state<string | null>(null);
+  let txs           = $state<Transaction[]>([]);
+  let categories    = $state<string[]>([]);
+  let periodSummary = $state<PeriodSummary | null>(null);
+  let loading       = $state(true);
+  let error         = $state<string | null>(null);
+
+  // ── Agrupamiento por fecha ─────────────────────────────────────────────────
+  let grouped = $derived.by(() => {
+    const map = new Map<string, Transaction[]>();
+    for (const tx of txs) {
+      if (!map.has(tx.date)) map.set(tx.date, []);
+      map.get(tx.date)!.push(tx);
+    }
+    return [...map.entries()].map(([date, items]) => ({ date, items }));
+  });
+
+  let collapsedGroups = $state<Set<string>>(new Set());
+
+  function toggleGroup(date: string) {
+    const next = new Set(collapsedGroups);
+    if (next.has(date)) next.delete(date); else next.add(date);
+    collapsedGroups = next;
+  }
+
+  // ── Menú ⋯ ────────────────────────────────────────────────────────────────
+  let menuOpen = $state(false);
 
   // ── Edición ───────────────────────────────────────────────────────────────
   let editingTx          = $state<Transaction | null>(null);
@@ -33,19 +71,16 @@
   let editSaving         = $state(false);
   let editError          = $state<string | null>(null);
 
-  // ── Filtro deudas ─────────────────────────────────────────────────────────
-  let filterDebt = $state(false);
-
   // ── Confirmación eliminar ─────────────────────────────────────────────────
   let deletingId         = $state<number | null>(null);
   let deletingInProgress = $state<number | null>(null);
 
   // ── Selección múltiple ────────────────────────────────────────────────────
-  let selectMode        = $state(false);
-  let selectedIds       = $state<Set<number>>(new Set());
-  let bulkConfirming    = $state(false);
-  let bulkDeleting      = $state(false);
-  let bulkSuccessMsg    = $state<string | null>(null);
+  let selectMode     = $state(false);
+  let selectedIds    = $state<Set<number>>(new Set());
+  let bulkConfirming = $state(false);
+  let bulkDeleting   = $state(false);
+  let bulkSuccessMsg = $state<string | null>(null);
 
   let allSelected = $derived(txs.length > 0 && selectedIds.size === txs.length);
 
@@ -64,7 +99,7 @@
 
   async function bulkDelete() {
     if (selectedIds.size === 0 || bulkDeleting) return;
-    bulkDeleting = true;
+    bulkDeleting   = true;
     bulkConfirming = false;
     const ids  = [...selectedIds];
     const prev = txs;
@@ -74,6 +109,7 @@
       const deleted = await invoke<number>("delete_transactions_bulk", { ids });
       bulkSuccessMsg = `${deleted} transacción${deleted !== 1 ? "es" : ""} eliminada${deleted !== 1 ? "s" : ""}.`;
       setTimeout(() => { bulkSuccessMsg = null; }, 3000);
+      totalCount = Math.max(0, totalCount - ids.length);
     } catch (e) {
       txs = prev;
       console.error("[historial] bulk delete error:", e);
@@ -84,16 +120,13 @@
   }
 
   // ── Exportar / Importar ───────────────────────────────────────────────────
-  let exporting      = $state(false);
-  let importing      = $state(false);
-  let importResult   = $state<ImportResult | null>(null);
-  let reloadKey      = $state(0);
+  let exporting    = $state(false);
+  let importing    = $state(false);
+  let importResult = $state<ImportResult | null>(null);
+  let reloadKey    = $state(0);
   let fileInputEl: HTMLInputElement | undefined = $state();
 
-  let total = $derived(txs.reduce((sum, tx) => {
-    return sum + (tx.type === "ingreso" ? tx.amount : -tx.amount);
-  }, 0));
-
+  // ── Utilidades ─────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
     return new Intl.NumberFormat("es-CO", {
       style: "currency", currency: "COP", minimumFractionDigits: 0,
@@ -106,6 +139,14 @@
     return `${parseInt(day)} ${meses[parseInt(m) - 1]}`;
   }
 
+  function formatDateLong(iso: string): string {
+    const [y, m, d] = iso.split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    const days = ["dom","lun","mar","mié","jue","vie","sáb"];
+    const months = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+    return `${d} ${months[m - 1]}, ${days[dt.getDay()]}`;
+  }
+
   function formatCategory(cat: string): string {
     if (cat === "Carrera mamá")   return "Carrera · mamá";
     if (cat === "Carrera cuñada") return "Carrera · cuñada";
@@ -114,49 +155,73 @@
 
   function transformCategories(raw: string[]): string[] {
     const hasCarrera = raw.some(c => c === "Carrera mamá" || c === "Carrera cuñada");
-    const filtered = raw.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada");
+    const filtered   = raw.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada");
     return hasCarrera ? [...filtered, "Carrera"].sort() : filtered;
   }
 
   function buildFilter() {
     return {
-      period:     { type: activePeriod },
-      kind:       filterKind  || null,
-      category:   filterCat   || null,
-      only_debt:  filterDebt  || null,
+      period:      { type: activePeriod },
+      kind:        filterKind   || null,
+      category:    filterCat    || null,
+      search_note: filterSearch || null,
+      only_debt:   filterDebt   || null,
+      page:        currentPage,
+      page_size:   PAGE_SIZE,
     };
   }
+
+  // ── Effects ────────────────────────────────────────────────────────────────
+
+  let prevTxVersion = $state(txState.version);
+  $effect(() => {
+    if (txState.version !== prevTxVersion) {
+      prevTxVersion = txState.version;
+      currentPage = 1;
+    }
+  });
 
   $effect(() => {
     const _period = activePeriod;
     const _kind   = filterKind;
     const _cat    = filterCat;
     const _debt   = filterDebt;
+    const _search = filterSearch;
     const _reload = reloadKey;
     const _v      = txState.version;
+    const page    = currentPage;
     let cancelled = false;
 
     async function load() {
       loading = true;
       error   = null;
       try {
-        const [data, cats] = await Promise.all([
-          invoke<Transaction[]>("list_transactions", { filter: buildFilter() }),
+        const [result, cats, pSummary] = await Promise.all([
+          invoke<TransactionPage>("list_transactions", { filter: buildFilter() }),
           invoke<string[]>("list_categories"),
+          invoke<PeriodSummary>("get_period_summary", { period: { type: activePeriod } }),
         ]);
         if (!cancelled) {
-          txs        = data;
-          categories = transformCategories(cats);
-          loading    = false;
+          txs           = result.transactions;
+          totalCount    = result.total_count;
+          categories    = transformCategories(cats);
+          periodSummary = pSummary;
+          loading       = false;
         }
       } catch (e) {
-        if (!cancelled) { console.error("[historial] load error:", e); error = "No se pudieron cargar las transacciones."; loading = false; }
+        if (!cancelled) {
+          console.error("[historial] load error:", e);
+          error   = "No se pudieron cargar las transacciones.";
+          loading = false;
+        }
       }
     }
 
     load();
     return () => { cancelled = true; };
   });
+
+  // ── Edición ────────────────────────────────────────────────────────────────
 
   function startEdit(tx: Transaction) {
     editingTx    = tx;
@@ -168,13 +233,13 @@
     editError    = null;
 
     if (tx.category === "Carrera mamá") {
-      editCategory = "Carrera";
+      editCategory       = "Carrera";
       editCarreraPersona = "mama";
     } else if (tx.category === "Carrera cuñada") {
-      editCategory = "Carrera";
+      editCategory       = "Carrera";
       editCarreraPersona = "cunada";
     } else {
-      editCategory = tx.category;
+      editCategory       = tx.category;
       editCarreraPersona = null;
     }
   }
@@ -195,21 +260,13 @@
 
     try {
       const input: TransactionInput = {
-        date: editDate,
-        type: editKind,
-        category: effectiveCat,
-        amount: amt,
-        note: editNote.trim() || null,
-        is_extraordinary: editExtraord,
-        goal_id: editingTx.goal_id,
-        gas_km: null,
-        is_debt: editingTx.is_debt,
+        date: editDate, type: editKind, category: effectiveCat,
+        amount: amt, note: editNote.trim() || null,
+        is_extraordinary: editExtraord, goal_id: editingTx.goal_id,
+        gas_km: null, is_debt: editingTx.is_debt,
       };
-      const updated = await invoke<Transaction>("update_transaction", {
-        id: editingTx.id,
-        input,
-      });
-      txs = txs.map((t) => t.id === updated.id ? updated : t);
+      const updated = await invoke<Transaction>("update_transaction", { id: editingTx.id, input });
+      txs = txs.map(t => t.id === updated.id ? updated : t);
       editingTx = null;
     } catch (e) {
       console.error("[historial] save edit error:", e);
@@ -223,26 +280,25 @@
     deletingInProgress = id;
     deletingId = null;
     const prev = txs;
-    txs = txs.filter((t) => t.id !== id);
+    txs = txs.filter(t => t.id !== id);
+    totalCount = Math.max(0, totalCount - 1);
     try {
       await invoke("delete_transaction", { id });
     } catch (e) {
       txs = prev;
+      totalCount += 1;
       error = "No se pudo eliminar la transacción. Intenta de nuevo.";
     } finally {
       deletingInProgress = null;
     }
   }
 
-  function triggerImport() {
-    importResult = null;
-    fileInputEl?.click();
-  }
+  function triggerImport() { importResult = null; fileInputEl?.click(); }
 
   function handleImportFile(e: Event & { currentTarget: HTMLInputElement }) {
     const file = e.currentTarget.files?.[0];
     if (!file) return;
-    importing = true;
+    importing    = true;
     importResult = null;
     const reader = new FileReader();
     reader.onload = async (ev) => {
@@ -250,7 +306,7 @@
       try {
         const result = await invoke<ImportResult>("import_transactions_csv", { csvContent: content });
         importResult = result;
-        if (result.imported > 0) reloadKey += 1;
+        if (result.imported > 0) { reloadKey += 1; currentPage = 1; }
       } catch (err) {
         error = typeof err === "string" ? err : "Error al importar el archivo.";
       } finally {
@@ -265,7 +321,12 @@
     exporting = true;
     try {
       const result = await invoke<CsvExport>("export_transactions_csv", {
-        filter: buildFilter(),
+        filter: {
+          period: { type: activePeriod },
+          kind: filterKind || null,
+          category: filterCat || null,
+          only_debt: filterDebt || null,
+        },
       });
       const blob = new Blob([result.content], { type: "text/csv;charset=utf-8;" });
       const url  = URL.createObjectURL(blob);
@@ -283,24 +344,57 @@
   }
 </script>
 
-<main>
+<div class="historial-shell">
+
+  <!-- Toolbar -->
   <div class="toolbar">
-    <h1>Historial</h1>
-    <div class="toolbar-actions">
-      {#if !selectMode}
-        <button class="action-btn" onclick={triggerImport} disabled={importing}>
-          {importing ? "Importando…" : "Importar CSV"}
-        </button>
-        <button class="action-btn" onclick={exportCSV} disabled={exporting || txs.length === 0}>
-          {exporting ? "Exportando…" : "Exportar CSV"}
-        </button>
-        <button class="action-btn" onclick={enterSelectMode} disabled={txs.length === 0}>
-          Seleccionar
-        </button>
-      {:else}
-        <button class="action-btn" onclick={exitSelectMode} disabled={bulkDeleting}>Cancelar</button>
-      {/if}
-    </div>
+    {#if selectMode}
+      <label class="select-all-check">
+        <input type="checkbox" checked={allSelected} onchange={toggleSelectAll} />
+        <span class="select-all-label">
+          {selectedIds.size > 0 ? `${selectedIds.size} seleccionada${selectedIds.size !== 1 ? "s" : ""}` : "Seleccionar todas"}
+        </span>
+      </label>
+      <button class="action-btn" onclick={exitSelectMode} disabled={bulkDeleting}>Cancelar</button>
+    {:else}
+      <h1>Historial</h1>
+      <div class="toolbar-right">
+        <div class="menu-wrap">
+          <button
+            class="action-btn icon-btn"
+            onclick={() => { menuOpen = !menuOpen; }}
+            aria-label="Menú acciones"
+          >⋯</button>
+          {#if menuOpen}
+            <div
+              class="menu-overlay"
+              role="button"
+              tabindex="-1"
+              onclick={() => { menuOpen = false; }}
+              onkeydown={() => {}}
+            ></div>
+            <div class="menu-dropdown">
+              <button
+                class="menu-item"
+                onclick={() => { menuOpen = false; triggerImport(); }}
+                disabled={importing}
+              >{importing ? "Importando…" : "Importar CSV"}</button>
+              <button
+                class="menu-item"
+                onclick={() => { menuOpen = false; exportCSV(); }}
+                disabled={exporting || txs.length === 0}
+              >{exporting ? "Exportando…" : "Exportar CSV"}</button>
+              <div class="menu-sep"></div>
+              <button
+                class="menu-item"
+                onclick={() => { menuOpen = false; enterSelectMode(); }}
+                disabled={txs.length === 0}
+              >Seleccionar</button>
+            </div>
+          {/if}
+        </div>
+      </div>
+    {/if}
   </div>
 
   <input
@@ -311,35 +405,99 @@
     style="display:none"
   />
 
+  <!-- Filtros -->
+  <div class="filters">
+    <!-- Período -->
+    <nav class="period-selector">
+      {#each (Object.keys(PERIOD_LABELS) as PeriodKey[]) as key}
+        <button
+          class:active={activePeriod === key}
+          onclick={() => { activePeriod = key; currentPage = 1; }}
+        >{PERIOD_LABELS[key]}</button>
+      {/each}
+    </nav>
+
+    <!-- Tipo: pills -->
+    <div class="kind-pills">
+      {#each [["", "Todos"], ["ingreso", "Ingresos"], ["gasto", "Gastos"]] as [val, label]}
+        <button
+          class="kind-pill"
+          class:active={filterKind === val}
+          class:income={val === "ingreso" && filterKind === val}
+          class:expense={val === "gasto" && filterKind === val}
+          onclick={() => { filterKind = val as typeof filterKind; currentPage = 1; }}
+        >{label}</button>
+      {/each}
+    </div>
+
+    <!-- Categoría -->
+    <select
+      class="filter-select"
+      value={filterCat}
+      oninput={(e) => { filterCat = e.currentTarget.value; currentPage = 1; }}
+    >
+      <option value="">Todas las categorías</option>
+      {#each categories as cat}
+        <option value={cat}>{cat}</option>
+      {/each}
+    </select>
+
+    <!-- Deudas -->
+    <button
+      type="button"
+      class="filter-pill"
+      class:active={filterDebt}
+      onclick={() => { filterDebt = !filterDebt; currentPage = 1; }}
+    >Solo deudas</button>
+
+    <!-- Búsqueda -->
+    <div class="search-wrap">
+      <input
+        class="search-input"
+        type="text"
+        placeholder="Buscar en notas…"
+        bind:value={filterSearch}
+        oninput={() => { currentPage = 1; }}
+      />
+      {#if filterSearch}
+        <button class="search-clear" onclick={() => { filterSearch = ""; currentPage = 1; }}>×</button>
+      {/if}
+    </div>
+  </div>
+
+  <!-- Stats bar -->
+  {#if !loading && periodSummary}
+    <div class="stats-bar">
+      <span class="stat">
+        <span class="stat-lbl">Ingresos</span>
+        <span class="stat-val income">+{formatCOP(periodSummary.total_income)}</span>
+      </span>
+      <span class="stat-div">|</span>
+      <span class="stat">
+        <span class="stat-lbl">Gastos</span>
+        <span class="stat-val expense">−{formatCOP(periodSummary.total_expenses)}</span>
+      </span>
+      <span class="stat-div">|</span>
+      <span class="stat">
+        <span class="stat-lbl">Balance</span>
+        <span
+          class="stat-val"
+          class:income={periodSummary.balance >= 0}
+          class:expense={periodSummary.balance < 0}
+        >
+          {periodSummary.balance >= 0 ? "+" : "−"}{formatCOP(Math.abs(periodSummary.balance))}
+        </span>
+      </span>
+    </div>
+  {/if}
+
+  <!-- Banners -->
   {#if error}
     <div class="banner error"><strong>Error</strong><pre>{error}</pre></div>
   {/if}
 
   {#if bulkSuccessMsg}
     <div class="banner success">{bulkSuccessMsg}</div>
-  {/if}
-
-  {#if selectMode}
-    <div class="bulk-bar">
-      <span class="bulk-count">{selectedIds.size} seleccionada{selectedIds.size !== 1 ? "s" : ""}</span>
-      <div class="bulk-actions">
-        {#if bulkConfirming}
-          <span class="bulk-confirm-text">¿Eliminar {selectedIds.size} transacción{selectedIds.size !== 1 ? "es" : ""}? No se puede deshacer.</span>
-          <button class="action-btn danger" onclick={bulkDelete} disabled={bulkDeleting}>
-            {bulkDeleting ? "Eliminando…" : "Confirmar"}
-          </button>
-          <button class="action-btn" onclick={() => { bulkConfirming = false; }} disabled={bulkDeleting}>Cancelar</button>
-        {:else}
-          <button
-            class="action-btn danger"
-            onclick={() => { bulkConfirming = true; }}
-            disabled={selectedIds.size === 0}
-          >
-            Eliminar seleccionadas
-          </button>
-        {/if}
-      </div>
-    </div>
   {/if}
 
   {#if importResult}
@@ -359,120 +517,188 @@
     </div>
   {/if}
 
-  <!-- Filtros -->
-  <div class="filters">
-    <nav class="period-selector">
-      {#each (Object.keys(PERIOD_LABELS) as PeriodKey[]) as key}
-        <button class:active={activePeriod === key} onclick={() => { activePeriod = key; }}>
-          {PERIOD_LABELS[key]}
-        </button>
-      {/each}
-    </nav>
-
-    <select bind:value={filterKind} class="filter-select">
-      <option value="">Todos los tipos</option>
-      <option value="ingreso">Ingresos</option>
-      <option value="gasto">Gastos</option>
-    </select>
-
-    <select bind:value={filterCat} class="filter-select">
-      <option value="">Todas las categorías</option>
-      {#each categories as cat}
-        <option value={cat}>{cat}</option>
-      {/each}
-    </select>
-
-    <button
-      type="button"
-      class="filter-debt-btn"
-      class:active={filterDebt}
-      onclick={() => { filterDebt = !filterDebt; }}
-    >
-      Solo deudas
-    </button>
-  </div>
-
-  <!-- Tabla -->
-  {#if loading}
-    <div class="placeholder-list">
-      {#each [1,2,3,4,5] as _}<div class="placeholder-row"></div>{/each}
+  <!-- Bulk bar -->
+  {#if selectMode && selectedIds.size > 0}
+    <div class="bulk-bar">
+      <span class="bulk-count">{selectedIds.size} seleccionada{selectedIds.size !== 1 ? "s" : ""}</span>
+      <div class="bulk-actions">
+        {#if bulkConfirming}
+          <span class="bulk-confirm-text">¿Eliminar {selectedIds.size}?</span>
+          <button class="action-btn danger" onclick={bulkDelete} disabled={bulkDeleting}>
+            {bulkDeleting ? "Eliminando…" : "Confirmar"}
+          </button>
+          <button class="action-btn" onclick={() => { bulkConfirming = false; }} disabled={bulkDeleting}>
+            Cancelar
+          </button>
+        {:else}
+          <button
+            class="action-btn danger"
+            onclick={() => { bulkConfirming = true; }}
+          >Eliminar seleccionadas</button>
+        {/if}
+      </div>
     </div>
-  {:else if txs.length === 0}
-    <p class="empty">Sin transacciones en este período.</p>
+  {/if}
+
+  <!-- Timeline / cuerpo -->
+  {#if loading}
+    <div class="timeline-wrap">
+      <div class="placeholder-list">
+        {#each [1,2,3,4,5,6,7,8] as _}
+          <div class="placeholder-row"></div>
+        {/each}
+      </div>
+    </div>
+  {:else if grouped.length === 0}
+    <div class="timeline-wrap empty-state">
+      <p class="empty-msg">Sin transacciones en este período.</p>
+    </div>
   {:else}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {#if selectMode}
-              <th class="check-col">
-                <input type="checkbox" checked={allSelected} onchange={toggleSelectAll} />
-              </th>
+    <div class="timeline-wrap">
+      {#each grouped as group (group.date)}
+        {@const net = group.items.reduce((s, t) => s + (t.type === "ingreso" ? t.amount : -t.amount), 0)}
+        <div class="date-group">
+          <!-- Group header -->
+          <button
+            class="group-header"
+            onclick={() => toggleGroup(group.date)}
+          >
+            <span class="group-chevron" class:collapsed={collapsedGroups.has(group.date)}>›</span>
+            <span class="group-date">{formatDateLong(group.date)}</span>
+            <span class="group-rule"></span>
+            {#if collapsedGroups.has(group.date)}
+              <span class="group-count">{group.items.length} transacción{group.items.length !== 1 ? "es" : ""}</span>
+            {:else}
+              <span class="group-net" class:income={net >= 0} class:expense={net < 0}>
+                {net >= 0 ? "+" : "−"}{formatCOP(Math.abs(net))}
+              </span>
             {/if}
-            <th>Fecha</th>
-            <th>Tipo</th>
-            <th>Categoría</th>
-            <th class="right">Monto</th>
-            <th>Nota</th>
-            {#if !selectMode}<th></th>{/if}
-          </tr>
-        </thead>
-        <tbody>
-          {#each txs as tx (tx.id)}
-            <tr class:row-selected={selectedIds.has(tx.id)}>
-              {#if selectMode}
-                <td class="check-col">
-                  <input type="checkbox" checked={selectedIds.has(tx.id)} onchange={() => toggleSelect(tx.id)} />
-                </td>
-              {/if}
-              <td class="date-cell">{formatDate(tx.date)}</td>
-              <td class="type-cell">
-                <span class="badge" class:badge-income={tx.type === "ingreso"} class:badge-expense={tx.type === "gasto"}>
-                  {tx.type === "ingreso" ? "Ingreso" : "Gasto"}
-                </span>
-                {#if tx.is_debt}
-                  <span class="badge badge-debt">deuda</span>
+          </button>
+
+          <!-- Transaction rows -->
+          {#if !collapsedGroups.has(group.date)}
+            {#each group.items as tx (tx.id)}
+              <div
+                class="tx-row"
+                class:selected={selectedIds.has(tx.id)}
+                class:deleting={deletingInProgress === tx.id}
+              >
+                {#if selectMode}
+                  <label class="tx-check-wrap">
+                    <input
+                      type="checkbox"
+                      class="tx-check"
+                      checked={selectedIds.has(tx.id)}
+                      onchange={() => toggleSelect(tx.id)}
+                    />
+                  </label>
                 {/if}
-              </td>
-              <td>{formatCategory(tx.category)}</td>
-              <td class="right amount-cell" class:income={tx.type === "ingreso"} class:expense={tx.type === "gasto"}>
-                {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
-              </td>
-              <td class="note-cell">{tx.note ?? ""}</td>
-              {#if !selectMode}
-                <td class="actions-cell">
-                  {#if deletingId === tx.id}
-                    <span class="confirm-del">
-                      ¿Eliminar?
+
+                <span
+                  class="tx-badge"
+                  class:badge-income={tx.type === "ingreso"}
+                  class:badge-expense={tx.type === "gasto"}
+                >
+                  {tx.type === "ingreso" ? "↑" : "↓"}
+                </span>
+
+                <span class="tx-cat">{formatCategory(tx.category)}</span>
+
+                {#if tx.note}
+                  <span class="tx-note">{tx.note}</span>
+                {/if}
+
+                {#if tx.is_debt}
+                  <span class="tx-tag debt">deuda</span>
+                {/if}
+
+                {#if tx.is_extraordinary}
+                  <span class="tx-tag extra" title="Extraordinario">✦</span>
+                {/if}
+
+                <span class="tx-gap"></span>
+
+                <span
+                  class="tx-amount"
+                  class:income={tx.type === "ingreso"}
+                  class:expense={tx.type === "gasto"}
+                >
+                  {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
+                </span>
+
+                {#if !selectMode}
+                  <div class="tx-actions">
+                    {#if deletingId === tx.id}
+                      <span class="del-confirm-label">¿Eliminar?</span>
                       <button
-                        class="action-link danger"
+                        class="act-btn danger"
                         onclick={() => confirmDelete(tx.id)}
                         disabled={deletingInProgress === tx.id}
                       >{deletingInProgress === tx.id ? "…" : "Sí"}</button>
-                      <button class="action-link" onclick={() => { deletingId = null; }} disabled={deletingInProgress === tx.id}>No</button>
-                    </span>
-                  {:else}
-                    <button class="action-link" onclick={() => startEdit(tx)}>Editar</button>
-                    <button class="action-link danger" onclick={() => { deletingId = tx.id; }}>Eliminar</button>
-                  {/if}
-                </td>
-              {/if}
-            </tr>
-          {/each}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td colspan={selectMode ? 4 : 3} class="total-label">Total período</td>
-            <td class="right total-value" class:income={total >= 0} class:expense={total < 0}>
-              {total >= 0 ? "+" : "−"}{formatCOP(Math.abs(total))}
-            </td>
-            <td colspan={selectMode ? 1 : 2}></td>
-          </tr>
-        </tfoot>
-      </table>
+                      <button
+                        class="act-btn"
+                        onclick={() => { deletingId = null; }}
+                        disabled={deletingInProgress === tx.id}
+                      >No</button>
+                    {:else}
+                      <button class="act-btn" onclick={() => startEdit(tx)}>Editar</button>
+                      <button
+                        class="act-btn danger"
+                        onclick={() => { deletingId = tx.id; }}
+                        disabled={deletingInProgress === tx.id}
+                      >✕</button>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+        </div>
+      {/each}
     </div>
   {/if}
-</main>
+
+  <!-- Footer -->
+  <div class="page-footer">
+    <div class="footer-left">
+      <span class="total-count">{totalCount} registros</span>
+      {#if periodSummary !== null}
+        {@const bal = periodSummary.balance}
+        <span class="page-total" class:income={bal >= 0} class:expense={bal < 0}>
+          Total período: {bal >= 0 ? "+" : "−"}{formatCOP(Math.abs(bal))}
+        </span>
+      {/if}
+    </div>
+
+    {#if totalPages > 1}
+      <div class="pagination">
+        <button class="page-btn" disabled={currentPage === 1} onclick={() => { currentPage -= 1; }}>←</button>
+
+        {#if pageNumbers[0] > 1}
+          <button class="page-btn" onclick={() => { currentPage = 1; }}>1</button>
+          {#if pageNumbers[0] > 2}<span class="page-ellipsis">…</span>{/if}
+        {/if}
+
+        {#each pageNumbers as p}
+          <button
+            class="page-btn"
+            class:active={p === currentPage}
+            onclick={() => { currentPage = p; }}
+          >{p}</button>
+        {/each}
+
+        {#if pageNumbers[pageNumbers.length - 1] < totalPages}
+          {#if pageNumbers[pageNumbers.length - 1] < totalPages - 1}
+            <span class="page-ellipsis">…</span>
+          {/if}
+          <button class="page-btn" onclick={() => { currentPage = totalPages; }}>{totalPages}</button>
+        {/if}
+
+        <button class="page-btn" disabled={currentPage === totalPages} onclick={() => { currentPage += 1; }}>→</button>
+      </div>
+    {/if}
+  </div>
+</div>
 
 <!-- Modal edición -->
 {#if editingTx}
@@ -558,46 +784,252 @@
 {/if}
 
 <style>
-  main {
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 1.5rem;
+  .historial-shell {
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
-    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    padding: 0.875rem 1rem 0.75rem;
+    gap: 0.55rem;
     box-sizing: border-box;
   }
 
+  /* ── Toolbar ── */
   .toolbar {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    min-height: 32px;
   }
 
-  h1 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
+  h1 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
 
-  .toolbar-actions { display: flex; gap: 0.4rem; }
+  .toolbar-right { display: flex; align-items: center; gap: 0.4rem; }
 
   .action-btn {
-    padding: 0.4rem 0.9rem;
+    padding: 0.35rem 0.8rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     font-weight: 500;
     color: var(--text-secondary);
     transition: color 0.15s, background 0.15s;
   }
-
   .action-btn:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
   .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .action-btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+  .action-btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)); }
 
-  .banner {
+  .icon-btn { padding: 0.35rem 0.7rem; font-size: 1rem; letter-spacing: -0.1em; }
+
+  /* ⋯ dropdown */
+  .menu-wrap { position: relative; }
+
+  .menu-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+    cursor: default;
+  }
+
+  .menu-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 50;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 0.65rem 1rem;
-    font-size: 0.85rem;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    min-width: 148px;
+    padding: 0.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .menu-item {
+    width: 100%;
+    text-align: left;
+    padding: 0.45rem 0.65rem;
+    border-radius: 5px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    transition: background 0.12s, color 0.12s;
+  }
+  .menu-item:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); }
+  .menu-item:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .menu-sep {
+    height: 1px;
+    background: var(--border);
+    margin: 0.2rem 0;
+  }
+
+  /* Select-all row in toolbar (select mode) */
+  .select-all-check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+  .select-all-check input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+  .select-all-label { color: var(--text-secondary); }
+
+  /* ── Filtros ── */
+  .filters {
+    flex-shrink: 0;
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .period-selector {
+    display: flex;
+    gap: 3px;
+    background: var(--bg-elevated);
+    padding: 3px;
+    border-radius: 7px;
+  }
+
+  .period-selector button {
+    padding: 0.28rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: background 0.15s, color 0.15s;
+  }
+  .period-selector button:hover { color: var(--text-primary); background: var(--bg-surface); }
+  .period-selector button.active { background: var(--accent); color: #fff; }
+
+  /* Kind pills */
+  .kind-pills {
+    display: flex;
+    gap: 3px;
+    background: var(--bg-elevated);
+    padding: 3px;
+    border-radius: 7px;
+  }
+
+  .kind-pill {
+    padding: 0.28rem 0.65rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  .kind-pill:hover:not(.active) { color: var(--text-primary); background: var(--bg-surface); }
+  .kind-pill.active { background: var(--bg-surface); color: var(--text-primary); }
+  .kind-pill.active.income  { color: var(--success); }
+  .kind-pill.active.expense { color: var(--danger); }
+
+  .filter-select {
+    -webkit-appearance: none;
+    appearance: none;
+    background-color: #14141f;
+    border: 1px solid #2a2a40;
+    border-radius: var(--radius);
+    color: #e8e8f0;
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.32rem 1.7rem 0.32rem 0.6rem;
+    outline: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.4rem center;
+    background-size: 0.8rem;
+  }
+  .filter-select:focus { border-color: var(--accent); }
+  .filter-select option { background-color: #14141f; color: #e8e8f0; }
+
+  .filter-pill {
+    padding: 0.32rem 0.7rem;
+    border-radius: var(--radius);
+    font-size: 0.78rem;
+    font-weight: 500;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .filter-pill:hover { color: var(--text-primary); }
+  .filter-pill.active {
+    background: color-mix(in srgb, var(--danger) 15%, var(--bg-elevated));
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    color: var(--danger);
+  }
+
+  /* Search */
+  .search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .search-input {
+    -webkit-appearance: none;
+    appearance: none;
+    background: #14141f;
+    border: 1px solid #2a2a40;
+    border-radius: var(--radius);
+    color: #e8e8f0;
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.32rem 1.5rem 0.32rem 0.6rem;
+    outline: none;
+    width: 160px;
+    transition: border-color 0.15s, width 0.2s;
+  }
+  .search-input:focus { border-color: var(--accent); width: 200px; }
+  .search-input::placeholder { color: var(--text-muted); }
+
+  .search-clear {
+    position: absolute;
+    right: 0.35rem;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    padding: 0 0.15rem;
+    line-height: 1;
+    transition: color 0.15s;
+  }
+  .search-clear:hover { color: var(--text-primary); }
+
+  /* ── Stats bar ── */
+  .stats-bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.78rem;
+  }
+
+  .stat { display: flex; align-items: center; gap: 0.4rem; }
+  .stat-lbl { color: var(--text-muted); }
+  .stat-val { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .stat-val.income  { color: var(--success); }
+  .stat-val.expense { color: var(--danger); }
+  .stat-div { color: var(--border); font-size: 0.9rem; }
+
+  /* ── Banners ── */
+  .banner {
+    flex-shrink: 0;
+    border-radius: var(--radius);
+    padding: 0.55rem 0.875rem;
+    font-size: 0.82rem;
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
@@ -611,174 +1043,276 @@
     background: color-mix(in srgb, var(--success) 15%, var(--bg-surface));
     border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
     color: var(--success);
+    font-weight: 500;
   }
   .banner.warning {
     background: color-mix(in srgb, var(--warning) 12%, var(--bg-surface));
     border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
     color: var(--warning);
   }
-  .banner pre { font-size: 0.72rem; opacity: 0.8; white-space: pre-wrap; word-break: break-all; }
-  .import-errors { font-size: 0.75rem; opacity: 0.85; margin-top: 0.25rem; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.1rem; }
+  .banner pre { font-size: 0.7rem; opacity: 0.8; white-space: pre-wrap; word-break: break-all; }
+  .import-errors { font-size: 0.72rem; opacity: 0.85; margin-top: 0.2rem; padding-left: 1.1rem; }
 
-  /* ── Filtros ── */
-  .filters {
+  /* ── Bulk bar ── */
+  .bulk-bar {
+    flex-shrink: 0;
     display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
     align-items: center;
-  }
-
-  .period-selector {
-    display: flex;
-    gap: 4px;
-    background: var(--bg-elevated);
-    padding: 4px;
-    border-radius: 8px;
-  }
-
-  .period-selector button {
-    padding: 0.3rem 0.65rem;
-    border-radius: 5px;
-    font-size: 0.78rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    transition: background 0.15s, color 0.15s;
-  }
-
-  .period-selector button:hover { color: var(--text-primary); background: var(--bg-surface); }
-  .period-selector button.active { background: var(--accent); color: #fff; }
-
-  .filter-select {
-    -webkit-appearance: none;
-    appearance: none;
-    background-color: #14141f;
-    border: 1px solid #2a2a40;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.4rem 0.875rem;
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
     border-radius: var(--radius);
-    color: #e8e8f0;
-    font: inherit;
-    font-size: 0.8rem;
-    padding: 0.35rem 1.8rem 0.35rem 0.65rem;
-    outline: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.45rem center;
-    background-size: 0.875rem;
+    font-size: 0.82rem;
   }
+  .bulk-count    { color: var(--text-primary); font-weight: 600; }
+  .bulk-actions  { display: flex; align-items: center; gap: 0.5rem; }
+  .bulk-confirm-text { font-size: 0.78rem; color: var(--text-secondary); }
 
-  .filter-select:focus { border-color: var(--accent); }
-  .filter-select option { background-color: #14141f; color: #e8e8f0; }
-
-  .filter-debt-btn {
-    padding: 0.35rem 0.75rem;
-    border-radius: var(--radius);
-    font-size: 0.8rem;
-    font-weight: 500;
-    background: var(--bg-elevated);
+  /* ── Timeline ── */
+  .timeline-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     border: 1px solid var(--border);
-    color: var(--text-secondary);
-    transition: all 0.15s;
+    border-radius: var(--radius);
+  }
+
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .empty-msg { color: var(--text-muted); font-size: 0.85rem; }
+
+  /* ── Date group ── */
+  .date-group { display: flex; flex-direction: column; }
+
+  .group-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    background: var(--bg-base);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.12s;
+    text-align: left;
+    width: 100%;
+  }
+  .group-header:hover { background: var(--bg-elevated); }
+
+  .group-chevron {
+    display: inline-block;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+    transform: rotate(90deg);
+  }
+  .group-chevron.collapsed { transform: rotate(0deg); }
+
+  .group-date { white-space: nowrap; color: var(--text-secondary); font-weight: 600; }
+
+  .group-rule {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+    opacity: 0.5;
+  }
+
+  .group-net {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    white-space: nowrap;
+    font-size: 0.75rem;
+  }
+  .group-net.income  { color: var(--success); }
+  .group-net.expense { color: var(--danger); }
+
+  .group-count {
+    color: var(--text-muted);
+    font-weight: 500;
     white-space: nowrap;
   }
-  .filter-debt-btn:hover { color: var(--text-primary); }
-  .filter-debt-btn.active {
-    background: color-mix(in srgb, var(--danger) 15%, var(--bg-elevated));
-    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-    color: var(--danger);
-  }
 
-  /* ── Tabla ── */
-  .table-wrap {
-    overflow-x: auto;
-    border-radius: var(--radius);
-    border: 1px solid var(--border);
-  }
-
-  table { width: 100%; border-collapse: collapse; }
-
-  th {
-    text-align: left;
-    padding: 0.6rem 0.875rem;
-    font-size: 0.72rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
+  /* ── Transaction row ── */
+  .tx-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--border);
-    background: var(--bg-elevated);
+    transition: background 0.1s;
+    min-height: 38px;
   }
+  .tx-row:last-child { border-bottom: none; }
+  .tx-row:hover { background: var(--bg-elevated); }
+  .tx-row.selected { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .tx-row.deleting { opacity: 0.4; pointer-events: none; }
 
-  td {
-    padding: 0.55rem 0.875rem;
-    font-size: 0.85rem;
-    color: var(--text-primary);
-    border-bottom: 1px solid var(--border);
-    vertical-align: middle;
-  }
-
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: var(--bg-elevated); }
-
-  .right { text-align: right; }
-
-  .date-cell { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-
-  .amount-cell { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .amount-cell.income  { color: var(--success); }
-  .amount-cell.expense { color: var(--danger); }
-
-  .note-cell { color: var(--text-secondary); font-size: 0.8rem; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  /* ── Badge tipo ── */
-  .badge {
-    display: inline-block;
-    padding: 0.18rem 0.5rem;
+  /* Checkbox (select mode) */
+  .tx-check-wrap { display: flex; align-items: center; flex-shrink: 0; }
+  .tx-check {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid var(--border);
     border-radius: 4px;
-    font-size: 0.72rem;
-    font-weight: 600;
-  }
-
-  .badge-income  { background: color-mix(in srgb, var(--success) 20%, var(--bg-elevated)); color: var(--success); }
-  .badge-expense { background: color-mix(in srgb, var(--danger)  20%, var(--bg-elevated)); color: var(--danger); }
-  .badge-debt    { background: color-mix(in srgb, var(--danger)  12%, transparent); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.65rem; }
-
-  .type-cell { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; }
-
-  /* ── Acciones ── */
-  .actions-cell { white-space: nowrap; }
-
-  .action-link {
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    padding: 0.1rem 0.3rem;
-    border-radius: 3px;
-    transition: color 0.15s;
-  }
-
-  .action-link:hover { color: var(--text-primary); }
-  .action-link.danger:hover { color: var(--danger); }
-
-  .confirm-del { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.78rem; color: var(--text-secondary); }
-
-  /* ── Totales ── */
-  tfoot td {
-    border-top: 1px solid var(--border);
-    border-bottom: none;
     background: var(--bg-elevated);
-    padding: 0.6rem 0.875rem;
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .tx-check:hover { border-color: var(--accent); }
+  .tx-check:checked { background: var(--accent); border-color: var(--accent); }
+  .tx-check:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: 2px solid #fff;
+    border-top: none; border-left: none;
+    transform: rotate(45deg);
   }
 
-  .total-label { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+  /* Badge (↑ / ↓) */
+  .tx-badge {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    font-size: 0.7rem;
+    font-weight: 700;
+  }
+  .badge-income  { background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated)); color: var(--success); }
+  .badge-expense { background: color-mix(in srgb, var(--danger)  18%, var(--bg-elevated)); color: var(--danger); }
 
-  .total-value { font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .total-value.income  { color: var(--success); }
-  .total-value.expense { color: var(--danger); }
+  /* Category */
+  .tx-cat {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Note */
+  .tx-note {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+
+  /* Tags (deuda, extraordinario) */
+  .tx-tag {
+    flex-shrink: 0;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 3px;
+    padding: 0.1rem 0.35rem;
+  }
+  .tx-tag.debt  { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); }
+  .tx-tag.extra { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); font-size: 0.58rem; }
+
+  /* Gap / spacer */
+  .tx-gap { flex: 1; min-width: 0.25rem; }
+
+  /* Amount */
+  .tx-amount {
+    flex-shrink: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .tx-amount.income  { color: var(--success); }
+  .tx-amount.expense { color: var(--danger); }
+
+  /* Hover actions */
+  .tx-actions {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    opacity: 0;
+    transition: opacity 0.15s;
+    min-width: 80px;
+    justify-content: flex-end;
+  }
+  .tx-row:hover .tx-actions { opacity: 1; }
+
+  .act-btn {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+  }
+  .act-btn:hover { color: var(--text-primary); background: var(--bg-surface); }
+  .act-btn.danger:hover { color: var(--danger); }
+  .act-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .del-confirm-label { font-size: 0.72rem; color: var(--text-secondary); white-space: nowrap; }
 
   /* ── Placeholders ── */
-  .placeholder-list { display: flex; flex-direction: column; gap: 0.5rem; }
-  .placeholder-row { height: 42px; border-radius: var(--radius); background: var(--bg-surface); animation: shimmer 1.4s ease-in-out infinite; }
+  .placeholder-list { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.6rem; }
+  .placeholder-row  { height: 36px; border-radius: var(--radius); background: var(--bg-surface); animation: shimmer 1.4s ease-in-out infinite; }
   @keyframes shimmer { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.7; } }
 
-  .empty { color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem 0; }
+  /* ── Footer ── */
+  .page-footer {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    min-height: 36px;
+  }
+
+  .footer-left { display: flex; align-items: center; gap: 1rem; font-size: 0.78rem; }
+  .total-count { color: var(--text-muted); }
+  .page-total  { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .page-total.income  { color: var(--success); }
+  .page-total.expense { color: var(--danger); }
+
+  /* ── Paginación ── */
+  .pagination { display: flex; align-items: center; gap: 2px; }
+
+  .page-btn {
+    min-width: 28px; height: 28px;
+    border-radius: 5px; font-size: 0.78rem; font-weight: 500;
+    padding: 0 0.4rem;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: background 0.15s, color 0.15s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .page-btn:hover:not(:disabled) { background: var(--bg-surface); color: var(--text-primary); }
+  .page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .page-ellipsis { color: var(--text-muted); font-size: 0.78rem; padding: 0 0.1rem; }
 
   /* ── Modal ── */
   .modal-overlay {
@@ -805,166 +1339,56 @@
   }
 
   .modal h2 { font-size: 1rem; font-weight: 600; color: var(--text-primary); }
-
   .modal-form { display: flex; flex-direction: column; gap: 0.75rem; }
 
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
-
   label, .field-label { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
 
   input[type="text"],
   input[type="number"],
-  input[type="date"],
   select {
-    -webkit-appearance: none;
-    appearance: none;
-    background-color: #1c1c2e;
-    border: 1px solid #2a2a40;
+    -webkit-appearance: none; appearance: none;
+    background-color: #1c1c2e; border: 1px solid #2a2a40;
     border-radius: var(--radius);
-    color: #e8e8f0;
-    font: inherit;
-    font-size: 0.875rem;
-    padding: 0.5rem 2rem 0.5rem 0.65rem;
-    outline: none;
-    width: 100%;
+    color: #e8e8f0; font: inherit; font-size: 0.875rem;
+    padding: 0.5rem 2rem 0.5rem 0.65rem; outline: none; width: 100%;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.5rem center;
-    background-size: 0.875rem;
+    background-repeat: no-repeat; background-position: right 0.5rem center; background-size: 0.875rem;
   }
 
   input[type="text"],
-  input[type="number"],
-  input[type="date"] {
-    background-image: none;
-    padding-right: 0.65rem;
+  input[type="number"] {
+    background-image: none; padding-right: 0.65rem;
   }
 
   select option { background-color: #1c1c2e; color: #e8e8f0; }
-
   input:focus, select:focus { border-color: var(--accent); }
 
   .checkbox-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); cursor: pointer; }
   .checkbox-row input { accent-color: var(--accent); }
 
   .type-toggle { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg-elevated); border-radius: var(--radius); padding: 3px; gap: 3px; }
-
   .toggle-btn { padding: 0.45rem; border-radius: 5px; font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
   .toggle-btn.income.active  { background: color-mix(in srgb, var(--success) 20%, var(--bg-surface)); color: var(--success); }
   .toggle-btn.expense.active { background: color-mix(in srgb, var(--danger)  20%, var(--bg-surface)); color: var(--danger); }
 
-  /* Carrera sub-selector en modal */
-  .carrera-toggle {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    background: var(--bg-elevated);
-    border-radius: var(--radius);
-    padding: 3px;
-    gap: 3px;
-  }
-
-  .carrera-toggle button {
-    padding: 0.4rem;
-    border-radius: 5px;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    transition: background 0.15s, color 0.15s;
-  }
-
-  .carrera-toggle button.active {
-    background: color-mix(in srgb, var(--accent) 20%, var(--bg-surface));
-    color: var(--accent);
-  }
+  .carrera-toggle { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg-elevated); border-radius: var(--radius); padding: 3px; gap: 3px; }
+  .carrera-toggle button { padding: 0.4rem; border-radius: 5px; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
+  .carrera-toggle button.active { background: color-mix(in srgb, var(--accent) 20%, var(--bg-surface)); color: var(--accent); }
 
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 0.25rem; }
 
   .btn-cancel {
-    padding: 0.5rem 1rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-    color: var(--text-secondary);
+    padding: 0.5rem 1rem; background: var(--bg-elevated); border: 1px solid var(--border);
+    border-radius: var(--radius); font-size: 0.85rem; color: var(--text-secondary);
   }
-
   .btn-cancel:hover { color: var(--text-primary); }
 
   .btn-save {
-    padding: 0.5rem 1rem;
-    background: var(--accent);
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: #fff;
+    padding: 0.5rem 1rem; background: var(--accent); border-radius: var(--radius);
+    font-size: 0.85rem; font-weight: 600; color: #fff;
     transition: background 0.15s, opacity 0.15s;
   }
-
   .btn-save:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-save:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  /* ── Selección múltiple ── */
-  .bulk-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.6rem 0.875rem;
-    background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
-    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-  }
-  .bulk-count { color: var(--text-primary); font-weight: 600; }
-  .bulk-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-  .bulk-confirm-text { font-size: 0.82rem; color: var(--text-secondary); }
-  .action-btn.danger {
-    color: var(--danger);
-    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-  }
-  .action-btn.danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
-    color: var(--danger);
-  }
-  .check-col { width: 36px; text-align: center; padding: 0 0.25rem; }
-  .check-col input[type="checkbox"] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 15px;
-    height: 15px;
-    border: 1.5px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg-elevated);
-    cursor: pointer;
-    position: relative;
-    vertical-align: middle;
-    flex-shrink: 0;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .check-col input[type="checkbox"]:hover {
-    border-color: var(--accent);
-  }
-  .check-col input[type="checkbox"]:checked {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .check-col input[type="checkbox"]:checked::after {
-    content: "";
-    position: absolute;
-    left: 4px;
-    top: 1px;
-    width: 4px;
-    height: 8px;
-    border: 2px solid #fff;
-    border-top: none;
-    border-left: none;
-    transform: rotate(45deg);
-  }
-  .row-selected td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-  .banner.success {
-    background: color-mix(in srgb, var(--success) 15%, var(--bg-surface));
-    border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
-    color: var(--success);
-    font-weight: 500;
-  }
 </style>

@@ -448,22 +448,25 @@
 
 <style>
   main {
-    max-width: 700px;
-    margin: 0 auto;
-    padding: 1.5rem;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 1rem;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 0.75rem;
   }
 
   .header {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
 
   h1 {
-    font-size: 1.25rem;
+    font-size: 1.1rem;
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.02em;
@@ -474,6 +477,7 @@
 
   /* ── Filtro ── */
   .filter-row {
+    flex-shrink: 0;
     display: flex;
     gap: 0.4rem;
     flex-wrap: wrap;
@@ -498,9 +502,14 @@
 
   /* ── Cards ── */
   .goal-grid {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 1rem;
+    align-content: start;
+    padding: 0.25rem;
   }
 
   .goal-card {
@@ -804,9 +813,11 @@
   .muted { color: var(--text-muted); font-size: 0.85rem; }
 
   .empty {
+    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 1rem;
     padding: 2rem;
     color: var(--text-muted);

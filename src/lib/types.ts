@@ -149,6 +149,11 @@ export interface CsvExport {
   suggested_filename: string;
 }
 
+export interface TransactionPage {
+  transactions: Transaction[];
+  total_count: number;
+}
+
 export interface AppError {
   kind: string;
   message?: string;
