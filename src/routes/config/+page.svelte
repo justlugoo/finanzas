@@ -160,7 +160,8 @@
       autostartEnabled = next;
     } catch (e) {
       console.error("[config] autostart error:", e);
-      autostartError = "No se pudo cambiar el autoarranque.";
+      const msg = typeof e === "string" ? e : (e as any)?.message ?? "";
+      autostartError = msg || "No se pudo cambiar el autoarranque.";
     }
   }
 

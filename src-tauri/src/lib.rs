@@ -30,14 +30,30 @@ pub fn run() {
             // Si el arg --autostart está presente → arrancó con el sistema.
             // Ocultamos la ventana; el usuario la abre desde el tray.
             let launched_at_startup = std::env::args().any(|a| a == "--autostart");
+
+            // Los binarios debug no embeben el frontend: dependen del servidor Vite
+            // (localhost:1420) que no existe al arrancar el sistema.
+            // Si detectamos ese caso, desregistramos el autostart y salimos antes
+            // de que el WebView muestre la pantalla en blanco de "Connection refused".
+            #[cfg(debug_assertions)]
+            if launched_at_startup {
+                use tauri_plugin_autostart::ManagerExt;
+                let _ = app.autolaunch().disable();
+                eprintln!("[finanzas] autostart registrado con binario debug — entrada eliminada. Compila en release y reactiva el autoarranque.");
+                std::process::exit(0);
+            }
+
             if launched_at_startup {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.hide();
                 }
             }
 
-            // Re-registrar autostart si ya estaba habilitado, para que el
-            // .desktop file incluya el nuevo arg --autostart.
+            // Re-register autostart so the .desktop entry includes --autostart.
+            // Skipped in debug builds: the plugin's is_enabled() detects the
+            // existing .desktop file and enable() would overwrite it with the
+            // debug binary path, breaking the release registration.
+            #[cfg(not(debug_assertions))]
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let mgr = app.autolaunch();
