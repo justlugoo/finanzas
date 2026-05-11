@@ -1,7 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { GoalWithProgress, GoalDetail } from "$lib/types";
-  import { cache } from "$lib/appStore.svelte";
   import DatePicker from "$lib/components/DatePicker.svelte";
 
   let goals       = $state<GoalWithProgress[]>([]);
@@ -101,9 +100,6 @@
         input: { name: cName.trim(), target_amount: cAmount, target_date: cDate || null, status: null },
       });
       goals = [...goals, g].sort((a, b) => a.goal.name.localeCompare(b.goal.name));
-      if (g.goal.status === "activo" && !g.goal.is_debt_goal) {
-        cache.activeGoals = [...cache.activeGoals, g.goal];
-      }
       createOpen = false; cName = ""; cAmountRaw = ""; cDate = "";
     } catch (e) {
       console.error("[objetivos] create error:", e);
@@ -136,15 +132,6 @@
         input: { name: eName.trim(), target_amount: eAmount, target_date: eDate || null, status: eStatus },
       });
       goals = goals.map(g => g.goal.id === updated.goal.id ? updated : g);
-      const isActive = updated.goal.status === "activo" && !updated.goal.is_debt_goal;
-      if (isActive) {
-        const exists = cache.activeGoals.some(g => g.id === updated.goal.id);
-        cache.activeGoals = exists
-          ? cache.activeGoals.map(g => g.id === updated.goal.id ? updated.goal : g)
-          : [...cache.activeGoals, updated.goal];
-      } else {
-        cache.activeGoals = cache.activeGoals.filter(g => g.id !== updated.goal.id);
-      }
       editGoal = null;
     } catch (e) {
       console.error("[objetivos] edit error:", e);
@@ -163,18 +150,12 @@
   async function handleDelete() {
     if (deleteId === null) return;
     deleting = true;
-
-    const idToDelete = deleteId;
-    const prevGoals  = goals;
-    goals    = goals.filter(g => g.goal.id !== idToDelete);
-    if (detail?.goal.goal.id === idToDelete) detail = null;
-    deleteId = null;
-
     try {
-      await invoke("delete_goal", { id: idToDelete });
-      cache.activeGoals = cache.activeGoals.filter(g => g.id !== idToDelete);
+      await invoke("delete_goal", { id: deleteId });
+      goals = goals.filter(g => g.goal.id !== deleteId);
+      if (detail?.goal.goal.id === deleteId) detail = null;
+      deleteId = null;
     } catch (e) {
-      goals = prevGoals;
       console.error("[objetivos] delete error:", e);
       pageError = "No se pudo eliminar el objetivo. Intenta de nuevo.";
     } finally {

@@ -192,41 +192,25 @@
       editCategory === "Carrera" && editCarreraPersona === "cunada" ? "Carrera cuñada" :
       editCategory;
 
-    const input: TransactionInput = {
-      date: editDate,
-      type: editKind,
-      category: effectiveCat,
-      amount: amt,
-      note: editNote.trim() || null,
-      is_extraordinary: editExtraord,
-      goal_id: editingTx.goal_id,
-      gas_km: null,
-      is_debt: editingTx.is_debt,
-    };
-
-    const prevTxs     = txs;
-    const prevEditing = editingTx;
-    const optimistic: Transaction = {
-      ...editingTx!,
-      date: editDate,
-      type: editKind,
-      category: effectiveCat,
-      amount: amt,
-      note: editNote.trim() || null,
-      is_extraordinary: editExtraord,
-    };
-    txs       = txs.map((t) => t.id === editingTx!.id ? optimistic : t);
-    editingTx = null;
-
     try {
+      const input: TransactionInput = {
+        date: editDate,
+        type: editKind,
+        category: effectiveCat,
+        amount: amt,
+        note: editNote.trim() || null,
+        is_extraordinary: editExtraord,
+        goal_id: editingTx.goal_id,
+        gas_km: null,
+        is_debt: editingTx.is_debt,
+      };
       const updated = await invoke<Transaction>("update_transaction", {
-        id: optimistic.id,
+        id: editingTx.id,
         input,
       });
       txs = txs.map((t) => t.id === updated.id ? updated : t);
+      editingTx = null;
     } catch (e) {
-      txs       = prevTxs;
-      editingTx = prevEditing;
       console.error("[historial] save edit error:", e);
       editError = "No se pudo guardar el cambio. Intenta de nuevo.";
     } finally {
@@ -236,15 +220,13 @@
 
   async function confirmDelete(id: number) {
     deletingInProgress = id;
-    deletingId = null;
-    const prev = txs;
-    txs = txs.filter((t) => t.id !== id);
     try {
       await invoke("delete_transaction", { id });
+      txs = txs.filter((t) => t.id !== id);
     } catch (e) {
-      txs = prev;
       error = "No se pudo eliminar la transacción. Intenta de nuevo.";
     } finally {
+      deletingId = null;
       deletingInProgress = null;
     }
   }

@@ -29,16 +29,6 @@ pub struct Budget {
     pub monthly_amount: i64,
 }
 
-#[derive(Serialize)]
-pub struct InitialData {
-    pub budgets:            Vec<Budget>,
-    pub categories_ingreso: Vec<String>,
-    pub categories_gasto:   Vec<String>,
-    pub route_costs:        RoutesCost,
-    pub active_goals:       Vec<Goal>,
-    pub current_gas_price:  Option<GasPrice>,
-}
-
 #[derive(Serialize, Debug)]
 pub struct Transaction {
     pub id: i64,
@@ -1876,113 +1866,6 @@ pub async fn backup_database() -> AppResult<String> {
     std::fs::copy(&src, &dest)?;
 
     Ok(dest.to_string_lossy().to_string())
-}
-
-// ── Initial data batch load ─────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn get_initial_data(state: State<'_, DbState>) -> AppResult<InitialData> {
-    let conn = get_conn(&state).await?;
-
-    // budgets
-    let mut budgets = Vec::new();
-    let mut rows = conn.query("SELECT category, monthly_amount FROM budgets ORDER BY category", ()).await?;
-    while let Some(row) = rows.next().await? {
-        budgets.push(Budget { category: row.get(0)?, monthly_amount: row.get(1)? });
-    }
-    drop(rows);
-
-    // categories_ingreso
-    let mut cats_i: std::collections::BTreeSet<String> =
-        INCOME_DEFAULTS.iter().map(|s| s.to_string()).collect();
-    let mut rows = conn.query("SELECT DISTINCT category FROM transactions WHERE type = 'ingreso'", ()).await?;
-    while let Some(row) = rows.next().await? { cats_i.insert(row.get(0)?); }
-    drop(rows);
-
-    // categories_gasto
-    let mut cats_g: std::collections::BTreeSet<String> =
-        EXPENSE_DEFAULTS.iter().map(|s| s.to_string()).collect();
-    let mut rows = conn.query("SELECT DISTINCT category FROM transactions WHERE type = 'gasto'", ()).await?;
-    while let Some(row) = rows.next().await? { cats_g.insert(row.get(0)?); }
-    drop(rows);
-    cats_g.remove("Carrera mamá");
-    cats_g.remove("Carrera cuñada");
-
-    // route_costs (inlined from get_route_costs)
-    let mut consumo = 350.0f64;
-    let mut km_mama = 8.0f64;
-    let mut km_cunada = 16.0f64;
-    let mut km_uni = 11.4f64;
-    let mut rows = conn.query(
-        "SELECT key, value FROM config \
-         WHERE key IN ('consumo_moto_km_galon','km_carrera_mama_redondo',\
-                       'km_carrera_cunada_redondo','km_universidad_redondo')",
-        (),
-    ).await?;
-    while let Some(row) = rows.next().await? {
-        let key: String = row.get(0)?;
-        let val: String = row.get(1)?;
-        match key.as_str() {
-            "consumo_moto_km_galon"       => consumo   = val.parse().unwrap_or(350.0),
-            "km_carrera_mama_redondo"     => km_mama   = val.parse().unwrap_or(8.0),
-            "km_carrera_cunada_redondo"   => km_cunada = val.parse().unwrap_or(16.0),
-            "km_universidad_redondo"      => km_uni    = val.parse().unwrap_or(11.4),
-            _ => {}
-        }
-    }
-    drop(rows);
-    let mut pr = conn.query("SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1", ()).await?;
-    let precio_galon: i64 = pr.next().await?.map(|r| r.get(0).unwrap_or(15881)).unwrap_or(15881);
-    drop(pr);
-    let calc = |km: f64| -> i64 { ((km / consumo) * precio_galon as f64).round() as i64 };
-    let route_costs = RoutesCost {
-        precio_galon,
-        carrera_mama:    calc(km_mama),
-        carrera_cunada:  calc(km_cunada),
-        universidad:     calc(km_uni),
-        consumo_km_galon: consumo,
-        km_universidad:   km_uni,
-        km_carrera_mama:  km_mama,
-        km_carrera_cunada: km_cunada,
-    };
-
-    // active_goals
-    let mut active_goals = Vec::new();
-    let mut rows = conn.query(
-        "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
-         FROM goals WHERE status = 'activo' ORDER BY name",
-        (),
-    ).await?;
-    while let Some(row) = rows.next().await? {
-        active_goals.push(Goal {
-            id:            row.get(0)?,
-            name:          row.get(1)?,
-            target_amount: row.get(2)?,
-            target_date:   row.get(3)?,
-            status:        row.get(4)?,
-            created_at:    row.get(5)?,
-            is_debt_goal:  row.get::<i64>(6).unwrap_or(0) != 0,
-        });
-    }
-    drop(rows);
-
-    // current_gas_price
-    let mut gp = conn.query(
-        "SELECT id, date, price_per_gallon, source FROM gas_prices ORDER BY date DESC LIMIT 1",
-        (),
-    ).await?;
-    let current_gas_price = gp.next().await?.map(|r| -> AppResult<GasPrice> {
-        Ok(GasPrice { id: r.get(0)?, date: r.get(1)?, price_per_gallon: r.get(2)?, source: r.get(3)? })
-    }).transpose()?;
-
-    Ok(InitialData {
-        budgets,
-        categories_ingreso: cats_i.into_iter().collect(),
-        categories_gasto:   cats_g.into_iter().collect(),
-        route_costs,
-        active_goals,
-        current_gas_price,
-    })
 }
 
 // ── Factory reset ───────────────────────────────────────────────────────────

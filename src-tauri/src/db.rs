@@ -39,10 +39,6 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_tx_date          ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_category      ON transactions(category);
 CREATE INDEX IF NOT EXISTS idx_tx_date_category ON transactions(date, category);
-CREATE INDEX IF NOT EXISTS idx_tx_type          ON transactions(type);
-CREATE INDEX IF NOT EXISTS idx_tx_goal_id       ON transactions(goal_id);
-CREATE INDEX IF NOT EXISTS idx_goals_status     ON goals(status);
-CREATE INDEX IF NOT EXISTS idx_goals_is_debt    ON goals(is_debt_goal);
 
 CREATE TABLE IF NOT EXISTS gas_prices (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
