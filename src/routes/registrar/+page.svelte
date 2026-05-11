@@ -29,6 +29,31 @@
   let routeCosts = $state<RoutesCost | null>(null);
   let loadError  = $state<string | null>(null);
 
+  // ── Cache de categorías (carga única al primer mount) ──────────────────────
+  let _catsIngreso: string[] = [];
+  let _catsGasto:   string[] = [];
+  let _catsLoaded  = false;
+  let _catsLoading = false;
+
+  async function loadCategories() {
+    if (_catsLoaded || _catsLoading) return;
+    _catsLoading = true;
+    try {
+      const [i, g] = await Promise.all([
+        invoke<string[]>("list_categories", { kind: "ingreso" }),
+        invoke<string[]>("list_categories", { kind: "gasto" }),
+      ]);
+      _catsIngreso = i;
+      _catsGasto   = g;
+      _catsLoaded  = true;
+    } catch (e) {
+      console.error("[registrar] load categories error:", e);
+      loadError = "Error cargando categorías. Recarga la app.";
+    } finally {
+      _catsLoading = false;
+    }
+  }
+
   // ── Feedback ───────────────────────────────────────────────────────────────
   let saving    = $state(false);
   let saved     = $state<Transaction | null>(null);
@@ -84,30 +109,23 @@
     e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
   }
 
-  // Recargar categorías cuando cambia el tipo
+  // Aplicar categorías del cache cuando cambia el tipo (carga única)
   $effect(() => {
     const k = kind;
     let cancelled = false;
 
-    async function loadCats() {
-      try {
-        const data = await invoke<string[]>("list_categories", { kind: k });
-        if (!cancelled) {
-          categories = data;
-          const filtered = k === "ingreso"
-            ? data.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
-            : data.filter(c => c !== "Gasolina");
-          if (!filtered.includes(category)) category = filtered[0] ?? "";
-        }
-      } catch (e) {
-        if (!cancelled) {
-          console.error("[registrar] load categories error:", e);
-          loadError = "Error cargando categorías. Recarga la app.";
-        }
-      }
+    async function apply() {
+      await loadCategories();
+      if (cancelled) return;
+      const data = k === "ingreso" ? _catsIngreso : _catsGasto;
+      categories = data;
+      const filtered = k === "ingreso"
+        ? data.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
+        : data.filter(c => c !== "Gasolina");
+      if (!filtered.includes(category)) category = filtered[0] ?? "";
     }
 
-    loadCats();
+    apply();
     return () => { cancelled = true; };
   });
 

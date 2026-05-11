@@ -66,17 +66,18 @@
     if (selectedIds.size === 0 || bulkDeleting) return;
     bulkDeleting = true;
     bulkConfirming = false;
+    const ids  = [...selectedIds];
+    const prev = txs;
+    txs = txs.filter(t => !selectedIds.has(t.id));
+    exitSelectMode();
     try {
-      const ids = [...selectedIds];
       const deleted = await invoke<number>("delete_transactions_bulk", { ids });
-      txs = txs.filter(t => !selectedIds.has(t.id));
       bulkSuccessMsg = `${deleted} transacción${deleted !== 1 ? "es" : ""} eliminada${deleted !== 1 ? "s" : ""}.`;
-      exitSelectMode();
       setTimeout(() => { bulkSuccessMsg = null; }, 3000);
     } catch (e) {
+      txs = prev;
       console.error("[historial] bulk delete error:", e);
       error = "No se pudieron eliminar las transacciones. Intenta de nuevo.";
-      exitSelectMode();
     } finally {
       bulkDeleting = false;
     }
@@ -220,13 +221,15 @@
 
   async function confirmDelete(id: number) {
     deletingInProgress = id;
+    deletingId = null;
+    const prev = txs;
+    txs = txs.filter((t) => t.id !== id);
     try {
       await invoke("delete_transaction", { id });
-      txs = txs.filter((t) => t.id !== id);
     } catch (e) {
+      txs = prev;
       error = "No se pudo eliminar la transacción. Intenta de nuevo.";
     } finally {
-      deletingId = null;
       deletingInProgress = null;
     }
   }

@@ -101,38 +101,30 @@
 
       while (!cancelled) {
         try {
-          await invoke("list_budgets");
-          break;
+          const p = { type: period };
+          const [sum, cats, txs, cmp] = await Promise.all([
+            invoke<PeriodSummary>("get_period_summary", { period: p }),
+            invoke<CategoryProgress[]>("get_category_progress", { period: p }),
+            invoke<Transaction[]>("list_transactions", { filter: { period: p } }),
+            invoke<MonthComparison>("get_month_comparison"),
+          ]);
+          if (!cancelled) {
+            summary    = sum;
+            categories = mergeCategorias(cats);
+            recent     = txs.slice(0, 5);
+            comparison = cmp;
+            loading    = false;
+          }
+          return;
         } catch (e: unknown) {
           const err = e as { kind?: string; message?: string };
           if (err?.kind === "DatabaseError" && err?.message?.includes("no inicializada")) {
             await new Promise((r) => setTimeout(r, 300));
           } else {
-            if (!cancelled) { console.error("[dashboard] init error:", e); error = "Error inicializando la app. Recarga."; loading = false; }
+            if (!cancelled) { console.error("[dashboard] load error:", e); error = "Error cargando datos. Recarga la app."; loading = false; }
             return;
           }
         }
-      }
-
-      if (cancelled) return;
-
-      try {
-        const p = { type: period };
-        const [sum, cats, txs, cmp] = await Promise.all([
-          invoke<PeriodSummary>("get_period_summary", { period: p }),
-          invoke<CategoryProgress[]>("get_category_progress", { period: p }),
-          invoke<Transaction[]>("list_transactions", { filter: { period: p } }),
-          invoke<MonthComparison>("get_month_comparison"),
-        ]);
-        if (!cancelled) {
-          summary    = sum;
-          categories = mergeCategorias(cats);
-          recent     = txs.slice(0, 5);
-          comparison = cmp;
-          loading    = false;
-        }
-      } catch (e: unknown) {
-        if (!cancelled) { console.error("[dashboard] load error:", e); error = "Error cargando datos. Recarga la app."; loading = false; }
       }
     }
 

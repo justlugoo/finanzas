@@ -295,17 +295,20 @@ async fn insert_auto_gas(
 ) -> AppResult<()> {
     let consumo = read_config_f64(conn, "consumo_moto_km_galon", 350.0).await;
 
-    let mut price_rows = conn
-        .query(
-            "SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1",
-            (),
-        )
-        .await?;
-    let precio: i64 = price_rows
-        .next()
-        .await?
-        .map(|r| r.get(0).unwrap_or(15881))
-        .unwrap_or(15881);
+    let precio: i64 = {
+        let mut price_rows = conn
+            .query(
+                "SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1",
+                (),
+            )
+            .await?;
+        price_rows
+            .next()
+            .await?
+            .map(|r| r.get(0).unwrap_or(15881))
+            .unwrap_or(15881)
+        // price_rows drops here — cursor cerrado antes del INSERT
+    };
 
     let gas_cost = ((km / consumo) * precio as f64).round() as i64;
     let gas_note = format!("Auto: Gasolina {} ({:.1}km)", context, km);

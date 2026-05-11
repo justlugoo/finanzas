@@ -121,16 +121,20 @@
     const amount = parseInt(editBudgetRaw, 10);
     if (isNaN(amount) || amount < 0) { editingBudget = null; return; }
     savingBudget = true;
+
+    const prevBudgets = budgets;
+    budgets = budgets.map(b => b.category === category ? { ...b, monthly_amount: amount } : b);
+    editingBudget = null;
+
     try {
       const updated = await invoke<Budget>("update_budget", { category, monthlyAmount: amount });
       budgets = budgets.map(b => b.category === category ? updated : b);
-      editingBudget = null;
       savedBudgetCategory = category;
       setTimeout(() => { savedBudgetCategory = null; }, 1000);
     } catch (e) {
+      budgets = prevBudgets;
       console.error("[config] save budget error:", e);
       pageError = "No se pudo guardar el presupuesto. Intenta de nuevo.";
-      editingBudget = null;
     } finally {
       savingBudget = false;
     }
