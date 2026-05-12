@@ -63,7 +63,6 @@
   let editingTx          = $state<Transaction | null>(null);
   let editAmount         = $state("");
   let editCategory       = $state("");
-  let editCarreraPersona = $state<"mama" | "cunada" | null>(null);
   let editDate           = $state("");
   let editNote           = $state("");
   let editKind           = $state<"ingreso" | "gasto">("gasto");
@@ -148,16 +147,8 @@
     return `${d} ${months[m - 1]}, ${days[dt.getDay()]}`;
   }
 
-  function formatCategory(cat: string): string {
-    if (cat === "Carrera mamá")   return "Carrera · mamá";
-    if (cat === "Carrera cuñada") return "Carrera · cuñada";
-    return cat;
-  }
-
   function transformCategories(raw: string[]): string[] {
-    const hasCarrera = raw.some(c => c === "Carrera mamá" || c === "Carrera cuñada");
-    const filtered   = raw.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada");
-    return hasCarrera ? [...filtered, "Carrera"].sort() : filtered;
+    return raw;
   }
 
   function buildFilter() {
@@ -233,16 +224,7 @@
     editAmount   = tx.amount.toString();
     editError    = null;
 
-    if (tx.category === "Carrera mamá") {
-      editCategory       = "Carrera";
-      editCarreraPersona = "mama";
-    } else if (tx.category === "Carrera cuñada") {
-      editCategory       = "Carrera";
-      editCarreraPersona = "cunada";
-    } else {
-      editCategory       = tx.category;
-      editCarreraPersona = null;
-    }
+    editCategory = tx.category;
   }
 
   function cancelEdit() { editingTx = null; }
@@ -254,14 +236,9 @@
     editSaving = true;
     editError  = null;
 
-    const effectiveCat =
-      editCategory === "Carrera" && editCarreraPersona === "mama"   ? "Carrera mamá"  :
-      editCategory === "Carrera" && editCarreraPersona === "cunada" ? "Carrera cuñada" :
-      editCategory;
-
     try {
       const input: TransactionInput = {
-        date: editDate, type: editKind, category: effectiveCat,
+        date: editDate, type: editKind, category: editCategory,
         amount: amt, note: editNote.trim() || null,
         is_extraordinary: editExtraord, goal_id: editingTx.goal_id,
         gas_km: null, is_debt: editingTx.is_debt,
@@ -575,7 +552,7 @@
                   {tx.type === "ingreso" ? "↑" : "↓"}
                 </span>
 
-                <span class="tx-cat">{formatCategory(tx.category)}</span>
+                <span class="tx-cat">{tx.category}</span>
 
                 {#if tx.note}
                   <span class="tx-note">{tx.note}</span>
@@ -727,22 +704,12 @@
 
         <div class="field">
           <label for="edit-cat">Categoría</label>
-          <select id="edit-cat" bind:value={editCategory} onchange={() => { editCarreraPersona = null; }}>
+          <select id="edit-cat" bind:value={editCategory}>
             {#each categories as cat}
               <option value={cat}>{cat}</option>
             {/each}
           </select>
         </div>
-
-        {#if editCategory === "Carrera" && editKind === "ingreso"}
-          <div class="field">
-            <span class="field-label">Persona</span>
-            <div class="carrera-toggle">
-              <button type="button" class:active={editCarreraPersona === "mama"}   onclick={() => { editCarreraPersona = "mama"; }}>Mamá</button>
-              <button type="button" class:active={editCarreraPersona === "cunada"} onclick={() => { editCarreraPersona = "cunada"; }}>Cuñada</button>
-            </div>
-          </div>
-        {/if}
 
         <div class="field">
           <label for="edit-amount">Monto</label>
@@ -770,7 +737,7 @@
         <button
           class="btn-save"
           onclick={saveEdit}
-          disabled={editSaving || (editCategory === "Carrera" && editKind === "ingreso" && !editCarreraPersona)}
+          disabled={editSaving}
         >
           {editSaving ? "Guardando…" : "Guardar"}
         </button>
@@ -1431,9 +1398,6 @@
   .toggle-btn.income.active  { background: color-mix(in srgb, var(--success) 20%, var(--bg-surface)); color: var(--success); }
   .toggle-btn.expense.active { background: color-mix(in srgb, var(--danger)  20%, var(--bg-surface)); color: var(--danger); }
 
-  .carrera-toggle { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg-elevated); border-radius: var(--radius); padding: 3px; gap: 3px; }
-  .carrera-toggle button { padding: 0.4rem; border-radius: 5px; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
-  .carrera-toggle button.active { background: color-mix(in srgb, var(--accent) 20%, var(--bg-surface)); color: var(--accent); }
 
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 0.25rem; }
 

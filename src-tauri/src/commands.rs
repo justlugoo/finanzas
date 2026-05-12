@@ -27,6 +27,8 @@ impl std::ops::Deref for ConnGuard {
 pub struct Budget {
     pub category: String,
     pub monthly_amount: i64,
+    pub route_id: Option<i64>,
+    pub r#type: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -190,23 +192,9 @@ pub struct WeeklyGasPoint {
 }
 
 #[derive(Serialize, Debug)]
-pub struct TripCostResult {
-    pub km: f64,
-    pub cost: f64,
-    pub price_per_gallon: i64,
-    pub consumo_km_galon: f64,
-}
-
-#[derive(Serialize, Debug)]
 pub struct RoutesCost {
     pub precio_galon: i64,
-    pub carrera_mama: i64,
-    pub carrera_cunada: i64,
-    pub universidad: i64,
     pub consumo_km_galon: f64,
-    pub km_universidad: f64,
-    pub km_carrera_mama: f64,
-    pub km_carrera_cunada: f64,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -477,7 +465,7 @@ fn row_to_transaction(row: &libsql::Row) -> Result<Transaction, libsql::Error> {
 pub async fn list_budgets(state: State<'_, DbState>) -> AppResult<Vec<Budget>> {
     let conn = get_conn(&state).await?;
     let mut rows = conn
-        .query("SELECT category, monthly_amount FROM budgets ORDER BY category", ())
+        .query("SELECT category, monthly_amount, route_id, type FROM budgets ORDER BY category", ())
         .await?;
 
     let mut budgets = Vec::new();
@@ -485,6 +473,8 @@ pub async fn list_budgets(state: State<'_, DbState>) -> AppResult<Vec<Budget>> {
         budgets.push(Budget {
             category: row.get(0)?,
             monthly_amount: row.get(1)?,
+            route_id: row.get(2).ok(),
+            r#type: row.get(3)?,
         });
     }
     Ok(budgets)
@@ -505,25 +495,10 @@ pub async fn create_transaction(
         ));
     }
 
-    let is_carrera = input.kind == "ingreso"
-        && matches!(input.category.as_str(), "Carrera mamá" | "Carrera cuñada");
-    let has_gas_km = !is_carrera && input.gas_km.map(|km| km > 0.0).unwrap_or(false);
-    let auto_gas = is_carrera || has_gas_km;
+    let gas_km_val = input.gas_km.unwrap_or(0.0);
+    let auto_gas   = gas_km_val > 0.0;
 
     let conn = get_conn(&state).await?;
-
-    // Determine km for gas insertion (read from config for carreras, from input for gastos)
-    let gas_km_val: f64 = if is_carrera {
-        let km_key = if input.category == "Carrera mamá" {
-            "km_carrera_mama_redondo"
-        } else {
-            "km_carrera_cunada_redondo"
-        };
-        let km_default = if input.category == "Carrera mamá" { 8.0f64 } else { 16.0f64 };
-        read_config_f64(&conn, km_key, km_default).await
-    } else {
-        input.gas_km.unwrap_or(0.0)
-    };
 
     if auto_gas {
         conn.execute("BEGIN", ()).await?;
@@ -713,12 +688,8 @@ pub async fn list_transactions(
         base_params.push(kind.clone().into());
     }
     if let Some(cat) = &filter.category {
-        if cat == "Carrera" {
-            where_sql.push_str(" AND (category = 'Carrera mamá' OR category = 'Carrera cuñada')");
-        } else {
-            where_sql.push_str(" AND category = ?");
-            base_params.push(cat.clone().into());
-        }
+        where_sql.push_str(" AND category = ?");
+        base_params.push(cat.clone().into());
     }
     if filter.only_extraordinary == Some(true) {
         where_sql.push_str(" AND is_extraordinary = 1");
@@ -1021,13 +992,6 @@ pub async fn get_month_comparison(state: State<'_, DbState>) -> AppResult<MonthC
     })
 }
 
-const INCOME_DEFAULTS: &[&str] = &[
-    "Carrera", "Carrera cuñada", "Carrera mamá", "Eventual", "Mesada", "Otro ingreso",
-];
-const EXPENSE_DEFAULTS: &[&str] = &[
-    "Imprevisto", "Mantenimiento", "Otro gasto", "Parqueadero", "Social/Salidas",
-];
-
 #[tauri::command]
 pub async fn list_categories(
     state: State<'_, DbState>,
@@ -1045,60 +1009,36 @@ pub async fn list_categories(
             while let Some(row) = rows.next().await? { cats.insert(row.get(0)?); }
         }
         Some(k) => {
+            // Categorías de presupuesto del tipo correcto
+            let mut brows = conn
+                .query("SELECT category FROM budgets WHERE type = ? ORDER BY category", libsql::params![k.clone()])
+                .await?;
+            while let Some(row) = brows.next().await? { cats.insert(row.get(0)?); }
+            drop(brows);
+
+            // Categorías usadas en transacciones del mismo tipo
             let mut rows = conn
                 .query(
                     "SELECT DISTINCT category FROM transactions WHERE type = ? ORDER BY category",
                     libsql::params![k.clone()],
                 )
                 .await?;
-
-            let mut has_history = false;
-            while let Some(row) = rows.next().await? {
-                cats.insert(row.get(0)?);
-                has_history = true;
-            }
-
-            // Siempre incluir las categorías convencionales del tipo
-            let defaults: &[&str] = if k == "ingreso" { INCOME_DEFAULTS } else { EXPENSE_DEFAULTS };
-            for d in defaults { cats.insert(d.to_string()); }
+            while let Some(row) = rows.next().await? { cats.insert(row.get(0)?); }
+            drop(rows);
 
             if k == "gasto" {
-                cats.remove("Carrera mamá");
-                cats.remove("Carrera cuñada");
+                // Excluir categorías con ruta asociada (son de ingreso con auto-gas)
+                let mut excl = conn
+                    .query("SELECT category FROM budgets WHERE route_id IS NOT NULL", ())
+                    .await?;
+                while let Some(row) = excl.next().await? {
+                    cats.remove(&row.get::<String>(0)?);
+                }
             }
-
-            // Si no hay historial ni convenciones coinciden, igual devuelve las convencionales
-            let _ = has_history;
         }
     }
 
     Ok(cats.into_iter().collect())
-}
-
-#[tauri::command]
-pub async fn list_active_goals(state: State<'_, DbState>) -> AppResult<Vec<Goal>> {
-    let conn = get_conn(&state).await?;
-    let mut rows = conn
-        .query(
-            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
-             FROM goals WHERE status = 'activo' ORDER BY name",
-            (),
-        )
-        .await?;
-
-    let mut goals = Vec::new();
-    while let Some(row) = rows.next().await? {
-        goals.push(Goal {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            target_amount: row.get(2)?,
-            target_date: row.get(3)?,
-            status: row.get(4)?,
-            created_at: row.get(5)?,
-            is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
-        });
-    }
-    Ok(goals)
 }
 
 #[tauri::command]
@@ -1124,12 +1064,8 @@ pub async fn export_transactions_csv(
         params.push(kind.clone().into());
     }
     if let Some(cat) = &filter.category {
-        if cat == "Carrera" {
-            sql.push_str(" AND (category = 'Carrera mamá' OR category = 'Carrera cuñada')");
-        } else {
-            sql.push_str(" AND category = ?");
-            params.push(cat.clone().into());
-        }
+        sql.push_str(" AND category = ?");
+        params.push(cat.clone().into());
     }
     if filter.only_extraordinary == Some(true) {
         sql.push_str(" AND is_extraordinary = 1");
@@ -1659,85 +1595,12 @@ pub async fn get_weekly_gas_comparison(
     Ok(points)
 }
 
-#[tauri::command]
-pub async fn calculate_trip_cost(
-    state: State<'_, DbState>,
-    km: f64,
-) -> AppResult<TripCostResult> {
-    if km <= 0.0 {
-        return Err(AppError::ValidationError("los kilómetros deben ser mayor que 0".into()));
-    }
-
-    let conn = get_conn(&state).await?;
-
-    let mut conf_rows = conn
-        .query("SELECT value FROM config WHERE key = 'consumo_moto_km_galon'", ())
-        .await?;
-    let consumo_km_galon: f64 = conf_rows
-        .next()
-        .await?
-        .and_then(|r| r.get::<String>(0).ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(350.0);
-
-    let mut price_rows = conn
-        .query(
-            "SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1",
-            (),
-        )
-        .await?;
-    let price_per_gallon: i64 = price_rows
-        .next()
-        .await?
-        .map(|r| r.get(0).unwrap_or(15881))
-        .unwrap_or(15881);
-
-    let cost = km / consumo_km_galon * price_per_gallon as f64;
-
-    Ok(TripCostResult { km, cost, price_per_gallon, consumo_km_galon })
-}
-
-#[tauri::command]
-pub async fn get_config_value(
-    state: State<'_, DbState>,
-    key: String,
-) -> AppResult<Option<String>> {
-    let conn = get_conn(&state).await?;
-    let mut rows = conn
-        .query("SELECT value FROM config WHERE key = ?", libsql::params![key])
-        .await?;
-    Ok(rows.next().await?.and_then(|r| r.get(0).ok()))
-}
 
 #[tauri::command]
 pub async fn get_route_costs(state: State<'_, DbState>) -> AppResult<RoutesCost> {
     let conn = get_conn(&state).await?;
 
-    let mut rows = conn
-        .query(
-            "SELECT key, value FROM config \
-             WHERE key IN ('consumo_moto_km_galon','km_carrera_mama_redondo',\
-                           'km_carrera_cunada_redondo','km_universidad_redondo')",
-            (),
-        )
-        .await?;
-
-    let mut consumo = 350.0f64;
-    let mut km_mama = 8.0f64;
-    let mut km_cunada = 16.0f64;
-    let mut km_uni = 11.4f64;
-
-    while let Some(row) = rows.next().await? {
-        let key: String = row.get(0)?;
-        let val: String = row.get(1)?;
-        match key.as_str() {
-            "consumo_moto_km_galon"       => consumo   = val.parse().unwrap_or(350.0),
-            "km_carrera_mama_redondo"     => km_mama   = val.parse().unwrap_or(8.0),
-            "km_carrera_cunada_redondo"   => km_cunada = val.parse().unwrap_or(16.0),
-            "km_universidad_redondo"      => km_uni    = val.parse().unwrap_or(11.4),
-            _ => {}
-        }
-    }
+    let consumo = read_config_f64(&conn, "consumo_moto_km_galon", 350.0).await;
 
     let mut price_rows = conn
         .query(
@@ -1751,17 +1614,9 @@ pub async fn get_route_costs(state: State<'_, DbState>) -> AppResult<RoutesCost>
         .map(|r| r.get(0).unwrap_or(15881))
         .unwrap_or(15881);
 
-    let calc = |km: f64| -> i64 { ((km / consumo) * precio_galon as f64).round() as i64 };
-
     Ok(RoutesCost {
         precio_galon,
-        carrera_mama: calc(km_mama),
-        carrera_cunada: calc(km_cunada),
-        universidad: calc(km_uni),
         consumo_km_galon: consumo,
-        km_universidad: km_uni,
-        km_carrera_mama: km_mama,
-        km_carrera_cunada: km_cunada,
     })
 }
 
@@ -1787,7 +1642,73 @@ pub async fn update_budget(
         return Err(AppError::NotFound(format!("categoría '{category}' no existe en presupuestos")));
     }
 
-    Ok(Budget { category, monthly_amount })
+    let mut rows = conn
+        .query("SELECT route_id, type FROM budgets WHERE category = ?", libsql::params![category.clone()])
+        .await?;
+    let row = rows.next().await?.ok_or_else(|| AppError::NotFound(category.clone()))?;
+    Ok(Budget { category, monthly_amount, route_id: row.get(0).ok(), r#type: row.get(1)? })
+}
+
+#[tauri::command]
+pub async fn update_budget_route(
+    state: State<'_, DbState>,
+    category: String,
+    route_id: Option<i64>,
+) -> AppResult<()> {
+    let conn = get_conn(&state).await?;
+    let affected = conn
+        .execute(
+            "UPDATE budgets SET route_id = ? WHERE category = ?",
+            libsql::params![route_id, category.clone()],
+        )
+        .await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("categoría '{category}' no existe en presupuestos")));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_budget(
+    state: State<'_, DbState>,
+    category: String,
+    monthly_amount: i64,
+    kind: String,
+) -> AppResult<Budget> {
+    let category = category.trim().to_string();
+    if category.is_empty() {
+        return Err(AppError::ValidationError("el nombre no puede estar vacío".into()));
+    }
+    if monthly_amount < 0 {
+        return Err(AppError::ValidationError("el monto no puede ser negativo".into()));
+    }
+    if !matches!(kind.as_str(), "ingreso" | "gasto") {
+        return Err(AppError::ValidationError("tipo debe ser 'ingreso' o 'gasto'".into()));
+    }
+    let conn = get_conn(&state).await?;
+    conn.execute(
+        "INSERT INTO budgets (category, monthly_amount, type) VALUES (?, ?, ?)",
+        libsql::params![category.clone(), monthly_amount, kind.clone()],
+    ).await.map_err(|e| {
+        if e.to_string().to_lowercase().contains("unique") {
+            AppError::ValidationError(format!("la categoría '{category}' ya existe"))
+        } else {
+            AppError::DatabaseError(e.to_string())
+        }
+    })?;
+    Ok(Budget { category, monthly_amount, route_id: None, r#type: kind })
+}
+
+#[tauri::command]
+pub async fn delete_budget(state: State<'_, DbState>, category: String) -> AppResult<()> {
+    let conn = get_conn(&state).await?;
+    let affected = conn
+        .execute("DELETE FROM budgets WHERE category = ?", libsql::params![category.clone()])
+        .await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("categoría '{category}' no existe")));
+    }
+    Ok(())
 }
 
 // ── Autostart ──────────────────────────────────────────────────────────────

@@ -106,8 +106,7 @@ CREATE TABLE IF NOT EXISTS config (
 -- Categorías con monto mensual esperado
 INSERT OR IGNORE INTO budgets (category, monthly_amount) VALUES
     ('Mesada',          300000),
-    ('Carrera mamá',    259800),
-    ('Carrera cuñada',  259800),
+    ('Viaje',                0),
     ('Eventual',             0),
     ('Otro ingreso',         0),
     ('Gasolina',         29531),
@@ -117,25 +116,12 @@ INSERT OR IGNORE INTO budgets (category, monthly_amount) VALUES
     ('Imprevisto',           0),
     ('Otro gasto',           0);
 
--- Parámetros de la app y situación personal
+-- Parámetros de la app
 INSERT OR IGNORE INTO config (key, value) VALUES
     -- Ingresos fijos esperados
     ('mesada_mensual',                  '300000'),
-    ('precio_carrera_mama',             '10000'),
-    ('precio_carrera_cunada',           '10000'),
-
-    -- Distancias en km (ida + vuelta)
-    ('km_carrera_mama_redondo',         '8'),
-    ('km_carrera_cunada_redondo',       '16'),
-    ('km_universidad_redondo',          '11.4'),
-
-    -- Frecuencia semanal
-    ('dias_carrera_mama_semana',        '6'),
-    ('dias_carrera_cunada_semana',      '6'),
-    ('dias_universidad_semana',         '3'),
 
     -- Costos fijos
-    ('parqueadero_universidad_dia',     '5000'),
     ('provision_mantenimiento_mensual', '40000'),
 
     -- Moto Hero Eco T (km por galón promedio)

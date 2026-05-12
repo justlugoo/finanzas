@@ -36,7 +36,7 @@ Gestionar finanzas personales con observabilidad real: registrar movimientos, co
 | RF-08 | Registro manual del precio de gasolina |
 | RF-09 | Scraping opcional del precio de gasolina (1 fuente, fallback manual) |
 | RF-10 | Histórico de precios y comparativa semanal |
-| RF-11 | Cálculo automático del costo por carrera según km y precio actual |
+| RF-11 | Cálculo automático del costo por viaje según km y precio actual |
 | RF-12 | Objetivos de ahorro con monto, fecha objetivo y progreso |
 | RF-13 | Historial filtrable por período y categoría |
 | RF-14 | Edición de metas y parámetros desde la app |

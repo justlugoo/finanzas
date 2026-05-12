@@ -27,19 +27,19 @@
 
   let newPrice = $derived(parseInt(newPriceRaw.replace(/\D/g, ""), 10) || 0);
 
-  // ── Edición inline de presupuestos ────────────────────────────────────────
+  // ── Presupuestos — edición inline ────────────────────────────────────────
   let editingBudget       = $state<string | null>(null);
   let editBudgetRaw       = $state("");
   let savingBudget        = $state(false);
   let savedBudgetCategory = $state<string | null>(null);
 
-  // Agrupa Carrera mamá/cuñada bajo un header unificado
-  let carreraMama   = $derived(budgets.find(b => b.category === "Carrera mamá")   ?? null);
-  let carreraCunada = $derived(budgets.find(b => b.category === "Carrera cuñada") ?? null);
-  let carreraTotal  = $derived((carreraMama?.monthly_amount ?? 0) + (carreraCunada?.monthly_amount ?? 0));
-  let otherBudgets  = $derived(
-    budgets.filter(b => b.category !== "Carrera" && b.category !== "Carrera mamá" && b.category !== "Carrera cuñada")
-  );
+  // ── Presupuestos — crear / eliminar ──────────────────────────────────────
+  let newBudgetName   = $state("");
+  let newBudgetType   = $state<"ingreso" | "gasto">("gasto");
+  let addingBudget    = $state(false);
+  let budgetFormError = $state<string | null>(null);
+  let deletingBudget  = $state<string | null>(null);
+
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
@@ -156,6 +156,16 @@
     if (e.key === "Escape") { editingBudget = null; }
   }
 
+  async function saveRouteAssoc(category: string, routeId: number | null) {
+    try {
+      await invoke("update_budget_route", { category, routeId });
+      budgets = budgets.map(b => b.category === category ? { ...b, route_id: routeId } : b);
+    } catch (e) {
+      console.error("[config] save route assoc error:", e);
+      pageError = "No se pudo guardar la asociación de ruta.";
+    }
+  }
+
   // ── Autoarranque ──────────────────────────────────────────────────────────
   let autostartEnabled = $state(false);
   let autostartLoading = $state(true);
@@ -229,6 +239,38 @@
       backupError = "No se pudo crear el backup. Verifica que la carpeta Documents exista.";
     } finally {
       backupBusy = false;
+    }
+  }
+
+  async function addBudget(ev: Event) {
+    ev.preventDefault();
+    const name = newBudgetName.trim();
+    if (!name) { budgetFormError = "El nombre es obligatorio."; return; }
+    addingBudget = true; budgetFormError = null;
+    try {
+      const created = await invoke<Budget>("create_budget", {
+        category: name, monthlyAmount: 0, kind: newBudgetType,
+      });
+      budgets = [...budgets, created].sort((a, b) => a.category.localeCompare(b.category));
+      newBudgetName = "";
+    } catch (e: any) {
+      budgetFormError = e?.message ?? "No se pudo crear la categoría.";
+    } finally {
+      addingBudget = false;
+    }
+  }
+
+  async function deleteBudget(category: string) {
+    deletingBudget = category;
+    try {
+      await invoke("delete_budget", { category });
+      budgets = budgets.filter(b => b.category !== category);
+      if (editingBudget === category) editingBudget = null;
+    } catch (e) {
+      console.error("[config] delete budget error:", e);
+      pageError = "No se pudo eliminar la categoría.";
+    } finally {
+      deletingBudget = null;
     }
   }
 
@@ -445,94 +487,83 @@
     <!-- ══ Presupuestos ══════════════════════════════════════════════════════ -->
     <section class="section">
       <h2>Presupuestos mensuales</h2>
-      <p class="hint">Haz clic en un monto para editarlo.</p>
+
       {#if budgets.length === 0}
-        <p class="muted">Sin presupuestos registrados.</p>
+        <p class="muted">Sin categorías. Agrega una abajo.</p>
       {:else}
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Categoría</th>
-                <th class="right">Monto mensual</th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Carrera unificada -->
-              {#if carreraMama || carreraCunada}
-                <tr class="group-header-row">
-                  <td class="group-label-cell">Carrera</td>
-                  <td class="right muted-value">{carreraTotal > 0 ? formatCOP(carreraTotal) : "—"}</td>
-                </tr>
-                {#if carreraMama}
-                  {@const b = carreraMama}
-                  <tr class:row-saved={savedBudgetCategory === b.category}>
-                    <td class="sub-label-cell">· mamá</td>
-                    <td class="right">
-                      {#if editingBudget === b.category}
-                        <div class="budget-edit-row">
-                          <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
-                            oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
-                            disabled={savingBudget} autofocus />
-                          <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
-                          <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
-                        </div>
-                      {:else}
-                        <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
-                          {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
-                        </button>
-                      {/if}
-                    </td>
-                  </tr>
-                {/if}
-                {#if carreraCunada}
-                  {@const b = carreraCunada}
-                  <tr class:row-saved={savedBudgetCategory === b.category}>
-                    <td class="sub-label-cell">· cuñada</td>
-                    <td class="right">
-                      {#if editingBudget === b.category}
-                        <div class="budget-edit-row">
-                          <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
-                            oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
-                            disabled={savingBudget} autofocus />
-                          <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
-                          <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
-                        </div>
-                      {:else}
-                        <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
-                          {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
-                        </button>
-                      {/if}
-                    </td>
-                  </tr>
-                {/if}
+        <div class="budget-list">
+          {#each budgets as b (b.category)}
+            <div class="budget-row" class:row-saved={savedBudgetCategory === b.category}>
+              <div class="budget-cat">
+                <span class="budget-name">{b.category}</span>
+                <span class="type-pill type-{b.type}">{b.type === "ingreso" ? "Ingreso" : "Gasto"}</span>
+              </div>
+
+              {#if b.type === "ingreso"}
+                <select
+                  class="route-select"
+                  value={b.route_id ?? ""}
+                  onchange={(e) => saveRouteAssoc(b.category, e.currentTarget.value ? parseInt(e.currentTarget.value, 10) : null)}
+                >
+                  <option value="">Sin ruta</option>
+                  {#each customRoutes as r (r.id)}
+                    <option value={r.id}>{r.name}</option>
+                  {/each}
+                </select>
+              {:else}
+                <span class="route-empty">—</span>
               {/if}
 
-              <!-- Resto de categorías -->
-              {#each otherBudgets as b (b.category)}
-                <tr class:row-saved={savedBudgetCategory === b.category}>
-                  <td>{b.category}</td>
-                  <td class="right">
-                    {#if editingBudget === b.category}
-                      <div class="budget-edit-row">
-                        <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
-                          oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
-                          disabled={savingBudget} autofocus />
-                        <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
-                        <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
-                      </div>
-                    {:else}
-                      <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
-                        {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
-                      </button>
-                    {/if}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+              <div class="budget-amount-cell">
+                {#if editingBudget === b.category}
+                  <div class="budget-edit-row">
+                    <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
+                      oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
+                      disabled={savingBudget} autofocus />
+                    <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
+                    <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
+                  </div>
+                {:else}
+                  <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
+                    {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
+                  </button>
+                {/if}
+              </div>
+
+              <button
+                class="cr-del"
+                onclick={() => deleteBudget(b.category)}
+                disabled={deletingBudget === b.category}
+                title="Eliminar categoría"
+              >{deletingBudget === b.category ? "…" : "✕"}</button>
+            </div>
+          {/each}
         </div>
       {/if}
+
+      <!-- Agregar categoría -->
+      <div class="subsection">
+        <h3>Agregar categoría</h3>
+        {#if budgetFormError}
+          <div class="banner error small">{budgetFormError}</div>
+        {/if}
+        <form class="budget-add-form" onsubmit={addBudget}>
+          <input
+            type="text"
+            placeholder="Nombre"
+            bind:value={newBudgetName}
+            class="route-input"
+            disabled={addingBudget}
+          />
+          <select bind:value={newBudgetType} class="type-select" disabled={addingBudget}>
+            <option value="gasto">Gasto</option>
+            <option value="ingreso">Ingreso</option>
+          </select>
+          <button type="submit" class="btn-primary small" disabled={addingBudget || !newBudgetName.trim()}>
+            {addingBudget ? "…" : "Agregar"}
+          </button>
+        </form>
+      </div>
     </section>
       {/if}
 
@@ -864,13 +895,101 @@
   .delta.up   { color: var(--danger);  }
   .delta.down { color: var(--success); }
 
-  /* ── Presupuesto editable ── */
-  .row-saved td { transition: background 0.3s; background: color-mix(in srgb, var(--success) 12%, transparent) !important; }
+  /* ── Presupuestos CRUD ── */
+  .budget-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
 
-  .group-header-row td { background: var(--bg-elevated); padding-top: 0.55rem; padding-bottom: 0.3rem; }
-  .group-label-cell { font-size: 0.78rem; font-weight: 700; color: var(--text-secondary); letter-spacing: 0.02em; }
-  .sub-label-cell { font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.25rem !important; }
-  .muted-value { color: var(--text-muted); font-size: 0.85rem; }
+  .budget-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.3s;
+  }
+  .budget-row:last-child { border-bottom: none; }
+  .budget-row.row-saved { background: color-mix(in srgb, var(--success) 12%, transparent); }
+
+  .budget-cat {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .budget-name {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .type-pill {
+    font-size: 0.62rem;
+    font-weight: 600;
+    padding: 0.1rem 0.35rem;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .type-pill.type-ingreso {
+    background: color-mix(in srgb, var(--success) 18%, transparent);
+    color: var(--success);
+  }
+  .type-pill.type-gasto {
+    background: color-mix(in srgb, var(--danger) 15%, transparent);
+    color: var(--danger);
+  }
+
+  .route-select {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.18rem 0.4rem;
+    outline: none;
+    cursor: pointer;
+    width: 110px;
+    transition: border-color 0.15s;
+  }
+  .route-select:focus { border-color: var(--accent); }
+  .route-empty { font-size: 0.78rem; color: var(--text-muted); width: 110px; text-align: center; }
+
+  .budget-amount-cell { display: flex; justify-content: flex-end; min-width: 80px; }
+
+  .budget-add-form {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .type-select {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.32rem 0.6rem;
+    outline: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.15s;
+  }
+  .type-select:focus { border-color: var(--accent); }
 
   .amount-btn {
     font-size: 0.82rem;

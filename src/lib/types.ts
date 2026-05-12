@@ -3,6 +3,8 @@
 export interface Budget {
   category: string;
   monthly_amount: number;
+  route_id: number | null;
+  type: "ingreso" | "gasto";
 }
 
 export interface Transaction {
@@ -107,22 +109,9 @@ export interface WeeklyGasPoint {
   entry_count: number;
 }
 
-export interface TripCostResult {
-  km: number;
-  cost: number;
-  price_per_gallon: number;
-  consumo_km_galon: number;
-}
-
 export interface RoutesCost {
   precio_galon: number;
-  carrera_mama: number;
-  carrera_cunada: number;
-  universidad: number;
   consumo_km_galon: number;
-  km_universidad: number;
-  km_carrera_mama: number;
-  km_carrera_cunada: number;
 }
 
 export interface GasPrice {

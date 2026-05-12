@@ -24,35 +24,8 @@
   let error        = $state<string | null>(null);
   let budgetView   = $state<"ingresos" | "gastos">("ingresos");
 
-  const INCOME_FIXED    = ["Mesada", "Carrera"];
+  const INCOME_FIXED    = ["Mesada", "Viaje"];
   const INCOME_VARIABLE = ["Eventual", "Otro ingreso"];
-
-  function mergeCategorias(cats: CategoryProgress[]): CategoryProgress[] {
-    const mama   = cats.find(c => c.category === "Carrera mamá");
-    const cunada = cats.find(c => c.category === "Carrera cuñada");
-    const rest   = cats.filter(c => c.category !== "Carrera" && c.category !== "Carrera mamá" && c.category !== "Carrera cuñada");
-
-    const sub: { label: string; amount: number }[] = [];
-    if (mama)   sub.push({ label: "mamá",   amount: mama.current_amount   });
-    if (cunada) sub.push({ label: "cuñada", amount: cunada.current_amount });
-
-    if (!mama && !cunada) return cats;
-
-    const current = (mama?.current_amount ?? 0) + (cunada?.current_amount ?? 0);
-    const target  = (mama?.monthly_target ?? 0) + (cunada?.monthly_target ?? 0);
-    const pct     = target > 0 ? (current / target) * 100 : 0;
-
-    const carrera: CategoryProgress = {
-      category: "Carrera",
-      current_amount: current,
-      monthly_target: target,
-      percentage: pct,
-      is_over: target > 0 && current > target,
-      kind: "ingreso",
-      sub_breakdown: sub,
-    };
-    return [...rest, carrera];
-  }
 
   let incomeFixed = $derived(
     INCOME_FIXED
@@ -110,7 +83,7 @@
           ]);
           if (!cancelled) {
             summary    = sum;
-            categories = mergeCategorias(cats);
+            categories = cats;
             recent     = page.transactions;
             comparison = cmp;
             loading    = false;
@@ -144,11 +117,6 @@
     return `${parseInt(day)} ${meses[parseInt(m) - 1]}`;
   }
 
-  function formatCategory(cat: string): string {
-    if (cat === "Carrera mamá")   return "Carrera · mamá";
-    if (cat === "Carrera cuñada") return "Carrera · cuñada";
-    return cat;
-  }
 </script>
 
 <div class="page-shell">
@@ -381,7 +349,7 @@
             {#each recent as tx}
               <li class="tx-row">
                 <span class="tx-date">{formatDate(tx.date)}</span>
-                <span class="tx-category">{formatCategory(tx.category)}</span>
+                <span class="tx-category">{tx.category}</span>
                 <span class="tx-amount" class:income={tx.type === "ingreso"} class:expense={tx.type === "gasto"}>
                   {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
                 </span>

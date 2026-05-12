@@ -5,7 +5,9 @@ use crate::error::{AppError, AppResult};
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS budgets (
     category        TEXT    PRIMARY KEY,
-    monthly_amount  INTEGER NOT NULL CHECK (monthly_amount >= 0)
+    monthly_amount  INTEGER NOT NULL CHECK (monthly_amount >= 0),
+    route_id        INTEGER REFERENCES custom_routes(id) ON DELETE SET NULL,
+    type            TEXT    NOT NULL DEFAULT 'gasto' CHECK (type IN ('ingreso', 'gasto'))
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -57,35 +59,12 @@ CREATE TABLE IF NOT EXISTS custom_routes (
     description     TEXT
 );
 
-INSERT OR IGNORE INTO budgets (category, monthly_amount) VALUES
-    ('Mesada',          300000),
-    ('Carrera',              0),
-    ('Carrera mamá',    259800),
-    ('Carrera cuñada',  259800),
-    ('Eventual',             0),
-    ('Otro ingreso',         0),
-    ('Gasolina',         29531),
-    ('Parqueadero',      64950),
-    ('Mantenimiento',    40000),
-    ('Social/Salidas',  100000),
-    ('Imprevisto',           0),
-    ('Otro gasto',           0);
 
 INSERT OR IGNORE INTO config (key, value) VALUES
-    ('mesada_mensual',                  '300000'),
-    ('consumo_moto_km_galon',           '350'),
-    ('umbral_alerta_gasolina_pct',      '5'),
-    ('umbral_alerta_meta_pct',          '100'),
-    ('scraping_gasolina_activo',        'false'),
-    ('km_carrera_mama_redondo',         '8'),
-    ('km_carrera_cunada_redondo',       '16'),
-    ('km_universidad_redondo',          '11.4');
-
-INSERT INTO gas_prices (date, price_per_gallon, source)
-SELECT '2026-05-08', 15881, 'manual'
-WHERE NOT EXISTS (SELECT 1 FROM gas_prices);
-
-UPDATE config SET value = '350' WHERE key = 'consumo_moto_km_galon' AND value = '415';
+    ('consumo_moto_km_galon',      '350'),
+    ('umbral_alerta_gasolina_pct', '5'),
+    ('umbral_alerta_meta_pct',     '100'),
+    ('scraping_gasolina_activo',   'false');
 ";
 
 pub async fn open_database() -> AppResult<libsql::Database> {
@@ -94,10 +73,28 @@ pub async fn open_database() -> AppResult<libsql::Database> {
     path.push("finanzas");
     std::fs::create_dir_all(&path)?;
     path.push("local.db");
-    Builder::new_local(path)
-        .build()
-        .await
-        .map_err(|e| AppError::DatabaseError(e.to_string()))
+
+    match Builder::new_local(&path).build().await {
+        Ok(db) => Ok(db),
+        Err(e) if e.to_string().contains("wal_index") => {
+            // libsql falla al arrancar si encuentra un .db-shm huérfano de una
+            // sesión anterior que no hizo checkpoint (apagado abrupto del sistema).
+            // Si el .db-wal está vacío no hay transacciones pendientes → es seguro
+            // eliminar ambos archivos WAL y reabrir.
+            let wal = path.with_extension("db-wal");
+            let shm = path.with_extension("db-shm");
+            let wal_empty = wal.metadata().map(|m| m.len() == 0).unwrap_or(true);
+            if wal_empty {
+                let _ = std::fs::remove_file(&shm);
+                let _ = std::fs::remove_file(&wal);
+                Builder::new_local(&path).build().await
+                    .map_err(|e| AppError::DatabaseError(e.to_string()))
+            } else {
+                Err(AppError::DatabaseError(e.to_string()))
+            }
+        }
+        Err(e) => Err(AppError::DatabaseError(e.to_string())),
+    }
 }
 
 /// Pragmas de rendimiento — se aplican a cada conexión nueva.
@@ -124,17 +121,34 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         .map(|_| ())
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
-    // Migración: añade is_debt si la tabla existía antes de esta versión
+    // Migración: añade columna type si la tabla existía antes.
     let _ = conn.execute(
-        "ALTER TABLE transactions ADD COLUMN is_debt INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE budgets ADD COLUMN type TEXT NOT NULL DEFAULT 'gasto' \
+         CHECK (type IN ('ingreso', 'gasto'))",
         (),
+    ).await;
+    let _ = conn.execute_batch(
+        "UPDATE budgets SET type = 'ingreso' \
+         WHERE category IN ('Mesada', 'Viaje', 'Eventual', 'Otro ingreso');",
     ).await;
 
-    // Migración: añade is_debt_goal a goals si la tabla existía antes
-    let _ = conn.execute(
-        "ALTER TABLE goals ADD COLUMN is_debt_goal INTEGER NOT NULL DEFAULT 0",
-        (),
-    ).await;
+    // Seed inicial — solo si la tabla está completamente vacía (instalación nueva).
+    let mut n = conn.query("SELECT COUNT(*) FROM budgets", ()).await?;
+    if n.next().await?.and_then(|r| r.get::<i64>(0).ok()).unwrap_or(1) == 0 {
+        conn.execute_batch(
+            "INSERT INTO budgets (category, monthly_amount, type) VALUES
+                 ('Mesada',         300000, 'ingreso'),
+                 ('Viaje',               0, 'ingreso'),
+                 ('Eventual',            0, 'ingreso'),
+                 ('Otro ingreso',        0, 'ingreso'),
+                 ('Gasolina',        29531, 'gasto'),
+                 ('Parqueadero',     64950, 'gasto'),
+                 ('Mantenimiento',   40000, 'gasto'),
+                 ('Social/Salidas', 100000, 'gasto'),
+                 ('Imprevisto',          0, 'gasto'),
+                 ('Otro gasto',          0, 'gasto');",
+        ).await?;
+    }
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type {
-    Goal, GoalWithProgress, Transaction, TransactionPage,
+    Budget, GoalWithProgress, Transaction, TransactionPage,
     RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute,
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
@@ -18,11 +18,6 @@
   let extraordinary = $state(false);
   let goalId        = $state<number | null>(null);
 
-  // ── Carrera: sub-selector de persona ──────────────────────────────────────
-  let carreraPersona   = $state<"mama" | "cunada" | "otra" | null>(null);
-  let carreraOtraKmRaw = $state("");
-  let carreraOtraKm    = $derived(parseFloat(carreraOtraKmRaw) || 0);
-
   // ── Gasolina adicional ────────────────────────────────────────────────────
   let gasKmRaw   = $state("");
   let gasKm      = $derived(parseFloat(gasKmRaw) || 0);
@@ -30,10 +25,12 @@
 
   // ── Datos cargados ─────────────────────────────────────────────────────────
   let categories    = $state<string[]>([]);
-  let goals         = $state<Goal[]>([]);
   let routeCosts    = $state<RoutesCost | null>(null);
   let customRoutes  = $state<CustomRoute[]>([]);
+  let budgets       = $state<Budget[]>([]);
   let loadError     = $state<string | null>(null);
+
+  let budgetsByCategory = $derived(new Map(budgets.map(b => [b.category, b])));
 
   // ── Cache de categorías ────────────────────────────────────────────────────
   let _catsIngreso: string[] = [];
@@ -70,27 +67,12 @@
   let debtDialogBalance = $state(0);
   let debtDialogAmount  = $state(0);
 
-  let regularGoals = $derived(goals.filter(g => !g.is_debt_goal));
-  let debtGoals    = $derived(goals.filter(g =>  g.is_debt_goal));
-
   let amount = $derived(parseInt(amountRaw.replace(/\D/g, ""), 10) || 0);
 
   let displayCategories = $derived(
     kind === "ingreso"
-      ? categories.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
+      ? categories
       : categories.filter(c => c !== "Gasolina"),
-  );
-
-  let effectiveCategory = $derived(
-    category === "Carrera" && carreraPersona === "mama"   ? "Carrera mamá"  :
-    category === "Carrera" && carreraPersona === "cunada" ? "Carrera cuñada" :
-    category
-  );
-
-  let carreraOtraGasCost = $derived(
-    routeCosts && carreraOtraKm > 0
-      ? Math.round(carreraOtraKm / routeCosts.consumo_km_galon * routeCosts.precio_galon)
-      : 0
   );
 
   // ── Panel contextual (derecha) ─────────────────────────────────────────────
@@ -100,6 +82,10 @@
   let monthSummary   = $state<PeriodSummary | null>(null);
   let balanceData    = $state<CurrentBalance | null>(null);
   let activeGoals    = $state<GoalWithProgress[]>([]);
+
+  let goals        = $derived(activeGoals.map(g => g.goal));
+  let regularGoals = $derived(goals.filter(g => !g.is_debt_goal));
+  let debtGoals    = $derived(goals.filter(g =>  g.is_debt_goal));
 
   let catLoading   = $state(false);
   let catBudget    = $state<CategoryProgress | null>(null);
@@ -150,30 +136,32 @@
       if (cancelled) return;
       const data = k === "ingreso" ? _catsIngreso : _catsGasto;
       categories = data;
-      const filtered = k === "ingreso"
-        ? data.filter(c => c !== "Carrera mamá" && c !== "Carrera cuñada")
-        : data.filter(c => c !== "Gasolina");
+      const filtered = k === "ingreso" ? data : data.filter(c => c !== "Gasolina");
       if (!filtered.includes(category)) category = filtered[0] ?? "";
     }
     apply();
     return () => { cancelled = true; };
   });
 
-  // Resetear sub-selector al cambiar categoría o tipo
+  // Pre-fill gas km cuando la categoría de ingreso tiene ruta asociada
   $effect(() => {
-    const k = kind;
-    const c = category;
-    if (k !== "ingreso" || c !== "Carrera") {
-      carreraPersona   = null;
-      carreraOtraKmRaw = "";
+    const cat = category;
+    const k   = kind;
+    if (k !== "ingreso") { gasKmRaw = ""; return; }
+    const budget = budgetsByCategory.get(cat);
+    if (budget?.route_id) {
+      const route = customRoutes.find(r => r.id === budget.route_id);
+      if (route) gasKmRaw = route.km_round_trip.toString();
+    } else {
+      gasKmRaw = "";
     }
   });
 
-  // Cargar objetivos, costos de ruta y rutas personalizadas una vez
+  // Cargar costos de ruta, rutas personalizadas y presupuestos una vez
   $effect(() => {
-    invoke<Goal[]>("list_active_goals").then(g => { goals = g; }).catch(() => {});
     invoke<RoutesCost>("get_route_costs").then(r => { routeCosts = r; }).catch(() => {});
     invoke<CustomRoute[]>("get_custom_routes").then(r => { customRoutes = r; }).catch(() => {});
+    invoke<Budget[]>("list_budgets").then(b => { budgets = b; }).catch(() => {});
   });
 
   // Cargar estadísticas generales del panel derecho
@@ -185,7 +173,7 @@
       invoke<TransactionPage>("list_transactions", { filter: { page: 1, page_size: 1 } }),
       invoke<PeriodSummary>("get_period_summary", { period: { type: "Monthly" } }),
       invoke<CurrentBalance>("get_current_balance"),
-      invoke<GoalWithProgress[]>("list_goals", { status: "active" }),
+      invoke<GoalWithProgress[]>("list_goals", { status: "activo" }),
     ]).then(([recent, summary, bal, gls]) => {
       if (cancelled) return;
       lastTx       = recent.transactions[0] ?? null;
@@ -201,7 +189,7 @@
 
   // Cargar estadísticas de la categoría seleccionada
   $effect(() => {
-    const cat = effectiveCategory;
+    const cat = category;
     catBudget = null; catRecentTxs = []; catAvg3m = null;
     if (!cat) { catLoading = false; return; }
 
@@ -255,9 +243,6 @@
     e.preventDefault();
     if (amount <= 0) { saveError = "El monto debe ser mayor que 0."; return; }
     if (!category)   { saveError = "Selecciona una categoría."; return; }
-    if (kind === "ingreso" && category === "Carrera" && !carreraPersona) {
-      saveError = "Selecciona a quién fue la carrera."; return;
-    }
 
     if (kind === "gasto") {
       try {
@@ -288,7 +273,7 @@
           type: "ingreso",
           category: "Otro ingreso",
           amount,
-          note: note.trim() ? `Externo para: ${note.trim()}` : `Externo para ${effectiveCategory}`,
+          note: note.trim() ? `Externo para: ${note.trim()}` : `Externo para ${category}`,
           is_extraordinary: false,
           goal_id: null,
           gas_km: null,
@@ -309,21 +294,14 @@
     saveError = null;
     saved     = null;
 
-    let gasKmToSend: number | null = null;
-    if (effectiveCategory !== "Carrera mamá" && effectiveCategory !== "Carrera cuñada") {
-      if (category === "Carrera" && carreraPersona === "otra") {
-        gasKmToSend = carreraOtraKm > 0 ? carreraOtraKm : null;
-      } else {
-        gasKmToSend = gasKm > 0 ? gasKm : null;
-      }
-    }
+    const gasKmToSend = gasKm > 0 ? gasKm : null;
 
     try {
       const tx = await invoke<Transaction>("create_transaction", {
         input: {
           date,
           type: kind,
-          category: effectiveCategory,
+          category,
           amount,
           note: note.trim() || null,
           is_extraordinary: extraordinary,
@@ -334,19 +312,24 @@
       });
 
       bumpTxVersion();
-      savedGasKm = (category === "Carrera" && carreraPersona === "otra") ? carreraOtraKm : gasKm;
-      saved            = tx;
-      lastTx           = tx; // update context panel immediately
-      statsRevision++;       // reload balance + month summary
+      savedGasKm = gasKm;
+      saved         = tx;
+      lastTx        = tx;
+      statsRevision++;
 
-      amountRaw        = "";
-      note             = "";
-      extraordinary    = false;
-      goalId           = null;
-      gasKmRaw         = "";
-      carreraPersona   = null;
-      carreraOtraKmRaw = "";
-      date             = todayISO();
+      amountRaw     = "";
+      note          = "";
+      extraordinary = false;
+      goalId        = null;
+      date          = todayISO();
+      // Re-aplica el km por defecto si la categoría tiene ruta; si no, limpia
+      const bgt = budgetsByCategory.get(category);
+      if (kind === "ingreso" && bgt?.route_id) {
+        const route = customRoutes.find(r => r.id === bgt.route_id);
+        gasKmRaw = route ? route.km_round_trip.toString() : "";
+      } else {
+        gasKmRaw = "";
+      }
       setTimeout(() => { saved = null; savedGasKm = 0; }, 6000);
     } catch (e) {
       console.error("[registrar] save error:", e);
@@ -374,11 +357,7 @@
           {#if saved.is_debt}
             <span class="debt-tag">deuda</span>
           {/if}
-          {#if saved.type === "ingreso" && (saved.category === "Carrera mamá" || saved.category === "Carrera cuñada") && routeCosts}
-            <span class="auto-gas-note">
-              + Gasolina: {formatCOP(saved.category === "Carrera mamá" ? routeCosts.carrera_mama : routeCosts.carrera_cunada)}
-            </span>
-          {:else if savedGasKm > 0 && routeCosts}
+          {#if savedGasKm > 0 && routeCosts}
             <span class="auto-gas-note">
               + Gasolina: {formatCOP(Math.round(savedGasKm / routeCosts.consumo_km_galon * routeCosts.precio_galon))}
             </span>
@@ -449,73 +428,11 @@
         </select>
       </div>
 
-      <!-- Sub-selector para Carrera ingreso -->
-      {#if kind === "ingreso" && category === "Carrera"}
-        <div class="field carrera-field">
-          <label>¿A quién fue la carrera?</label>
-          <div class="persona-row">
-            <button
-              type="button"
-              class="persona-btn"
-              class:active={carreraPersona === "mama"}
-              onclick={() => carreraPersona = "mama"}
-            >Mamá</button>
-            <button
-              type="button"
-              class="persona-btn"
-              class:active={carreraPersona === "cunada"}
-              onclick={() => carreraPersona = "cunada"}
-            >Cuñada</button>
-            <button
-              type="button"
-              class="persona-btn"
-              class:active={carreraPersona === "otra"}
-              onclick={() => carreraPersona = "otra"}
-            >Otra persona</button>
-          </div>
-
-          {#if (carreraPersona === "mama" || carreraPersona === "cunada") && routeCosts}
-            <div class="carrera-gas-info">
-              <span class="gas-auto-label">Gasolina auto</span>
-              <span class="gas-auto-value">
-                {formatCOP(carreraPersona === "mama" ? routeCosts.carrera_mama : routeCosts.carrera_cunada)}
-                <span class="gas-km-badge">
-                  {(carreraPersona === "mama" ? routeCosts.km_carrera_mama : routeCosts.km_carrera_cunada).toFixed(1)} km
-                </span>
-              </span>
-            </div>
-          {/if}
-
-          {#if carreraPersona === "otra" && routeCosts}
-            <div class="gas-row">
-              <div class="gas-km-input">
-                <input
-                  type="text"
-                  inputmode="decimal"
-                  bind:value={carreraOtraKmRaw}
-                  placeholder="km"
-                />
-                <span class="km-unit">km</span>
-              </div>
-              {#if carreraOtraKm > 0}
-                <span class="gas-cost-hint">≈ {formatCOP(carreraOtraGasCost)}</span>
-              {/if}
-            </div>
-          {/if}
-        </div>
-      {/if}
-
       <!-- Gasolina adicional -->
-      {#if routeCosts && !(kind === "ingreso" && category === "Carrera")}
+      {#if routeCosts}
         <div class="field gas-field">
           <label>Gasolina <span class="optional">(opcional)</span></label>
           <div class="gas-row">
-            <button
-              type="button"
-              class="gas-preset-btn"
-              class:active={gasKmRaw === routeCosts.km_universidad.toString()}
-              onclick={() => selectGasPreset(routeCosts!.km_universidad)}
-            >Universidad</button>
             {#each customRoutes as route (route.id)}
               <button
                 type="button"
@@ -615,12 +532,12 @@
     {#if catLoading && !catBudget && catRecentTxs.length === 0}
       <div class="ctx-loading">
         <span class="ctx-loading-dot"></span>
-        <span class="ctx-loading-label">{effectiveCategory}</span>
+        <span class="ctx-loading-label">{category}</span>
       </div>
     {:else if showCatPanel}
 
       <div class="ctx-header">
-        <span class="ctx-cat-chip">{effectiveCategory}</span>
+        <span class="ctx-cat-chip">{category}</span>
       </div>
 
       {#if catBudget}
@@ -991,59 +908,6 @@
   input:focus, select:focus { border-color: var(--accent); }
 
   .field-hint { font-size: 0.75rem; color: var(--text-muted); }
-
-  /* ── Carrera sub-selector ── */
-  .carrera-field {
-    background: color-mix(in srgb, var(--success) 5%, var(--bg-surface));
-    border: 1px solid color-mix(in srgb, var(--success) 20%, transparent);
-    border-radius: var(--radius);
-    padding: 0.65rem 0.875rem;
-    gap: 0.6rem;
-  }
-
-  .persona-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
-
-  .persona-btn {
-    padding: 0.35rem 0.75rem;
-    border-radius: 999px;
-    font-size: 0.82rem;
-    font-weight: 500;
-    background: var(--bg-elevated);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-    transition: all 0.15s;
-  }
-
-  .persona-btn.active {
-    background: color-mix(in srgb, var(--success) 20%, var(--bg-elevated));
-    color: var(--success);
-    border-color: color-mix(in srgb, var(--success) 50%, transparent);
-  }
-
-  .persona-btn:hover:not(.active) { color: var(--text-primary); }
-
-  .carrera-gas-info {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.15rem;
-    padding: 0.35rem 0.5rem;
-    background: color-mix(in srgb, var(--success) 8%, var(--bg-elevated));
-    border-radius: 6px;
-  }
-
-  .gas-auto-label { font-size: 0.72rem; color: var(--text-muted); }
-
-  .gas-auto-value {
-    font-size: 0.82rem;
-    color: var(--success);
-    font-weight: 500;
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-
-  .gas-km-badge { font-size: 0.72rem; color: var(--text-muted); font-weight: 400; }
 
   /* ── Gasolina add-on ── */
   .gas-field {
