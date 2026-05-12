@@ -10,6 +10,8 @@ App de escritorio para gestión financiera personal. Registra ingresos y gastos,
 
 ## Instalación
 
+### Opción A — Paquete precompilado (recomendado)
+
 Descarga el paquete de la sección [Releases](../../releases) del repositorio:
 
 - **Fedora / openSUSE:** `Finanzas-x.x.x-1.x86_64.rpm`
@@ -21,6 +23,39 @@ sudo rpm -i Finanzas-*.rpm
 
 # Debian / Ubuntu
 sudo dpkg -i finanzas_*.deb
+```
+
+### Opción B — Compilar desde el código fuente
+
+**Requisitos:**
+
+- [Rust](https://rustup.rs/) (stable)
+- [Node.js](https://nodejs.org/) 20+
+- [pnpm](https://pnpm.io/installation)
+- Dependencias de sistema:
+
+```bash
+# Fedora
+sudo dnf install webkit2gtk4.1-devel openssl-devel
+
+# Debian / Ubuntu
+sudo apt install libwebkit2gtk-4.1-dev libssl-dev
+```
+
+```bash
+git clone <url-del-repo>
+cd Finanzas
+pnpm install
+pnpm tauri build
+# Genera .rpm y .deb en src-tauri/target/release/bundle/
+```
+
+```bash
+# Fedora
+sudo rpm -i src-tauri/target/release/bundle/rpm/Finanzas-*.rpm
+
+# Debian / Ubuntu
+sudo dpkg -i src-tauri/target/release/bundle/deb/finanzas_*.deb
 ```
 
 La app aparece en el menú de aplicaciones y en el system tray al iniciar sesión si el autoarranque está activado desde Configuración.
@@ -53,43 +88,19 @@ Al abrir la app por primera vez estará completamente vacía. Flujo recomendado:
 
 ## Desarrollo
 
-### Requisitos
-
-- [Rust](https://rustup.rs/) (stable)
-- [Node.js](https://nodejs.org/) 20+
-- [pnpm](https://pnpm.io/installation)
-- Dependencias de sistema para Tauri:
-
-```bash
-# Fedora
-sudo dnf install webkit2gtk4.1-devel openssl-devel
-
-# Debian / Ubuntu
-sudo apt install libwebkit2gtk-4.1-dev libssl-dev
-```
-
-### Correr en desarrollo
-
 ```bash
 git clone <url-del-repo>
 cd Finanzas
 pnpm install
-pnpm tauri dev
-```
-
-### Compilar release
-
-```bash
-pnpm tauri build
-# Genera .rpm y .deb en src-tauri/target/release/bundle/
+pnpm tauri dev   # inicia la app en modo desarrollo con hot-reload
 ```
 
 ### Otros comandos
 
 ```bash
-pnpm check    # Type-checking (svelte-check + tsc)
-pnpm dev      # Solo el frontend Vite (sin Tauri)
-pnpm build    # Solo el build del frontend
+pnpm check    # type-checking (svelte-check + tsc)
+pnpm dev      # solo el frontend Vite (sin Tauri)
+pnpm build    # solo el build del frontend
 ```
 
 ---
