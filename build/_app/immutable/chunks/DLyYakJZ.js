@@ -1,0 +1,1 @@
+const e=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"],o=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"],a=["dom","lun","mar","mié","jue","vie","sáb"];export{a as D,e as M,o as a};

@@ -825,8 +825,7 @@ pub async fn update_transaction(
 #[tauri::command]
 pub async fn delete_transaction(state: State<'_, DbState>, id: i64) -> AppResult<()> {
     let conn = get_conn(&state).await?;
-    let affected = conn
-        .execute(
+    conn.execute(
             "DELETE FROM transactions WHERE id = ?",
             libsql::params![id],
         )

@@ -96,6 +96,11 @@ La conexión se crea lazy en el primer `get_conn()` y se reutiliza en todas las 
 
 ## 4. Base de datos
 
+**Diagrama ER:** [`docs/Diagrams/DiagramaER.png`](Diagrams/DiagramaER.png)  
+**Schema completo:** [`docs/schema_finanzas.sql`](schema_finanzas.sql)
+
+
+
 **Motor:** SQLite via `libsql` (modo local)  
 **Ubicación:** `~/.local/share/finanzas/local.db`  
 **Inicialización:** El schema se aplica en cada arranque con `CREATE TABLE IF NOT EXISTS` (idempotente). No hay sistema de migraciones formal — solo `ALTER TABLE ADD COLUMN` para columnas añadidas posteriormente.
