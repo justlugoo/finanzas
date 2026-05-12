@@ -754,7 +754,7 @@
             class="route-input"
             disabled={addingBudget}
           />
-          <div style="--cs-padding: 0.32rem 0.6rem; font-size: 0.78rem; flex-shrink: 0;">
+          <div class="budget-type-select">
             <CustomSelect
               bind:value={newBudgetType}
               options={[
@@ -765,10 +765,14 @@
             />
           </div>
           {#if newBudgetType === "ingreso"}
-            <label class="fixed-toggle-label">
-              <input type="checkbox" bind:checked={newBudgetIsFixed} disabled={addingBudget} />
-              Fijo
-            </label>
+            <button
+              type="button"
+              class="fixed-pill"
+              class:fixed-pill-on={newBudgetIsFixed}
+              onclick={() => newBudgetIsFixed = !newBudgetIsFixed}
+              disabled={addingBudget}
+              title={newBudgetIsFixed ? "Ingreso fijo — clic para marcar como variable" : "Ingreso variable — clic para marcar como fijo"}
+            >{newBudgetIsFixed ? "Fijo" : "Variable"}</button>
           {/if}
           <button type="submit" class="btn-primary small" disabled={addingBudget || !newBudgetName.trim()}>
             {addingBudget ? "…" : "Agregar"}
@@ -1113,7 +1117,6 @@
     flex-direction: column;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    overflow: hidden;
   }
 
   .budget-row {
@@ -1125,7 +1128,15 @@
     border-bottom: 1px solid var(--border);
     transition: background 0.3s;
   }
-  .budget-row:last-child { border-bottom: none; }
+  .budget-row:first-child {
+    border-top-left-radius: calc(var(--radius) - 1px);
+    border-top-right-radius: calc(var(--radius) - 1px);
+  }
+  .budget-row:last-child {
+    border-bottom: none;
+    border-bottom-left-radius: calc(var(--radius) - 1px);
+    border-bottom-right-radius: calc(var(--radius) - 1px);
+  }
   .budget-row.row-saved { background: color-mix(in srgb, var(--success) 12%, transparent); }
 
   .budget-cat {
@@ -1180,16 +1191,13 @@
   .fixed-pill:hover:not(:disabled) { opacity: 0.75; }
   .fixed-pill:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .fixed-toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
+  .budget-type-select {
+    --cs-padding: 0.32rem 0.6rem;
     font-size: 0.78rem;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    cursor: pointer;
     flex-shrink: 0;
+    min-width: 90px;
   }
+
 
   .route-placeholder { font-size: 0.78rem; color: var(--text-muted); width: 110px; text-align: center; }
 

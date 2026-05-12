@@ -134,5 +134,54 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         (),
     ).await;
 
+    // Migración: versiones antiguas crearon `transactions` con FK explícitas a
+    // budgets(category) y goals(id). libsql compila SQLite con
+    // SQLITE_DEFAULT_FOREIGN_KEYS=1, así que esas FKs se aplican y bloquean
+    // cualquier INSERT. Detectamos la tabla antigua y la reconstruimos sin FKs.
+    let needs_rebuild: bool = {
+        let mut rows = conn
+            .query("PRAGMA foreign_key_list(transactions)", ())
+            .await
+            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+        rows.next()
+            .await
+            .map(|r| r.is_some())
+            .unwrap_or(false)
+    };
+
+    if needs_rebuild {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             BEGIN;
+             CREATE TABLE transactions_new (
+                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                 date                TEXT    NOT NULL,
+                 type                TEXT    NOT NULL CHECK (type IN ('ingreso', 'gasto')),
+                 category            TEXT    NOT NULL,
+                 amount              INTEGER NOT NULL CHECK (amount > 0),
+                 note                TEXT,
+                 is_extraordinary    INTEGER NOT NULL DEFAULT 0
+                                             CHECK (is_extraordinary IN (0, 1)),
+                 goal_id             INTEGER,
+                 created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+                 is_debt             INTEGER NOT NULL DEFAULT 0
+                                             CHECK (is_debt IN (0, 1))
+             );
+             INSERT INTO transactions_new
+                 SELECT id, date, type, category, amount, note,
+                        is_extraordinary, goal_id, created_at, is_debt
+                 FROM transactions;
+             DROP TABLE transactions;
+             ALTER TABLE transactions_new RENAME TO transactions;
+             CREATE INDEX IF NOT EXISTS idx_tx_date          ON transactions(date);
+             CREATE INDEX IF NOT EXISTS idx_tx_category      ON transactions(category);
+             CREATE INDEX IF NOT EXISTS idx_tx_date_category ON transactions(date, category);
+             COMMIT;
+             PRAGMA foreign_keys = ON;",
+        )
+        .await
+        .map_err(|e| AppError::DatabaseError(format!("migración FK transactions: {e}")))?;
+    }
+
     Ok(())
 }

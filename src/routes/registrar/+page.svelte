@@ -341,9 +341,9 @@
         gasKmRaw = "";
       }
       setTimeout(() => { saved = null; savedGasKm = 0; }, 6000);
-    } catch (e) {
+    } catch (e: any) {
       console.error("[registrar] save error:", e);
-      saveError = "No se pudo guardar. Intenta de nuevo.";
+      saveError = e?.kind === "ValidationError" ? e.message : "No se pudo guardar. Intenta de nuevo.";
     } finally {
       saving = false;
     }
