@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute } from "$lib/types";
+  import CustomSelect from "$lib/components/CustomSelect.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
@@ -38,8 +39,7 @@
   let newBudgetType   = $state<"ingreso" | "gasto">("gasto");
   let addingBudget    = $state(false);
   let budgetFormError = $state<string | null>(null);
-  let deletingBudget  = $state<string | null>(null);
-
+  let deletingBudget    = $state<string | null>(null);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
@@ -124,8 +124,9 @@
   }
 
   function handleBudgetInput(e: Event & { currentTarget: HTMLInputElement }) {
-    editBudgetRaw = e.currentTarget.value.replace(/\D/g, "");
-    e.currentTarget.value = editBudgetRaw;
+    const digits = e.currentTarget.value.replace(/\D/g, "");
+    editBudgetRaw = digits;
+    e.currentTarget.value = digits ? new Intl.NumberFormat("es-CO").format(parseInt(digits, 10)) : "";
   }
 
   async function saveEditBudget(category: string) {
@@ -500,24 +501,25 @@
               </div>
 
               {#if b.type === "ingreso"}
-                <select
-                  class="route-select"
-                  value={b.route_id ?? ""}
-                  onchange={(e) => saveRouteAssoc(b.category, e.currentTarget.value ? parseInt(e.currentTarget.value, 10) : null)}
-                >
-                  <option value="">Sin ruta</option>
-                  {#each customRoutes as r (r.id)}
-                    <option value={r.id}>{r.name}</option>
-                  {/each}
-                </select>
+                <div style="--cs-padding: 0.18rem 0.4rem; font-size: 0.75rem;">
+                  <CustomSelect
+                    value={b.route_id}
+                    options={[
+                      { value: null, label: "Sin ruta" },
+                      ...customRoutes.map(r => ({ value: r.id, label: r.name })),
+                    ]}
+                    onchange={(v) => saveRouteAssoc(b.category, v)}
+                  />
+                </div>
               {:else}
-                <span class="route-empty">—</span>
+                <span class="route-placeholder">—</span>
               {/if}
 
               <div class="budget-amount-cell">
                 {#if editingBudget === b.category}
                   <div class="budget-edit-row">
-                    <input type="text" inputmode="numeric" class="inline-input" value={editBudgetRaw}
+                    <input type="text" inputmode="numeric" class="inline-input"
+                      value={editBudgetRaw ? new Intl.NumberFormat("es-CO").format(parseInt(editBudgetRaw, 10)) : ""}
                       oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
                       disabled={savingBudget} autofocus />
                     <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
@@ -555,10 +557,16 @@
             class="route-input"
             disabled={addingBudget}
           />
-          <select bind:value={newBudgetType} class="type-select" disabled={addingBudget}>
-            <option value="gasto">Gasto</option>
-            <option value="ingreso">Ingreso</option>
-          </select>
+          <div style="--cs-padding: 0.32rem 0.6rem; font-size: 0.78rem; flex-shrink: 0;">
+            <CustomSelect
+              bind:value={newBudgetType}
+              options={[
+                { value: "gasto",   label: "Gasto" },
+                { value: "ingreso", label: "Ingreso" },
+              ]}
+              disabled={addingBudget}
+            />
+          </div>
           <button type="submit" class="btn-primary small" disabled={addingBudget || !newBudgetName.trim()}>
             {addingBudget ? "…" : "Agregar"}
           </button>
@@ -906,7 +914,7 @@
 
   .budget-row {
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
+    grid-template-columns: minmax(0, 1fr) 110px 148px 28px;
     align-items: center;
     gap: 0.5rem;
     padding: 0.45rem 0.6rem;
@@ -947,25 +955,9 @@
     color: var(--danger);
   }
 
-  .route-select {
-    -webkit-appearance: none;
-    appearance: none;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 0.75rem;
-    padding: 0.18rem 0.4rem;
-    outline: none;
-    cursor: pointer;
-    width: 110px;
-    transition: border-color 0.15s;
-  }
-  .route-select:focus { border-color: var(--accent); }
-  .route-empty { font-size: 0.78rem; color: var(--text-muted); width: 110px; text-align: center; }
+  .route-placeholder { font-size: 0.78rem; color: var(--text-muted); width: 110px; text-align: center; }
 
-  .budget-amount-cell { display: flex; justify-content: flex-end; min-width: 80px; }
+  .budget-amount-cell { display: flex; justify-content: flex-end; width: 148px; overflow: hidden; }
 
   .budget-add-form {
     display: flex;
@@ -974,22 +966,6 @@
     flex-wrap: wrap;
   }
 
-  .type-select {
-    -webkit-appearance: none;
-    appearance: none;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 0.78rem;
-    padding: 0.32rem 0.6rem;
-    outline: none;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: border-color 0.15s;
-  }
-  .type-select:focus { border-color: var(--accent); }
 
   .amount-btn {
     font-size: 0.82rem;
@@ -1019,7 +995,6 @@
     font-size: 0.82rem;
     padding: 0.2rem 0.4rem;
     outline: none;
-    width: 100px;
     text-align: right;
   }
 
@@ -1067,6 +1042,13 @@
     width: 100%;
   }
   input:focus { border-color: var(--accent); }
+
+  /* inline-input needs to come after input[type="text"] to win the cascade */
+  .budget-edit-row input {
+    width: 80px;
+    flex-shrink: 0;
+    box-sizing: border-box;
+  }
 
   /* ── Botones ── */
   .btn-primary {

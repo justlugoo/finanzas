@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import CustomSelect from "$lib/components/CustomSelect.svelte";
   import { txState, bumpTxVersion } from "$lib/txState.svelte";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
@@ -396,16 +397,16 @@
     </div>
 
     <!-- Categoría -->
-    <select
-      class="filter-select"
-      value={filterCat}
-      oninput={(e) => { filterCat = e.currentTarget.value; currentPage = 1; }}
-    >
-      <option value="">Todas las categorías</option>
-      {#each categories as cat}
-        <option value={cat}>{cat}</option>
-      {/each}
-    </select>
+    <div class="filter-select-wrap">
+      <CustomSelect
+        value={filterCat}
+        options={[
+          { value: "", label: "Todas las categorías" },
+          ...categories.map(c => ({ value: c, label: c })),
+        ]}
+        onchange={(v) => { filterCat = v; currentPage = 1; }}
+      />
+    </div>
 
     <!-- Deudas -->
     <button
@@ -703,12 +704,12 @@
         </div>
 
         <div class="field">
-          <label for="edit-cat">Categoría</label>
-          <select id="edit-cat" bind:value={editCategory}>
-            {#each categories as cat}
-              <option value={cat}>{cat}</option>
-            {/each}
-          </select>
+          <label>Categoría</label>
+          <CustomSelect
+            bind:value={editCategory}
+            options={categories.map(c => ({ value: c, label: c }))}
+            placeholder="Selecciona categoría…"
+          />
         </div>
 
         <div class="field">
@@ -876,24 +877,10 @@
   .kind-pill.active.income  { color: var(--success); }
   .kind-pill.active.expense { color: var(--danger); }
 
-  .filter-select {
-    -webkit-appearance: none;
-    appearance: none;
-    background-color: #14141f;
-    border: 1px solid #2a2a40;
-    border-radius: var(--radius);
-    color: #e8e8f0;
-    font: inherit;
+  .filter-select-wrap {
     font-size: 0.78rem;
-    padding: 0.32rem 1.7rem 0.32rem 0.6rem;
-    outline: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.4rem center;
-    background-size: 0.8rem;
+    --cs-padding: 0.32rem 0.6rem;
   }
-  .filter-select:focus { border-color: var(--accent); }
-  .filter-select option { background-color: #14141f; color: #e8e8f0; }
 
   .filter-pill {
     padding: 0.32rem 0.7rem;
@@ -1371,24 +1358,15 @@
   label, .field-label { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
 
   input[type="text"],
-  input[type="number"],
-  select {
+  input[type="number"] {
     -webkit-appearance: none; appearance: none;
     background-color: #1c1c2e; border: 1px solid #2a2a40;
     border-radius: var(--radius);
     color: #e8e8f0; font: inherit; font-size: 0.875rem;
-    padding: 0.5rem 2rem 0.5rem 0.65rem; outline: none; width: 100%;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 0.5rem center; background-size: 0.875rem;
+    padding: 0.5rem 0.65rem; outline: none; width: 100%;
   }
 
-  input[type="text"],
-  input[type="number"] {
-    background-image: none; padding-right: 0.65rem;
-  }
-
-  select option { background-color: #1c1c2e; color: #e8e8f0; }
-  input:focus, select:focus { border-color: var(--accent); }
+  input:focus { border-color: var(--accent); }
 
   .checkbox-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); cursor: pointer; }
   .checkbox-row input { accent-color: var(--accent); }

@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { GoalWithProgress, GoalDetail } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import CustomSelect from "$lib/components/CustomSelect.svelte";
 
   let goals       = $state<GoalWithProgress[]>([]);
   let loading     = $state(true);
@@ -347,12 +348,15 @@
         <DatePicker bind:value={eDate} />
       </div>
       <div class="field">
-        <label for="e-status">Estado</label>
-        <select id="e-status" bind:value={eStatus}>
-          <option value="activo">Activo</option>
-          <option value="pausado">Pausado</option>
-          <option value="completado">Completado</option>
-        </select>
+        <label>Estado</label>
+        <CustomSelect
+          bind:value={eStatus}
+          options={[
+            { value: "activo",     label: "Activo" },
+            { value: "pausado",    label: "Pausado" },
+            { value: "completado", label: "Completado" },
+          ]}
+        />
       </div>
       <div class="modal-actions">
         <button type="button" class="btn-secondary" onclick={() => { editGoal = null; }}>Cancelar</button>
@@ -738,9 +742,7 @@
   }
   .optional { font-weight: 400; color: var(--text-muted); }
 
-  input[type="text"],
-  input[type="date"],
-  select {
+  input[type="text"] {
     -webkit-appearance: none;
     appearance: none;
     background-color: #14141f;
@@ -755,18 +757,7 @@
     width: 100%;
   }
 
-  select {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.6rem center;
-    background-size: 1rem;
-    padding-right: 2.2rem;
-  }
-
-  select option { background-color: #14141f; color: #e8e8f0; }
-
-  input:focus, select:focus { border-color: var(--accent); }
-  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
+  input:focus { border-color: var(--accent); }
 
   /* ── Detalle ── */
   .detail-stats {

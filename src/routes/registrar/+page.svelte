@@ -5,6 +5,7 @@
     RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute,
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import CustomSelect from "$lib/components/CustomSelect.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
 
   // ── Estado del formulario ──────────────────────────────────────────────────
@@ -420,12 +421,12 @@
 
       <!-- Categoría -->
       <div class="field">
-        <label for="category">Categoría</label>
-        <select id="category" bind:value={category}>
-          {#each displayCategories as cat}
-            <option value={cat}>{cat}</option>
-          {/each}
-        </select>
+        <label>Categoría</label>
+        <CustomSelect
+          bind:value={category}
+          options={displayCategories.map(c => ({ value: c, label: c }))}
+          placeholder="Selecciona categoría…"
+        />
       </div>
 
       <!-- Gasolina adicional -->
@@ -499,24 +500,15 @@
       <!-- Objetivo / Deuda (solo en gastos) -->
       {#if kind === "gasto" && goals.length > 0}
         <div class="field">
-          <label for="goal">Asociar a <span class="optional">(opcional)</span></label>
-          <select id="goal" bind:value={goalId}>
-            <option value={null}>— Ninguno —</option>
-            {#if regularGoals.length > 0}
-              <optgroup label="Objetivos">
-                {#each regularGoals as g}
-                  <option value={g.id}>{g.name}</option>
-                {/each}
-              </optgroup>
-            {/if}
-            {#if debtGoals.length > 0}
-              <optgroup label="Deudas">
-                {#each debtGoals as g}
-                  <option value={g.id}>{g.name}</option>
-                {/each}
-              </optgroup>
-            {/if}
-          </select>
+          <label>Asociar a <span class="optional">(opcional)</span></label>
+          <CustomSelect
+            bind:value={goalId}
+            options={[{ value: null, label: "— Ninguno —" }]}
+            groups={[
+              ...(regularGoals.length > 0 ? [{ label: "Objetivos", options: regularGoals.map(g => ({ value: g.id, label: g.name })) }] : []),
+              ...(debtGoals.length   > 0 ? [{ label: "Deudas",    options: debtGoals.map(g => ({ value: g.id, label: g.name })) }] : []),
+            ]}
+          />
         </div>
       {/if}
 
@@ -879,8 +871,7 @@
 
   .optional { font-weight: 400; color: var(--text-muted); }
 
-  input[type="text"],
-  select {
+  input[type="text"] {
     -webkit-appearance: none;
     appearance: none;
     background-color: #14141f;
@@ -889,23 +880,13 @@
     color: #e8e8f0;
     font: inherit;
     font-size: 0.9rem;
-    padding: 0.55rem 2.2rem 0.55rem 0.75rem;
+    padding: 0.55rem 0.75rem;
     outline: none;
     transition: border-color 0.15s;
     width: 100%;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238888aa' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.6rem center;
-    background-size: 1rem;
   }
 
-  input[type="text"] {
-    background-image: none;
-    padding-right: 0.75rem;
-  }
-
-  select option { background-color: #14141f; color: #e8e8f0; }
-  input:focus, select:focus { border-color: var(--accent); }
+  input:focus { border-color: var(--accent); }
 
   .field-hint { font-size: 0.75rem; color: var(--text-muted); }
 
