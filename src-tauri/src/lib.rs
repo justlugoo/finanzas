@@ -188,6 +188,7 @@ pub fn run() {
             commands::get_weekly_gas_comparison,
             commands::get_route_costs,
             commands::update_budget,
+            commands::update_budget_fixed,
             commands::update_budget_route,
             commands::create_budget,
             commands::delete_budget,
@@ -200,6 +201,10 @@ pub fn run() {
             commands::get_custom_routes,
             commands::save_custom_route,
             commands::delete_custom_route,
+            commands::list_vehicles,
+            commands::create_vehicle,
+            commands::update_vehicle,
+            commands::delete_vehicle,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

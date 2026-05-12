@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute } from "$lib/types";
+  import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute, Vehicle } from "$lib/types";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
@@ -9,8 +9,22 @@
   let budgets        = $state<Budget[]>([]);
   let routeCosts     = $state<RoutesCost | null>(null);
   let customRoutes   = $state<CustomRoute[]>([]);
+  let vehicles       = $state<Vehicle[]>([]);
+  let selectedVehicleId = $state<number | null>(null);
+  let selectedVehicle   = $derived(vehicles.find(v => v.id === selectedVehicleId) ?? null);
   let loading        = $state(true);
   let pageError      = $state<string | null>(null);
+
+  // ── Vehículos ─────────────────────────────────────────────────────────────
+  let newVehicleName      = $state("");
+  let newVehicleKmRaw     = $state("");
+  let addingVehicle       = $state(false);
+  let vehicleFormError    = $state<string | null>(null);
+  let deletingVehicleId   = $state<number | null>(null);
+  let editingVehicleId    = $state<number | null>(null);
+  let editVehicleName     = $state("");
+  let editVehicleKmRaw    = $state("");
+  let savingVehicle       = $state(false);
 
   // ── Rutas personalizadas ──────────────────────────────────────────────────
   let newRouteName  = $state("");
@@ -35,11 +49,13 @@
   let savedBudgetCategory = $state<string | null>(null);
 
   // ── Presupuestos — crear / eliminar ──────────────────────────────────────
-  let newBudgetName   = $state("");
-  let newBudgetType   = $state<"ingreso" | "gasto">("gasto");
-  let addingBudget    = $state(false);
-  let budgetFormError = $state<string | null>(null);
-  let deletingBudget    = $state<string | null>(null);
+  let newBudgetName    = $state("");
+  let newBudgetType    = $state<"ingreso" | "gasto">("gasto");
+  let newBudgetIsFixed = $state(false);
+  let addingBudget     = $state(false);
+  let budgetFormError  = $state<string | null>(null);
+  let deletingBudget   = $state<string | null>(null);
+  let togglingFixed    = $state<string | null>(null);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
@@ -59,32 +75,23 @@
     async function load() {
       loading = true; pageError = null;
       try {
-        const [price, history, weekly, buds, routes] = await Promise.all([
+        const [price, history, weekly, buds, routes, vehs] = await Promise.all([
           invoke<GasPrice | null>("get_current_gas_price"),
           invoke<GasPrice[]>("list_gas_prices", { limit: 20 }),
           invoke<WeeklyGasPoint[]>("get_weekly_gas_comparison"),
           invoke<Budget[]>("list_budgets"),
           invoke<CustomRoute[]>("get_custom_routes"),
+          invoke<Vehicle[]>("list_vehicles"),
         ]);
 
-        // Auto-seed si no hay precio registrado
-        if (price === null) {
-          try {
-            const seeded = await invoke<GasPrice>("register_gas_price_manual", { price: 15881 });
-            currentPrice = seeded;
-            priceHistory = [seeded];
-          } catch {
-            currentPrice = null;
-            priceHistory = history;
-          }
-        } else {
-          currentPrice = price;
-          priceHistory = history;
-        }
+        currentPrice = price;
+        priceHistory = history;
 
         weeklyData   = weekly;
         budgets      = buds;
         customRoutes = routes;
+        vehicles     = vehs;
+        if (selectedVehicleId === null && vehs.length > 0) selectedVehicleId = vehs[0].id;
         routeCosts   = await invoke<RoutesCost>("get_route_costs");
       } catch (e) {
         console.error("[config] load error:", e);
@@ -211,13 +218,19 @@
     resetBusy = true;
     try {
       await invoke("factory_reset");
+      // Limpiar todo el estado en memoria para reflejar la DB vacía
+      budgets        = [];
+      customRoutes   = [];
+      vehicles       = [];
+      currentPrice   = null;
+      priceHistory   = [];
+      weeklyData     = [];
+      routeCosts     = null;
+      selectedVehicleId = null;
       resetSuccess = true;
-      resetStep = 0;
-      resetInput = "";
-      setTimeout(() => {
-        resetSuccess = false;
-        window.location.href = "/resumen";
-      }, 2000);
+      resetStep    = 0;
+      resetInput   = "";
+      setTimeout(() => { resetSuccess = false; }, 3000);
     } catch (e) {
       console.error("[config] factory_reset error:", e);
       pageError = "Error al restablecer los datos. Intenta de nuevo.";
@@ -243,6 +256,76 @@
     }
   }
 
+  async function addVehicle(ev: Event) {
+    ev.preventDefault();
+    const name = newVehicleName.trim();
+    const km = parseFloat(newVehicleKmRaw.replace(",", "."));
+    if (!name) { vehicleFormError = "El nombre es obligatorio."; return; }
+    if (!km || km <= 0) { vehicleFormError = "El rendimiento debe ser mayor que 0."; return; }
+    addingVehicle = true; vehicleFormError = null;
+    try {
+      const created = await invoke<Vehicle>("create_vehicle", { input: { name, km_per_gallon: km } });
+      vehicles = [...vehicles, created].sort((a, b) => a.name.localeCompare(b.name));
+      if (selectedVehicleId === null) selectedVehicleId = created.id;
+      newVehicleName = ""; newVehicleKmRaw = "";
+    } catch (e: any) {
+      vehicleFormError = e?.message ?? "No se pudo crear el vehículo.";
+    } finally {
+      addingVehicle = false;
+    }
+  }
+
+  function startEditVehicle(v: Vehicle) {
+    editingVehicleId = v.id;
+    editVehicleName  = v.name;
+    editVehicleKmRaw = v.km_per_gallon.toString();
+  }
+
+  async function saveEditVehicle(id: number) {
+    const name = editVehicleName.trim();
+    const km = parseFloat(editVehicleKmRaw.replace(",", "."));
+    if (!name || !km || km <= 0) { editingVehicleId = null; return; }
+    savingVehicle = true;
+    try {
+      const updated = await invoke<Vehicle>("update_vehicle", { id, input: { name, km_per_gallon: km } });
+      vehicles = vehicles.map(v => v.id === id ? updated : v);
+      editingVehicleId = null;
+    } catch (e) {
+      console.error("[config] save vehicle error:", e);
+      pageError = "No se pudo guardar el vehículo.";
+    } finally {
+      savingVehicle = false;
+    }
+  }
+
+  async function deleteVehicle(id: number) {
+    deletingVehicleId = id;
+    try {
+      await invoke("delete_vehicle", { id });
+      vehicles = vehicles.filter(v => v.id !== id);
+      if (selectedVehicleId === id) selectedVehicleId = vehicles[0]?.id ?? null;
+      if (editingVehicleId === id) editingVehicleId = null;
+    } catch (e) {
+      console.error("[config] delete vehicle error:", e);
+      pageError = "No se pudo eliminar el vehículo.";
+    } finally {
+      deletingVehicleId = null;
+    }
+  }
+
+  async function toggleFixed(category: string, currentFixed: boolean) {
+    togglingFixed = category;
+    try {
+      const updated = await invoke<Budget>("update_budget_fixed", { category, isFixed: !currentFixed });
+      budgets = budgets.map(b => b.category === category ? updated : b);
+    } catch (e) {
+      console.error("[config] toggle fixed error:", e);
+      pageError = "No se pudo cambiar el tipo de ingreso.";
+    } finally {
+      togglingFixed = null;
+    }
+  }
+
   async function addBudget(ev: Event) {
     ev.preventDefault();
     const name = newBudgetName.trim();
@@ -250,10 +333,14 @@
     addingBudget = true; budgetFormError = null;
     try {
       const created = await invoke<Budget>("create_budget", {
-        category: name, monthlyAmount: 0, kind: newBudgetType,
+        category: name,
+        monthlyAmount: 0,
+        kind: newBudgetType,
+        isFixed: newBudgetType === "ingreso" ? newBudgetIsFixed : false,
       });
       budgets = [...budgets, created].sort((a, b) => a.category.localeCompare(b.category));
       newBudgetName = "";
+      newBudgetIsFixed = false;
     } catch (e: any) {
       budgetFormError = e?.message ?? "No se pudo crear la categoría.";
     } finally {
@@ -346,11 +433,22 @@
       <!-- Costos por ruta -->
       {#if routeCosts}
         <div class="subsection">
-          <h3>Costos por ruta <span class="hint-inline">· {formatCOP(routeCosts.precio_galon)}/gal · {routeCosts.consumo_km_galon} km/gal</span></h3>
-          {#if customRoutes.length > 0}
+          <h3>Costos por ruta <span class="hint-inline">· {formatCOP(routeCosts.precio_galon)}/gal{#if selectedVehicle} · {selectedVehicle.km_per_gallon} km/gal{/if}</span></h3>
+          {#if vehicles.length > 1}
+            <div class="vehicle-select-row">
+              <span class="muted small">Vehículo:</span>
+              <div style="--cs-padding: 0.18rem 0.4rem; font-size: 0.75rem;">
+                <CustomSelect
+                  bind:value={selectedVehicleId}
+                  options={vehicles.map(v => ({ value: v.id, label: `${v.name} (${v.km_per_gallon} km/gal)` }))}
+                />
+              </div>
+            </div>
+          {/if}
+          {#if customRoutes.length > 0 && selectedVehicle}
             <div class="route-costs">
               {#each customRoutes as route (route.id)}
-                {@const cost = Math.round(route.km_round_trip / routeCosts.consumo_km_galon * routeCosts.precio_galon)}
+                {@const cost = Math.round(route.km_round_trip / selectedVehicle.km_per_gallon * routeCosts.precio_galon)}
                 <div class="route-row">
                   <span class="route-name">{route.name}</span>
                   <span class="route-km">{route.km_round_trip} km</span>
@@ -364,8 +462,10 @@
                 </div>
               {/each}
             </div>
-          {:else}
+          {:else if customRoutes.length === 0}
             <p class="muted small">Sin rutas. Agrégalas abajo.</p>
+          {:else}
+            <p class="muted small">Agrega un vehículo para ver los costos.</p>
           {/if}
           {#if routeError}
             <div class="banner error small">{routeError}</div>
@@ -480,6 +580,93 @@
       {/if}
     </section>
 
+    <!-- ══ Vehículos ══════════════════════════════════════════════════════════ -->
+    <section class="section">
+      <h2>Vehículos</h2>
+
+      {#if vehicles.length === 0}
+        <p class="muted">Sin vehículos. Agrega uno abajo.</p>
+      {:else}
+        <div class="vehicle-list">
+          {#each vehicles as v (v.id)}
+            <div class="vehicle-row">
+              {#if editingVehicleId === v.id}
+                <div class="vehicle-edit-form">
+                  <input
+                    type="text"
+                    class="route-input"
+                    bind:value={editVehicleName}
+                    disabled={savingVehicle}
+                    placeholder="Nombre"
+                  />
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    class="route-input route-input-km"
+                    bind:value={editVehicleKmRaw}
+                    disabled={savingVehicle}
+                    placeholder="km/gal"
+                  />
+                  <button
+                    class="budget-icon-btn budget-save"
+                    onclick={() => saveEditVehicle(v.id)}
+                    disabled={savingVehicle}
+                    title="Guardar"
+                  >✓</button>
+                  <button
+                    class="budget-icon-btn budget-cancel"
+                    onclick={() => { editingVehicleId = null; }}
+                    disabled={savingVehicle}
+                    title="Cancelar"
+                  >✕</button>
+                </div>
+              {:else}
+                <span class="vehicle-name">{v.name}</span>
+                <span class="vehicle-km">{v.km_per_gallon} km/gal</span>
+                <button class="cr-edit" onclick={() => startEditVehicle(v)} title="Editar">✎</button>
+                <button
+                  class="cr-del"
+                  onclick={() => deleteVehicle(v.id)}
+                  disabled={deletingVehicleId === v.id}
+                  title="Eliminar"
+                >{deletingVehicleId === v.id ? "…" : "✕"}</button>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Agregar vehículo -->
+      <div class="subsection">
+        <h3>Agregar vehículo</h3>
+        {#if vehicleFormError}
+          <div class="banner error small">{vehicleFormError}</div>
+        {/if}
+        <form class="route-add-form" onsubmit={addVehicle}>
+          <input
+            type="text"
+            placeholder="Nombre (ej. Moto, Carro)"
+            bind:value={newVehicleName}
+            class="route-input"
+            disabled={addingVehicle}
+          />
+          <input
+            type="text"
+            inputmode="decimal"
+            placeholder="km/gal"
+            bind:value={newVehicleKmRaw}
+            class="route-input route-input-km"
+            disabled={addingVehicle}
+          />
+          <button
+            type="submit"
+            class="btn-primary small"
+            disabled={addingVehicle || !newVehicleName.trim() || !newVehicleKmRaw}
+          >{addingVehicle ? "…" : "Agregar"}</button>
+        </form>
+      </div>
+    </section>
+
       {/if}
     </div>
 
@@ -497,7 +684,17 @@
             <div class="budget-row" class:row-saved={savedBudgetCategory === b.category}>
               <div class="budget-cat">
                 <span class="budget-name">{b.category}</span>
-                <span class="type-pill type-{b.type}">{b.type === "ingreso" ? "Ingreso" : "Gasto"}</span>
+                {#if b.type === "ingreso"}
+                  <button
+                    class="fixed-pill"
+                    class:fixed-pill-on={b.is_fixed}
+                    onclick={() => toggleFixed(b.category, b.is_fixed)}
+                    disabled={togglingFixed === b.category}
+                    title={b.is_fixed ? "Ingreso fijo — clic para marcar como variable" : "Ingreso variable — clic para marcar como fijo"}
+                  >{b.is_fixed ? "Fijo" : "Variable"}</button>
+                {:else}
+                  <span class="type-pill type-gasto">Gasto</span>
+                {/if}
               </div>
 
               {#if b.type === "ingreso"}
@@ -567,6 +764,12 @@
               disabled={addingBudget}
             />
           </div>
+          {#if newBudgetType === "ingreso"}
+            <label class="fixed-toggle-label">
+              <input type="checkbox" bind:checked={newBudgetIsFixed} disabled={addingBudget} />
+              Fijo
+            </label>
+          {/if}
           <button type="submit" class="btn-primary small" disabled={addingBudget || !newBudgetName.trim()}>
             {addingBudget ? "…" : "Agregar"}
           </button>
@@ -631,7 +834,7 @@
       <div class="banner success small">Datos eliminados. La app está lista para usar.</div>
     {/if}
     <div class="subsection">
-      <p class="danger-hint">Elimina permanentemente todas las transacciones, objetivos e historial de gasolina. Los presupuestos y la configuración no se borran.</p>
+      <p class="danger-hint">Elimina permanentemente todas las transacciones, objetivos, historial de gasolina, categorías, rutas y vehículos. La app quedará vacía lista para configurar desde cero.</p>
       <button type="button" class="btn-danger" onclick={openReset}>
         🗑 Restablecer datos de fábrica
       </button>
@@ -712,6 +915,7 @@
     flex-direction: column;
     gap: 1rem;
     min-width: 0;
+    padding-bottom: 1rem;
     scrollbar-width: thin;
     scrollbar-color: #2a2a40 transparent;
   }
@@ -955,6 +1159,38 @@
     color: var(--danger);
   }
 
+  .fixed-pill {
+    font-size: 0.62rem;
+    font-weight: 600;
+    padding: 0.1rem 0.35rem;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+    color: var(--text-muted);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+  }
+  .fixed-pill.fixed-pill-on {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .fixed-pill:hover:not(:disabled) { opacity: 0.75; }
+  .fixed-pill:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .fixed-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
   .route-placeholder { font-size: 0.78rem; color: var(--text-muted); width: 110px; text-align: center; }
 
   .budget-amount-cell { display: flex; justify-content: flex-end; width: 148px; overflow: hidden; }
@@ -1086,6 +1322,51 @@
 
   .hint { font-size: 0.75rem; color: var(--text-muted); }
   .muted { color: var(--text-muted); font-size: 0.82rem; }
+
+  /* ── Vehículos ── */
+  .vehicle-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .vehicle-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+  }
+  .vehicle-row:last-child { border-bottom: none; }
+
+  .vehicle-name { flex: 1; font-weight: 500; color: var(--text-primary); }
+  .vehicle-km   { font-size: 0.75rem; color: var(--text-muted); flex-shrink: 0; min-width: 70px; }
+
+  .vehicle-edit-form {
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+    flex: 1;
+  }
+
+  .cr-edit {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+  }
+  .cr-edit:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+  .vehicle-select-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
 
   /* ── Sistema ── */
   .row-between {

@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type {
     Budget, GoalWithProgress, Transaction, TransactionPage,
-    RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute,
+    RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute, Vehicle,
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
@@ -23,6 +23,8 @@
   let gasKmRaw   = $state("");
   let gasKm      = $derived(parseFloat(gasKmRaw) || 0);
   let savedGasKm = $state(0);
+  let vehicles   = $state<Vehicle[]>([]);
+  let vehicleId  = $state<number | null>(null);
 
   // ── Datos cargados ─────────────────────────────────────────────────────────
   let categories    = $state<string[]>([]);
@@ -158,11 +160,15 @@
     }
   });
 
-  // Cargar costos de ruta, rutas personalizadas y presupuestos una vez
+  // Cargar costos de ruta, rutas personalizadas, presupuestos y vehículos una vez
   $effect(() => {
     invoke<RoutesCost>("get_route_costs").then(r => { routeCosts = r; }).catch(() => {});
     invoke<CustomRoute[]>("get_custom_routes").then(r => { customRoutes = r; }).catch(() => {});
     invoke<Budget[]>("list_budgets").then(b => { budgets = b; }).catch(() => {});
+    invoke<Vehicle[]>("list_vehicles").then(vs => {
+      vehicles = vs;
+      if (vehicleId === null && vs.length > 0) vehicleId = vs[0].id;
+    }).catch(() => {});
   });
 
   // Cargar estadísticas generales del panel derecho
@@ -236,8 +242,10 @@
   }
 
   function gasHintCost(): number {
-    if (!routeCosts || gasKm <= 0) return 0;
-    return Math.round(gasKm / routeCosts.consumo_km_galon * routeCosts.precio_galon);
+    if (!routeCosts || gasKm <= 0 || vehicleId === null) return 0;
+    const v = vehicles.find(v => v.id === vehicleId);
+    if (!v) return 0;
+    return Math.round(gasKm / v.km_per_gallon * routeCosts.precio_galon);
   }
 
   async function handleSubmit(e: Event) {
@@ -309,6 +317,7 @@
           goal_id: goalId,
           gas_km: gasKmToSend,
           is_debt: isDebt,
+          vehicle_id: gasKmToSend !== null ? vehicleId : null,
         },
       });
 
@@ -358,10 +367,13 @@
           {#if saved.is_debt}
             <span class="debt-tag">deuda</span>
           {/if}
-          {#if savedGasKm > 0 && routeCosts}
-            <span class="auto-gas-note">
-              + Gasolina: {formatCOP(Math.round(savedGasKm / routeCosts.consumo_km_galon * routeCosts.precio_galon))}
-            </span>
+          {#if savedGasKm > 0 && routeCosts && vehicleId !== null}
+            {@const sv = vehicles.find(v => v.id === vehicleId)}
+            {#if sv}
+              <span class="auto-gas-note">
+                + Gasolina: {formatCOP(Math.round(savedGasKm / sv.km_per_gallon * routeCosts.precio_galon))}
+              </span>
+            {/if}
           {/if}
         </div>
         <button class="banner-close" onclick={() => { saved = null; savedGasKm = 0; }}>×</button>
@@ -430,32 +442,45 @@
       </div>
 
       <!-- Gasolina adicional -->
-      {#if routeCosts}
+      {#if routeCosts && kind === "ingreso"}
         <div class="field gas-field">
           <label>Gasolina <span class="optional">(opcional)</span></label>
-          <div class="gas-row">
-            {#each customRoutes as route (route.id)}
-              <button
-                type="button"
-                class="gas-preset-btn"
-                class:active={gasKmRaw === route.km_round_trip.toString()}
-                onclick={() => selectGasPreset(route.km_round_trip)}
-                title={route.description ?? route.name}
-              >{route.name}</button>
-            {/each}
-            <div class="gas-km-input">
-              <input
-                type="text"
-                inputmode="decimal"
-                bind:value={gasKmRaw}
-                placeholder="km"
-              />
-              <span class="km-unit">km</span>
+          {#if vehicles.length === 0}
+            <p class="gas-no-vehicles">Configura un vehículo en <a href="/config">Configuración</a> para registrar gasolina.</p>
+          {:else}
+            <div class="gas-row">
+              {#each customRoutes as route (route.id)}
+                <button
+                  type="button"
+                  class="gas-preset-btn"
+                  class:active={gasKmRaw === route.km_round_trip.toString()}
+                  onclick={() => selectGasPreset(route.km_round_trip)}
+                  title={route.description ?? route.name}
+                >{route.name}</button>
+              {/each}
+              <div class="gas-km-input">
+                <input
+                  type="text"
+                  inputmode="decimal"
+                  bind:value={gasKmRaw}
+                  placeholder="km"
+                />
+                <span class="km-unit">km</span>
+              </div>
             </div>
             {#if gasKm > 0}
-              <span class="gas-cost-hint">≈ {formatCOP(gasHintCost())}</span>
+              <div class="gas-vehicle-row">
+                <CustomSelect
+                  bind:value={vehicleId}
+                  options={vehicles.map(v => ({ value: v.id, label: `${v.name} · ${v.km_per_gallon} km/gal` }))}
+                  placeholder="Vehículo…"
+                />
+                {#if vehicleId !== null}
+                  <span class="gas-cost-hint">≈ {formatCOP(gasHintCost())}</span>
+                {/if}
+              </div>
             {/if}
-          </div>
+          {/if}
         </div>
       {/if}
 
@@ -952,7 +977,24 @@
     color: var(--accent);
     font-weight: 500;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
+
+  .gas-vehicle-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .gas-no-vehicles {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+  .gas-no-vehicles a { color: var(--accent); text-decoration: none; }
+  .gas-no-vehicles a:hover { text-decoration: underline; }
 
   /* ── Checkbox ── */
   .checkbox-row {

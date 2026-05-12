@@ -33,3 +33,4 @@ credentials.toml
 *.msi
 *.deb
 *.rpm
+package-lock.json

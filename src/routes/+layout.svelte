@@ -37,7 +37,7 @@
       invoke<CurrentBalance>("get_current_balance"),
       invoke<PeriodSummary>("get_period_summary", { period: { type: "Monthly" } }),
       invoke<TransactionPage>("list_transactions", { filter: { page: 1, page_size: 10 } }),
-      invoke<GoalWithProgress[]>("list_goals", { status: "active" }),
+      invoke<GoalWithProgress[]>("list_goals", { status: "activo" }),
     ]).then(([bal, summary, recent, goals]) => {
       if (cancelled) return;
       balance      = bal.balance;

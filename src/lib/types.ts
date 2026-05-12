@@ -5,6 +5,7 @@ export interface Budget {
   monthly_amount: number;
   route_id: number | null;
   type: "ingreso" | "gasto";
+  is_fixed: boolean;
 }
 
 export interface Transaction {
@@ -30,6 +31,7 @@ export interface TransactionInput {
   goal_id: number | null;
   gas_km: number | null;
   is_debt?: boolean;
+  vehicle_id?: number | null;
 }
 
 export interface CurrentBalance {
@@ -61,7 +63,7 @@ export interface CategoryProgress {
   percentage: number;
   is_over: boolean;
   kind: string;
-  sub_breakdown?: { label: string; amount: number }[];
+  is_fixed: boolean;
 }
 
 export interface MonthComparison {
@@ -111,7 +113,12 @@ export interface WeeklyGasPoint {
 
 export interface RoutesCost {
   precio_galon: number;
-  consumo_km_galon: number;
+}
+
+export interface Vehicle {
+  id: number;
+  name: string;
+  km_per_gallon: number;
 }
 
 export interface GasPrice {

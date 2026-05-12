@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
+  import { MESES, MESES_CORTO } from "$lib/constants";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -12,9 +13,6 @@
     Yearly: "Anual",
   };
 
-  const MESES = ["enero","febrero","marzo","abril","mayo","junio",
-                 "julio","agosto","septiembre","octubre","noviembre","diciembre"];
-
   let activePeriod = $state<PeriodKey>("Monthly");
   let summary      = $state<PeriodSummary | null>(null);
   let categories   = $state<CategoryProgress[]>([]);
@@ -24,23 +22,9 @@
   let error        = $state<string | null>(null);
   let budgetView   = $state<"ingresos" | "gastos">("ingresos");
 
-  const INCOME_FIXED    = ["Mesada", "Viaje"];
-  const INCOME_VARIABLE = ["Eventual", "Otro ingreso"];
-
-  let incomeFixed = $derived(
-    INCOME_FIXED
-      .map(name => categories.find(c => c.category === name))
-      .filter((c): c is CategoryProgress => c !== undefined),
-  );
-  let incomeVariable = $derived(
-    INCOME_VARIABLE.map(name =>
-      categories.find(c => c.category === name) ??
-      ({ category: name, monthly_target: 0, current_amount: 0, percentage: 0, is_over: false, kind: "ingreso" } as CategoryProgress)
-    ),
-  );
-  let expenseTracked = $derived(
-    categories.filter(c => !INCOME_FIXED.includes(c.category) && !INCOME_VARIABLE.includes(c.category)),
-  );
+  let incomeFixed    = $derived(categories.filter(c => c.kind === "ingreso" && c.is_fixed));
+  let incomeVariable = $derived(categories.filter(c => c.kind === "ingreso" && !c.is_fixed));
+  let expenseTracked = $derived(categories.filter(c => c.kind === "gasto"));
 
   let incomeTotals = $derived.by(() => {
     const all = [...incomeFixed, ...incomeVariable];
@@ -113,8 +97,7 @@
 
   function formatDate(d: string): string {
     const [, m, day] = d.split("-");
-    const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
-    return `${parseInt(day)} ${meses[parseInt(m) - 1]}`;
+    return `${parseInt(day)} ${MESES_CORTO[parseInt(m) - 1]}`;
   }
 
 </script>
@@ -207,14 +190,6 @@
                     <div class="cat-header">
                       <div class="cat-name-col">
                         <span class="cat-name">{cat.category}</span>
-                        {#if cat.sub_breakdown && cat.sub_breakdown.length > 0}
-                          <div class="cat-sub">
-                            {#each cat.sub_breakdown as s, i}
-                              {#if i > 0}<span class="cat-sub-sep">·</span>{/if}
-                              <span>{s.label}: {formatCOP(s.amount)}</span>
-                            {/each}
-                          </div>
-                        {/if}
                       </div>
                       <span class="cat-amounts">
                         <span class:income-over={cat.is_over}>{formatCOP(cat.current_amount)}</span>

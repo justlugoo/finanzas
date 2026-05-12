@@ -1,16 +1,12 @@
 <script lang="ts">
-  let { value = $bindable("") }: { value: string } = $props();
+  import { MESES, MESES_CORTO } from "$lib/constants";
 
-  const MESES = [
-    "enero","febrero","marzo","abril","mayo","junio",
-    "julio","agosto","septiembre","octubre","noviembre","diciembre",
-  ];
-  const MESES_CORTO = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+  let { value = $bindable("") }: { value: string } = $props();
 
   let open    = $state(false);
   let tempDay   = $state(1);
   let tempMonth = $state(1);
-  let tempYear  = $state(2026);
+  let tempYear  = $state(new Date().getFullYear());
 
   function parseISO(iso: string) {
     const p = iso.split("-");

@@ -29,6 +29,7 @@ pub struct Budget {
     pub monthly_amount: i64,
     pub route_id: Option<i64>,
     pub r#type: String,
+    pub is_fixed: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -73,6 +74,8 @@ pub struct TransactionInput {
     pub gas_km: Option<f64>,
     #[serde(default)]
     pub is_debt: bool,
+    #[serde(default)]
+    pub vehicle_id: Option<i64>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -116,6 +119,7 @@ pub struct CategoryProgress {
     pub percentage: f64,
     pub is_over: bool,
     pub kind: String,
+    pub is_fixed: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -194,7 +198,19 @@ pub struct WeeklyGasPoint {
 #[derive(Serialize, Debug)]
 pub struct RoutesCost {
     pub precio_galon: i64,
-    pub consumo_km_galon: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Vehicle {
+    pub id: i64,
+    pub name: String,
+    pub km_per_gallon: f64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct VehicleInput {
+    pub name: String,
+    pub km_per_gallon: f64,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -267,46 +283,40 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-async fn read_config_f64(conn: &libsql::Connection, key: &str, default: f64) -> f64 {
-    let Ok(mut rows) = conn
-        .query("SELECT value FROM config WHERE key = ?", libsql::params![key])
-        .await
-    else {
-        return default;
-    };
-    rows.next()
-        .await
-        .ok()
-        .flatten()
-        .and_then(|r| r.get::<String>(0).ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
-}
-
 async fn insert_auto_gas(
     conn: &libsql::Connection,
     date: &str,
     context: &str,
     km: f64,
+    vehicle_id: i64,
 ) -> AppResult<()> {
-    let consumo = read_config_f64(conn, "consumo_moto_km_galon", 350.0).await;
+    let km_per_gallon: f64 = {
+        let mut rows = conn
+            .query("SELECT km_per_gallon FROM vehicles WHERE id = ?", libsql::params![vehicle_id])
+            .await?;
+        rows.next().await?
+            .and_then(|r| r.get::<f64>(0).ok())
+            .ok_or_else(|| AppError::ValidationError(format!("vehículo {vehicle_id} no encontrado")))?
+    };
 
-    let precio: i64 = {
+    let precio: Option<i64> = {
         let mut price_rows = conn
             .query(
                 "SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1",
                 (),
             )
             .await?;
-        price_rows
-            .next()
-            .await?
-            .map(|r| r.get(0).unwrap_or(15881))
-            .unwrap_or(15881)
-        // price_rows drops here — cursor cerrado antes del INSERT
+        price_rows.next().await?.and_then(|r| r.get(0).ok())
     };
 
-    let gas_cost = ((km / consumo) * precio as f64).round() as i64;
+    let precio = match precio {
+        Some(p) => p,
+        None => return Err(AppError::ValidationError(
+            "no hay precio de gasolina registrado — ve a Configuración para añadirlo".into(),
+        )),
+    };
+
+    let gas_cost = ((km / km_per_gallon) * precio as f64).round() as i64;
     let gas_note = format!("Auto: Gasolina {} ({:.1}km)", context, km);
 
     conn.execute(
@@ -465,7 +475,7 @@ fn row_to_transaction(row: &libsql::Row) -> Result<Transaction, libsql::Error> {
 pub async fn list_budgets(state: State<'_, DbState>) -> AppResult<Vec<Budget>> {
     let conn = get_conn(&state).await?;
     let mut rows = conn
-        .query("SELECT category, monthly_amount, route_id, type FROM budgets ORDER BY category", ())
+        .query("SELECT category, monthly_amount, route_id, type, is_fixed FROM budgets ORDER BY category", ())
         .await?;
 
     let mut budgets = Vec::new();
@@ -475,6 +485,7 @@ pub async fn list_budgets(state: State<'_, DbState>) -> AppResult<Vec<Budget>> {
             monthly_amount: row.get(1)?,
             route_id: row.get(2).ok(),
             r#type: row.get(3)?,
+            is_fixed: row.get::<i64>(4).unwrap_or(0) != 0,
         });
     }
     Ok(budgets)
@@ -497,6 +508,15 @@ pub async fn create_transaction(
 
     let gas_km_val = input.gas_km.unwrap_or(0.0);
     let auto_gas   = gas_km_val > 0.0;
+
+    let vehicle_id = if auto_gas {
+        match input.vehicle_id {
+            Some(id) => id,
+            None => return Err(AppError::ValidationError(
+                "selecciona un vehículo para calcular el gasto de gasolina".into(),
+            )),
+        }
+    } else { 0 };
 
     let conn = get_conn(&state).await?;
 
@@ -548,7 +568,7 @@ pub async fn create_transaction(
         // rows drops aquí — cursor cerrado antes de autogas
     };
     if auto_gas {
-        if let Err(e) = insert_auto_gas(&conn, &input.date, &input.category, gas_km_val).await {
+        if let Err(e) = insert_auto_gas(&conn, &input.date, &input.category, gas_km_val, vehicle_id).await {
             let _ = conn.execute("ROLLBACK", ()).await;
             return Err(e);
         }
@@ -812,8 +832,6 @@ pub async fn delete_transaction(state: State<'_, DbState>, id: i64) -> AppResult
         )
         .await?;
 
-    if affected > 0 {
-    }
     Ok(())
 }
 
@@ -876,14 +894,11 @@ pub async fn get_category_progress(
                     SELECT SUM(amount) FROM transactions
                     WHERE category = b.category AND date >= ? AND date <= ?
                 ), 0) AS current_amount,
-                COALESCE((
-                    SELECT type FROM transactions
-                    WHERE category = b.category AND date >= ? AND date <= ?
-                    GROUP BY type ORDER BY COUNT(*) DESC LIMIT 1
-                ), 'gasto') AS inferred_kind
+                b.type,
+                b.is_fixed
              FROM budgets b
              ORDER BY b.category",
-            libsql::params![start.clone(), end.clone(), start, end],
+            libsql::params![start.clone(), end.clone()],
         )
         .await?;
 
@@ -893,6 +908,7 @@ pub async fn get_category_progress(
         let monthly_raw: i64 = row.get(1)?;
         let current_amount: i64 = row.get(2)?;
         let kind: String = row.get(3)?;
+        let is_fixed: bool = row.get::<i64>(4).unwrap_or(0) != 0;
         let monthly_target = scale_monthly(monthly_raw, &period);
 
         let percentage = if monthly_target > 0 {
@@ -908,6 +924,7 @@ pub async fn get_category_progress(
             current_amount,
             percentage,
             kind,
+            is_fixed,
         });
     }
     Ok(progress)
@@ -1599,9 +1616,6 @@ pub async fn get_weekly_gas_comparison(
 #[tauri::command]
 pub async fn get_route_costs(state: State<'_, DbState>) -> AppResult<RoutesCost> {
     let conn = get_conn(&state).await?;
-
-    let consumo = read_config_f64(&conn, "consumo_moto_km_galon", 350.0).await;
-
     let mut price_rows = conn
         .query(
             "SELECT price_per_gallon FROM gas_prices ORDER BY date DESC LIMIT 1",
@@ -1611,13 +1625,79 @@ pub async fn get_route_costs(state: State<'_, DbState>) -> AppResult<RoutesCost>
     let precio_galon: i64 = price_rows
         .next()
         .await?
-        .map(|r| r.get(0).unwrap_or(15881))
-        .unwrap_or(15881);
+        .and_then(|r| r.get(0).ok())
+        .unwrap_or(0);
+    Ok(RoutesCost { precio_galon })
+}
 
-    Ok(RoutesCost {
-        precio_galon,
-        consumo_km_galon: consumo,
-    })
+#[tauri::command]
+pub async fn list_vehicles(state: State<'_, DbState>) -> AppResult<Vec<Vehicle>> {
+    let conn = get_conn(&state).await?;
+    let mut rows = conn
+        .query("SELECT id, name, km_per_gallon FROM vehicles ORDER BY name", ())
+        .await?;
+    let mut vehicles = Vec::new();
+    while let Some(row) = rows.next().await? {
+        vehicles.push(Vehicle { id: row.get(0)?, name: row.get(1)?, km_per_gallon: row.get(2)? });
+    }
+    Ok(vehicles)
+}
+
+#[tauri::command]
+pub async fn create_vehicle(
+    state: State<'_, DbState>,
+    input: VehicleInput,
+) -> AppResult<Vehicle> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::ValidationError("el nombre no puede estar vacío".into()));
+    }
+    if input.km_per_gallon <= 0.0 {
+        return Err(AppError::ValidationError("el rendimiento debe ser mayor que 0".into()));
+    }
+    let conn = get_conn(&state).await?;
+    conn.execute(
+        "INSERT INTO vehicles (name, km_per_gallon) VALUES (?, ?)",
+        libsql::params![name.clone(), input.km_per_gallon],
+    ).await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    let id = conn.last_insert_rowid();
+    Ok(Vehicle { id, name, km_per_gallon: input.km_per_gallon })
+}
+
+#[tauri::command]
+pub async fn update_vehicle(
+    state: State<'_, DbState>,
+    id: i64,
+    input: VehicleInput,
+) -> AppResult<Vehicle> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::ValidationError("el nombre no puede estar vacío".into()));
+    }
+    if input.km_per_gallon <= 0.0 {
+        return Err(AppError::ValidationError("el rendimiento debe ser mayor que 0".into()));
+    }
+    let conn = get_conn(&state).await?;
+    let affected = conn.execute(
+        "UPDATE vehicles SET name = ?, km_per_gallon = ? WHERE id = ?",
+        libsql::params![name.clone(), input.km_per_gallon, id],
+    ).await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("vehículo {id} no existe")));
+    }
+    Ok(Vehicle { id, name, km_per_gallon: input.km_per_gallon })
+}
+
+#[tauri::command]
+pub async fn delete_vehicle(state: State<'_, DbState>, id: i64) -> AppResult<()> {
+    let conn = get_conn(&state).await?;
+    let affected = conn
+        .execute("DELETE FROM vehicles WHERE id = ?", libsql::params![id])
+        .await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("vehículo {id} no existe")));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1643,10 +1723,16 @@ pub async fn update_budget(
     }
 
     let mut rows = conn
-        .query("SELECT route_id, type FROM budgets WHERE category = ?", libsql::params![category.clone()])
+        .query("SELECT route_id, type, is_fixed FROM budgets WHERE category = ?", libsql::params![category.clone()])
         .await?;
     let row = rows.next().await?.ok_or_else(|| AppError::NotFound(category.clone()))?;
-    Ok(Budget { category, monthly_amount, route_id: row.get(0).ok(), r#type: row.get(1)? })
+    Ok(Budget {
+        category,
+        monthly_amount,
+        route_id: row.get(0).ok(),
+        r#type: row.get(1)?,
+        is_fixed: row.get::<i64>(2).unwrap_or(0) != 0,
+    })
 }
 
 #[tauri::command]
@@ -1674,6 +1760,7 @@ pub async fn create_budget(
     category: String,
     monthly_amount: i64,
     kind: String,
+    is_fixed: Option<bool>,
 ) -> AppResult<Budget> {
     let category = category.trim().to_string();
     if category.is_empty() {
@@ -1685,10 +1772,11 @@ pub async fn create_budget(
     if !matches!(kind.as_str(), "ingreso" | "gasto") {
         return Err(AppError::ValidationError("tipo debe ser 'ingreso' o 'gasto'".into()));
     }
+    let effective_fixed = if kind == "ingreso" { is_fixed.unwrap_or(false) } else { false };
     let conn = get_conn(&state).await?;
     conn.execute(
-        "INSERT INTO budgets (category, monthly_amount, type) VALUES (?, ?, ?)",
-        libsql::params![category.clone(), monthly_amount, kind.clone()],
+        "INSERT INTO budgets (category, monthly_amount, type, is_fixed) VALUES (?, ?, ?, ?)",
+        libsql::params![category.clone(), monthly_amount, kind.clone(), effective_fixed as i64],
     ).await.map_err(|e| {
         if e.to_string().to_lowercase().contains("unique") {
             AppError::ValidationError(format!("la categoría '{category}' ya existe"))
@@ -1696,7 +1784,43 @@ pub async fn create_budget(
             AppError::DatabaseError(e.to_string())
         }
     })?;
-    Ok(Budget { category, monthly_amount, route_id: None, r#type: kind })
+    Ok(Budget { category, monthly_amount, route_id: None, r#type: kind, is_fixed: effective_fixed })
+}
+
+#[tauri::command]
+pub async fn update_budget_fixed(
+    state: State<'_, DbState>,
+    category: String,
+    is_fixed: bool,
+) -> AppResult<Budget> {
+    let conn = get_conn(&state).await?;
+    let affected = conn
+        .execute(
+            "UPDATE budgets SET is_fixed = ? WHERE category = ? AND type = 'ingreso'",
+            libsql::params![is_fixed as i64, category.clone()],
+        )
+        .await?;
+
+    if affected == 0 {
+        return Err(AppError::NotFound(format!(
+            "categoría de ingreso '{category}' no existe"
+        )));
+    }
+
+    let mut rows = conn
+        .query(
+            "SELECT category, monthly_amount, route_id, type, is_fixed FROM budgets WHERE category = ?",
+            libsql::params![category.clone()],
+        )
+        .await?;
+    let row = rows.next().await?.ok_or_else(|| AppError::NotFound(category))?;
+    Ok(Budget {
+        category: row.get(0)?,
+        monthly_amount: row.get(1)?,
+        route_id: row.get(2).ok(),
+        r#type: row.get(3)?,
+        is_fixed: row.get::<i64>(4).unwrap_or(0) != 0,
+    })
 }
 
 #[tauri::command]
@@ -1810,13 +1934,12 @@ pub async fn backup_database() -> AppResult<String> {
 pub async fn factory_reset(state: State<'_, DbState>) -> AppResult<()> {
     {
         let conn = get_conn(&state).await?;
-        conn.execute("DELETE FROM transactions", libsql::params![]).await?;
-        conn.execute("DELETE FROM goals",        libsql::params![]).await?;
-        conn.execute("DELETE FROM gas_prices",   libsql::params![]).await?;
-        conn.execute(
-            "INSERT INTO gas_prices (date, price_per_gallon, source) VALUES (date('now'), 15881, 'manual')",
-            libsql::params![],
-        ).await?;
+        conn.execute("DELETE FROM transactions",  libsql::params![]).await?;
+        conn.execute("DELETE FROM goals",         libsql::params![]).await?;
+        conn.execute("DELETE FROM gas_prices",    libsql::params![]).await?;
+        conn.execute("DELETE FROM budgets",       libsql::params![]).await?;
+        conn.execute("DELETE FROM custom_routes", libsql::params![]).await?;
+        conn.execute("DELETE FROM vehicles",      libsql::params![]).await?;
     }
     Ok(())
 }

@@ -4,6 +4,7 @@
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import { txState, bumpTxVersion } from "$lib/txState.svelte";
+  import { MESES_CORTO, DIAS_SEMANA } from "$lib/constants";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -136,20 +137,13 @@
 
   function formatDate(d: string): string {
     const [, m, day] = d.split("-");
-    const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
-    return `${parseInt(day)} ${meses[parseInt(m) - 1]}`;
+    return `${parseInt(day)} ${MESES_CORTO[parseInt(m) - 1]}`;
   }
 
   function formatDateLong(iso: string): string {
     const [y, m, d] = iso.split("-").map(Number);
     const dt = new Date(y, m - 1, d);
-    const days = ["dom","lun","mar","mié","jue","vie","sáb"];
-    const months = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
-    return `${d} ${months[m - 1]}, ${days[dt.getDay()]}`;
-  }
-
-  function transformCategories(raw: string[]): string[] {
-    return raw;
+    return `${d} ${MESES_CORTO[m - 1]}, ${DIAS_SEMANA[dt.getDay()]}`;
   }
 
   function buildFilter() {
@@ -197,7 +191,7 @@
         if (!cancelled) {
           txs           = result.transactions;
           totalCount    = result.total_count;
-          categories    = transformCategories(cats);
+          categories    = cats;
           periodSummary = pSummary;
           loading       = false;
         }
