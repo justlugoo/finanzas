@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { gasApi, budgetApi, vehicleApi, routeApi, systemApi } from "$lib/api";
   import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute, Vehicle } from "$lib/types";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
 
@@ -76,12 +76,12 @@
       loading = true; pageError = null;
       try {
         const [price, history, weekly, buds, routes, vehs] = await Promise.all([
-          invoke<GasPrice | null>("get_current_gas_price"),
-          invoke<GasPrice[]>("list_gas_prices", { limit: 20 }),
-          invoke<WeeklyGasPoint[]>("get_weekly_gas_comparison"),
-          invoke<Budget[]>("list_budgets"),
-          invoke<CustomRoute[]>("get_custom_routes"),
-          invoke<Vehicle[]>("list_vehicles"),
+          gasApi.getCurrent(),
+          gasApi.list(20),
+          gasApi.getWeeklyComparison(),
+          budgetApi.list(),
+          routeApi.list(),
+          vehicleApi.list(),
         ]);
 
         currentPrice = price;
@@ -92,7 +92,7 @@
         customRoutes = routes;
         vehicles     = vehs;
         if (selectedVehicleId === null && vehs.length > 0) selectedVehicleId = vehs[0].id;
-        routeCosts   = await invoke<RoutesCost>("get_route_costs");
+        routeCosts   = await gasApi.getRouteCosts();
       } catch (e) {
         console.error("[config] load error:", e);
         pageError = "Error al cargar la configuración. Recarga la app.";
@@ -109,10 +109,10 @@
     if (newPrice <= 0) { saveError = "El precio debe ser mayor que 0."; return; }
     saving = true; saveError = null; saveMsg = null;
     try {
-      const saved = await invoke<GasPrice>("register_gas_price_manual", { price: newPrice });
+      const saved = await gasApi.registerManual(newPrice);
       currentPrice = saved;
       priceHistory = [saved, ...priceHistory.filter(p => p.date !== saved.date)].slice(0, 20);
-      routeCosts   = await invoke<RoutesCost>("get_route_costs");
+      routeCosts   = await gasApi.getRouteCosts();
       saveMsg = `Precio actualizado: ${formatCOP(saved.price_per_gallon)}/galón`;
       newPriceRaw = "";
       setTimeout(() => { saveMsg = null; }, 3000);
@@ -146,7 +146,7 @@
     editingBudget = null;
 
     try {
-      const updated = await invoke<Budget>("update_budget", { category, monthlyAmount: amount });
+      const updated = await budgetApi.updateAmount(category, amount);
       budgets = budgets.map(b => b.category === category ? updated : b);
       savedBudgetCategory = category;
       setTimeout(() => { savedBudgetCategory = null; }, 1000);
@@ -166,7 +166,7 @@
 
   async function saveRouteAssoc(category: string, routeId: number | null) {
     try {
-      await invoke("update_budget_route", { category, routeId });
+      await budgetApi.updateRoute(category, routeId);
       budgets = budgets.map(b => b.category === category ? { ...b, route_id: routeId } : b);
     } catch (e) {
       console.error("[config] save route assoc error:", e);
@@ -180,7 +180,7 @@
   let autostartError   = $state<string | null>(null);
 
   $effect(() => {
-    invoke<boolean>("get_autostart_enabled")
+    systemApi.getAutostart()
       .then(v => { autostartEnabled = v; autostartLoading = false; })
       .catch(() => { autostartLoading = false; });
   });
@@ -189,7 +189,7 @@
     autostartError = null;
     const next = !autostartEnabled;
     try {
-      await invoke("set_autostart_enabled", { enabled: next });
+      await systemApi.setAutostart(next);
       autostartEnabled = next;
     } catch (e) {
       console.error("[config] autostart error:", e);
@@ -217,7 +217,7 @@
     if (resetInput !== RESET_PHRASE || resetBusy) return;
     resetBusy = true;
     try {
-      await invoke("factory_reset");
+      await systemApi.factoryReset();
       // Limpiar todo el estado en memoria para reflejar la DB vacía
       budgets        = [];
       customRoutes   = [];
@@ -245,7 +245,7 @@
     backupPath  = null;
     backupError = null;
     try {
-      const path = await invoke<string>("backup_database");
+      const path = await systemApi.backup();
       backupPath = path;
       setTimeout(() => { backupPath = null; }, 6000);
     } catch (e) {
@@ -264,7 +264,7 @@
     if (!km || km <= 0) { vehicleFormError = "El rendimiento debe ser mayor que 0."; return; }
     addingVehicle = true; vehicleFormError = null;
     try {
-      const created = await invoke<Vehicle>("create_vehicle", { input: { name, km_per_gallon: km } });
+      const created = await vehicleApi.create({ name, km_per_gallon: km });
       vehicles = [...vehicles, created].sort((a, b) => a.name.localeCompare(b.name));
       if (selectedVehicleId === null) selectedVehicleId = created.id;
       newVehicleName = ""; newVehicleKmRaw = "";
@@ -287,7 +287,7 @@
     if (!name || !km || km <= 0) { editingVehicleId = null; return; }
     savingVehicle = true;
     try {
-      const updated = await invoke<Vehicle>("update_vehicle", { id, input: { name, km_per_gallon: km } });
+      const updated = await vehicleApi.update(id, { name, km_per_gallon: km });
       vehicles = vehicles.map(v => v.id === id ? updated : v);
       editingVehicleId = null;
     } catch (e) {
@@ -301,7 +301,7 @@
   async function deleteVehicle(id: number) {
     deletingVehicleId = id;
     try {
-      await invoke("delete_vehicle", { id });
+      await vehicleApi.remove(id);
       vehicles = vehicles.filter(v => v.id !== id);
       if (selectedVehicleId === id) selectedVehicleId = vehicles[0]?.id ?? null;
       if (editingVehicleId === id) editingVehicleId = null;
@@ -316,7 +316,7 @@
   async function toggleFixed(category: string, currentFixed: boolean) {
     togglingFixed = category;
     try {
-      const updated = await invoke<Budget>("update_budget_fixed", { category, isFixed: !currentFixed });
+      const updated = await budgetApi.updateFixed(category, !currentFixed);
       budgets = budgets.map(b => b.category === category ? updated : b);
     } catch (e) {
       console.error("[config] toggle fixed error:", e);
@@ -332,12 +332,7 @@
     if (!name) { budgetFormError = "El nombre es obligatorio."; return; }
     addingBudget = true; budgetFormError = null;
     try {
-      const created = await invoke<Budget>("create_budget", {
-        category: name,
-        monthlyAmount: 0,
-        kind: newBudgetType,
-        isFixed: newBudgetType === "ingreso" ? newBudgetIsFixed : false,
-      });
+      const created = await budgetApi.create(name, 0, newBudgetType, newBudgetType === "ingreso" ? newBudgetIsFixed : false);
       budgets = [...budgets, created].sort((a, b) => a.category.localeCompare(b.category));
       newBudgetName = "";
       newBudgetIsFixed = false;
@@ -351,7 +346,7 @@
   async function deleteBudget(category: string) {
     deletingBudget = category;
     try {
-      await invoke("delete_budget", { category });
+      await budgetApi.remove(category);
       budgets = budgets.filter(b => b.category !== category);
       if (editingBudget === category) editingBudget = null;
     } catch (e) {
@@ -369,9 +364,7 @@
     if (!km || km <= 0) { routeError = "Los km deben ser mayores que 0."; return; }
     addingRoute = true; routeError = null;
     try {
-      const saved = await invoke<CustomRoute>("save_custom_route", {
-        route: { name: newRouteName.trim(), km_round_trip: km, description: newRouteDesc.trim() || null },
-      });
+      const saved = await routeApi.save({ name: newRouteName.trim(), km_round_trip: km, description: newRouteDesc.trim() || null });
       customRoutes = [...customRoutes, saved].sort((a, b) => a.name.localeCompare(b.name));
       newRouteName = ""; newRouteKmRaw = ""; newRouteDesc = "";
     } catch (e) {
@@ -385,7 +378,7 @@
   async function removeCustomRoute(id: number) {
     deletingRouteId = id;
     try {
-      await invoke("delete_custom_route", { id });
+      await routeApi.remove(id);
       customRoutes = customRoutes.filter(r => r.id !== id);
     } catch (e) {
       console.error("[config] delete route error:", e);
@@ -715,6 +708,7 @@
               <div class="budget-amount-cell">
                 {#if editingBudget === b.category}
                   <div class="budget-edit-row">
+                    <!-- svelte-ignore a11y_autofocus -->
                     <input type="text" inputmode="numeric" class="inline-input"
                       value={editBudgetRaw ? new Intl.NumberFormat("es-CO").format(parseInt(editBudgetRaw, 10)) : ""}
                       oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}

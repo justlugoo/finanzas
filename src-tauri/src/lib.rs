@@ -6,10 +6,15 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
-use commands::DbState;
+use state::DbState;
 
 mod error;
 mod db;
+mod state;
+mod utils;
+mod models;
+mod repositories;
+mod services;
 pub mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,14 +31,8 @@ pub fn run() {
                 conn: Arc::new(tokio::sync::Mutex::new(None)),
             });
 
-            // Si el arg --autostart está presente → arrancó con el sistema.
-            // Ocultamos la ventana; el usuario la abre desde el tray.
             let launched_at_startup = std::env::args().any(|a| a == "--autostart");
 
-            // Los binarios debug no embeben el frontend: dependen del servidor Vite
-            // (localhost:1420) que no existe al arrancar el sistema.
-            // Si detectamos ese caso, desregistramos el autostart y salimos antes
-            // de que el WebView muestre la pantalla en blanco de "Connection refused".
             #[cfg(debug_assertions)]
             if launched_at_startup {
                 use tauri_plugin_autostart::ManagerExt;
@@ -42,16 +41,11 @@ pub fn run() {
                 std::process::exit(0);
             }
 
-            if launched_at_startup {
-                if let Some(win) = app.get_webview_window("main") {
+            if launched_at_startup
+                && let Some(win) = app.get_webview_window("main") {
                     let _ = win.hide();
                 }
-            }
 
-            // Re-register autostart so the .desktop entry includes --autostart.
-            // Skipped in debug builds: the plugin's is_enabled() detects the
-            // existing .desktop file and enable() would overwrite it with the
-            // debug binary path, breaking the release registration.
             #[cfg(not(debug_assertions))]
             {
                 use tauri_plugin_autostart::ManagerExt;
@@ -62,7 +56,6 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-
             tauri::async_runtime::spawn(async move {
                 match init_db().await {
                     Ok(database) => {
@@ -77,10 +70,6 @@ pub fn run() {
                 }
             });
 
-            // ── System tray ───────────────────────────────────────────────
-            // En Linux sin AppIndicator (GNOME puro, Fedora sin extensión),
-            // libappindicator-sys *panea* al cargar la librería dinámica.
-            // Capturamos el pánico para que la app arranque igual sin tray.
             let tray_ok = Arc::new(AtomicBool::new(false));
 
             let tray_result: Result<(), String> =
@@ -147,64 +136,62 @@ pub fn run() {
                 }
             }
 
-            // ── Intercept window close: hide si tray activo, cerrar si no ─
             let tray_ok2   = Arc::clone(&tray_ok);
             let app_handle = app.handle().clone();
             if let Some(main_win) = app.get_webview_window("main") {
                 main_win.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        if tray_ok2.load(Ordering::Relaxed) {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                        && tray_ok2.load(Ordering::Relaxed) {
                             api.prevent_close();
                             if let Some(win) = app_handle.get_webview_window("main") {
                                 let _ = win.hide();
                             }
                         }
-                    }
                 });
             }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::list_budgets,
-            commands::create_transaction,
-            commands::list_transactions,
-            commands::update_transaction,
-            commands::delete_transaction,
-            commands::get_period_summary,
-            commands::get_category_progress,
-            commands::get_month_comparison,
-            commands::list_categories,
-            commands::export_transactions_csv,
-            commands::import_transactions_csv,
-            commands::list_goals,
-            commands::create_goal,
-            commands::update_goal,
-            commands::delete_goal,
-            commands::get_goal_detail,
-            commands::get_current_gas_price,
-            commands::list_gas_prices,
-            commands::register_gas_price_manual,
-            commands::get_weekly_gas_comparison,
-            commands::get_route_costs,
-            commands::update_budget,
-            commands::update_budget_fixed,
-            commands::update_budget_route,
-            commands::create_budget,
-            commands::delete_budget,
-            commands::get_autostart_enabled,
-            commands::set_autostart_enabled,
-            commands::backup_database,
-            commands::get_current_balance,
-            commands::factory_reset,
-            commands::delete_transactions_bulk,
-            commands::get_custom_routes,
-            commands::save_custom_route,
-            commands::delete_custom_route,
-            commands::list_vehicles,
-            commands::create_vehicle,
-            commands::update_vehicle,
-            commands::delete_vehicle,
+            commands::transactions::create_transaction,
+            commands::transactions::list_transactions,
+            commands::transactions::get_current_balance,
+            commands::transactions::update_transaction,
+            commands::transactions::delete_transaction,
+            commands::transactions::get_period_summary,
+            commands::transactions::get_category_progress,
+            commands::transactions::get_month_comparison,
+            commands::transactions::list_categories,
+            commands::transactions::export_transactions_csv,
+            commands::transactions::import_transactions_csv,
+            commands::transactions::delete_transactions_bulk,
+            commands::budgets::list_budgets,
+            commands::budgets::create_budget,
+            commands::budgets::update_budget,
+            commands::budgets::update_budget_route,
+            commands::budgets::update_budget_fixed,
+            commands::budgets::delete_budget,
+            commands::goals::list_goals,
+            commands::goals::create_goal,
+            commands::goals::update_goal,
+            commands::goals::delete_goal,
+            commands::goals::get_goal_detail,
+            commands::gas::get_current_gas_price,
+            commands::gas::list_gas_prices,
+            commands::gas::register_gas_price_manual,
+            commands::gas::get_weekly_gas_comparison,
+            commands::gas::get_route_costs,
+            commands::vehicles::list_vehicles,
+            commands::vehicles::create_vehicle,
+            commands::vehicles::update_vehicle,
+            commands::vehicles::delete_vehicle,
+            commands::routes::get_custom_routes,
+            commands::routes::save_custom_route,
+            commands::routes::delete_custom_route,
+            commands::system::get_autostart_enabled,
+            commands::system::set_autostart_enabled,
+            commands::system::backup_database,
+            commands::system::factory_reset,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

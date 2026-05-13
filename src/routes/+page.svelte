@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { transactionApi } from "$lib/api";
   import type { PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
   import { MESES, MESES_CORTO } from "$lib/constants";
@@ -60,10 +60,10 @@
         try {
           const p = { type: period };
           const [sum, cats, page, cmp] = await Promise.all([
-            invoke<PeriodSummary>("get_period_summary", { period: p }),
-            invoke<CategoryProgress[]>("get_category_progress", { period: p }),
-            invoke<TransactionPage>("list_transactions", { filter: { period: p, page_size: 5 } }),
-            invoke<MonthComparison>("get_month_comparison"),
+            transactionApi.getPeriodSummary(p),
+            transactionApi.getCategoryProgress(p),
+            transactionApi.list({ period: p, page_size: 5 }),
+            transactionApi.getMonthComparison(),
           ]);
           if (!cancelled) {
             summary    = sum;
@@ -548,9 +548,6 @@
 
   .cat-name-col { display: flex; flex-direction: column; gap: 0.12rem; min-width: 0; }
   .cat-name { font-size: 0.82rem; color: var(--text-primary); }
-
-  .cat-sub { display: flex; flex-wrap: wrap; gap: 0.25rem 0.4rem; font-size: 0.68rem; color: var(--text-muted); }
-  .cat-sub-sep { color: var(--border); }
 
   .cat-amounts { font-size: 0.78rem; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; flex-shrink: 0; color: var(--text-secondary); }
   .cat-amounts .over { color: var(--danger); font-weight: 600; }

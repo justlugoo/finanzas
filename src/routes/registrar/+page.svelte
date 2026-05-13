@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { transactionApi, budgetApi, goalApi, gasApi, vehicleApi, routeApi } from "$lib/api";
   import type {
     Budget, GoalWithProgress, Transaction, TransactionPage,
     RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute, Vehicle,
@@ -46,8 +46,8 @@
     _catsLoading = true;
     try {
       const [i, g] = await Promise.all([
-        invoke<string[]>("list_categories", { kind: "ingreso" }),
-        invoke<string[]>("list_categories", { kind: "gasto" }),
+        transactionApi.listCategories("ingreso"),
+        transactionApi.listCategories("gasto"),
       ]);
       _catsIngreso = i;
       _catsGasto   = g;
@@ -162,10 +162,10 @@
 
   // Cargar costos de ruta, rutas personalizadas, presupuestos y vehículos una vez
   $effect(() => {
-    invoke<RoutesCost>("get_route_costs").then(r => { routeCosts = r; }).catch(() => {});
-    invoke<CustomRoute[]>("get_custom_routes").then(r => { customRoutes = r; }).catch(() => {});
-    invoke<Budget[]>("list_budgets").then(b => { budgets = b; }).catch(() => {});
-    invoke<Vehicle[]>("list_vehicles").then(vs => {
+    gasApi.getRouteCosts().then(r => { routeCosts = r; }).catch(() => {});
+    routeApi.list().then(r => { customRoutes = r; }).catch(() => {});
+    budgetApi.list().then(b => { budgets = b; }).catch(() => {});
+    vehicleApi.list().then(vs => {
       vehicles = vs;
       if (vehicleId === null && vs.length > 0) vehicleId = vs[0].id;
     }).catch(() => {});
@@ -177,10 +177,10 @@
     let cancelled = false;
     statsLoading = true;
     Promise.all([
-      invoke<TransactionPage>("list_transactions", { filter: { page: 1, page_size: 1 } }),
-      invoke<PeriodSummary>("get_period_summary", { period: { type: "Monthly" } }),
-      invoke<CurrentBalance>("get_current_balance"),
-      invoke<GoalWithProgress[]>("list_goals", { status: "activo" }),
+      transactionApi.list({ page: 1, page_size: 1 }),
+      transactionApi.getPeriodSummary({ type: "Monthly" }),
+      transactionApi.getBalance(),
+      goalApi.list("activo"),
     ]).then(([recent, summary, bal, gls]) => {
       if (cancelled) return;
       lastTx       = recent.transactions[0] ?? null;
@@ -211,14 +211,12 @@
     const eToday = `${y}-${String(m + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
     Promise.all([
-      invoke<CategoryProgress[]>("get_category_progress", { period: { type: "Monthly" } }),
-      invoke<TransactionPage>("list_transactions", { filter: { category: cat, page: 1, page_size: 5 } }),
-      invoke<TransactionPage>("list_transactions", {
-        filter: {
-          category: cat,
-          period: { type: "Custom", value: { start: s3, end: eToday } },
-          page_size: 500,
-        },
+      transactionApi.getCategoryProgress({ type: "Monthly" }),
+      transactionApi.list({ category: cat, page: 1, page_size: 5 }),
+      transactionApi.list({
+        category: cat,
+        period: { type: "Custom", value: { start: s3, end: eToday } },
+        page_size: 500,
       }),
     ]).then(([progress, recent, hist]) => {
       if (cancelled) return;
@@ -255,7 +253,7 @@
 
     if (kind === "gasto") {
       try {
-        const bal = await invoke<CurrentBalance>("get_current_balance");
+        const bal = await transactionApi.getBalance();
         if (bal.balance < amount) {
           debtDialogBalance = bal.balance;
           debtDialogAmount  = amount;
@@ -276,18 +274,16 @@
     saveError = null;
     saved     = null;
     try {
-      await invoke<Transaction>("create_transaction", {
-        input: {
-          date,
-          type: "ingreso",
-          category: "Otro ingreso",
-          amount,
-          note: note.trim() ? `Externo para: ${note.trim()}` : `Externo para ${category}`,
-          is_extraordinary: false,
-          goal_id: null,
-          gas_km: null,
-          is_debt: false,
-        },
+      await transactionApi.create({
+        date,
+        type: "ingreso",
+        category: "Otro ingreso",
+        amount,
+        note: note.trim() ? `Externo para: ${note.trim()}` : `Externo para ${category}`,
+        is_extraordinary: false,
+        goal_id: null,
+        gas_km: null,
+        is_debt: false,
       });
       await doSave(false);
     } catch (e) {
@@ -306,8 +302,7 @@
     const gasKmToSend = gasKm > 0 ? gasKm : null;
 
     try {
-      const tx = await invoke<Transaction>("create_transaction", {
-        input: {
+      const tx = await transactionApi.create({
           date,
           type: kind,
           category,
@@ -318,7 +313,6 @@
           gas_km: gasKmToSend,
           is_debt: isDebt,
           vehicle_id: gasKmToSend !== null ? vehicleId : null,
-        },
       });
 
       bumpTxVersion();
@@ -433,7 +427,7 @@
 
       <!-- Categoría -->
       <div class="field">
-        <label>Categoría</label>
+        <span class="field-label">Categoría</span>
         <CustomSelect
           bind:value={category}
           options={displayCategories.map(c => ({ value: c, label: c }))}
@@ -444,7 +438,7 @@
       <!-- Gasolina adicional -->
       {#if routeCosts && kind === "ingreso"}
         <div class="field gas-field">
-          <label>Gasolina <span class="optional">(opcional)</span></label>
+          <span class="field-label">Gasolina <span class="optional">(opcional)</span></span>
           {#if vehicles.length === 0}
             <p class="gas-no-vehicles">Configura un vehículo en <a href="/config">Configuración</a> para registrar gasolina.</p>
           {:else}
@@ -502,7 +496,7 @@
 
       <!-- Fecha -->
       <div class="field">
-        <label>Fecha</label>
+        <span class="field-label">Fecha</span>
         <DatePicker bind:value={date} />
       </div>
 
@@ -525,7 +519,7 @@
       <!-- Objetivo / Deuda (solo en gastos) -->
       {#if kind === "gasto" && goals.length > 0}
         <div class="field">
-          <label>Asociar a <span class="optional">(opcional)</span></label>
+          <span class="field-label">Asociar a <span class="optional">(opcional)</span></span>
           <CustomSelect
             bind:value={goalId}
             options={[{ value: null, label: "— Ninguno —" }]}
@@ -888,7 +882,7 @@
     gap: 0.25rem;
   }
 
-  label {
+  label, .field-label {
     font-size: 0.8rem;
     font-weight: 500;
     color: var(--text-secondary);

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { goalApi } from "$lib/api";
   import type { GoalWithProgress, GoalDetail } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
@@ -79,7 +79,7 @@
   async function loadGoals() {
     loading = true; pageError = null;
     try {
-      goals = await invoke<GoalWithProgress[]>("list_goals", {});
+      goals = await goalApi.list();
     } catch (e) {
       console.error("[objetivos] load error:", e);
       pageError = "No se pudieron cargar los objetivos.";
@@ -97,9 +97,7 @@
     if (cAmount <= 0)  { cError = "El monto debe ser mayor que 0."; return; }
     creating = true; cError = null;
     try {
-      const g = await invoke<GoalWithProgress>("create_goal", {
-        input: { name: cName.trim(), target_amount: cAmount, target_date: cDate || null, status: null },
-      });
+      const g = await goalApi.create({ name: cName.trim(), target_amount: cAmount, target_date: cDate || null });
       goals = [...goals, g].sort((a, b) => a.goal.name.localeCompare(b.goal.name));
       createOpen = false; cName = ""; cAmountRaw = ""; cDate = "";
     } catch (e) {
@@ -128,10 +126,7 @@
     if (eAmount <= 0)  { eError = "El monto debe ser mayor que 0."; return; }
     editing = true; eError = null;
     try {
-      const updated = await invoke<GoalWithProgress>("update_goal", {
-        id: editGoal.goal.id,
-        input: { name: eName.trim(), target_amount: eAmount, target_date: eDate || null, status: eStatus },
-      });
+      const updated = await goalApi.update(editGoal.goal.id, { name: eName.trim(), target_amount: eAmount, target_date: eDate || null, status: eStatus });
       goals = goals.map(g => g.goal.id === updated.goal.id ? updated : g);
       editGoal = null;
     } catch (e) {
@@ -152,7 +147,7 @@
     if (deleteId === null) return;
     deleting = true;
     try {
-      await invoke("delete_goal", { id: deleteId });
+      await goalApi.remove(deleteId);
       goals = goals.filter(g => g.goal.id !== deleteId);
       if (detail?.goal.goal.id === deleteId) detail = null;
       deleteId = null;
@@ -169,7 +164,7 @@
     if (editGoal || deleteId !== null) return;
     detailLoading = true;
     try {
-      detail = await invoke<GoalDetail>("get_goal_detail", { id });
+      detail = await goalApi.getDetail(id);
     } catch (e) {
       console.error("[objetivos] detail error:", e);
       pageError = "No se pudo cargar el detalle. Intenta de nuevo.";
@@ -305,7 +300,7 @@
         />
       </div>
       <div class="field">
-        <label>Fecha límite <span class="optional">(opcional)</span></label>
+        <span class="field-label">Fecha límite <span class="optional">(opcional)</span></span>
         <DatePicker bind:value={cDate} />
       </div>
       <div class="modal-actions">
@@ -344,11 +339,11 @@
         />
       </div>
       <div class="field">
-        <label>Fecha límite <span class="optional">(opcional)</span></label>
+        <span class="field-label">Fecha límite <span class="optional">(opcional)</span></span>
         <DatePicker bind:value={eDate} />
       </div>
       <div class="field">
-        <label>Estado</label>
+        <span class="field-label">Estado</span>
         <CustomSelect
           bind:value={eStatus}
           options={[
@@ -735,7 +730,7 @@
   /* ── Campos ── */
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
 
-  label {
+  label, .field-label {
     font-size: 0.78rem;
     font-weight: 500;
     color: var(--text-secondary);

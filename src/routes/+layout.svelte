@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import { page } from '$app/stores';
   import { txState } from "$lib/txState.svelte";
+  import { transactionApi, goalApi } from "$lib/api";
   import type { CurrentBalance, PeriodSummary, TransactionPage, GoalWithProgress, Transaction } from "$lib/types";
   import '../app.css';
 
@@ -34,10 +34,10 @@
     let cancelled = false;
 
     Promise.all([
-      invoke<CurrentBalance>("get_current_balance"),
-      invoke<PeriodSummary>("get_period_summary", { period: { type: "Monthly" } }),
-      invoke<TransactionPage>("list_transactions", { filter: { page: 1, page_size: 10 } }),
-      invoke<GoalWithProgress[]>("list_goals", { status: "activo" }),
+      transactionApi.getBalance(),
+      transactionApi.getPeriodSummary({ type: "Monthly" }),
+      transactionApi.list({ page: 1, page_size: 10 }),
+      goalApi.list("activo"),
     ]).then(([bal, summary, recent, goals]) => {
       if (cancelled) return;
       balance      = bal.balance;

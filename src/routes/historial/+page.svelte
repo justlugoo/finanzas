@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { transactionApi } from "$lib/api";
   import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
@@ -107,7 +107,7 @@
     txs = txs.filter(t => !selectedIds.has(t.id));
     exitSelectMode();
     try {
-      const deleted = await invoke<number>("delete_transactions_bulk", { ids });
+      const deleted = await transactionApi.removeBulk(ids);
       bumpTxVersion();
       bulkSuccessMsg = `${deleted} transacción${deleted !== 1 ? "es" : ""} eliminada${deleted !== 1 ? "s" : ""}.`;
       setTimeout(() => { bulkSuccessMsg = null; }, 3000);
@@ -184,9 +184,9 @@
       error   = null;
       try {
         const [result, cats, pSummary] = await Promise.all([
-          invoke<TransactionPage>("list_transactions", { filter: buildFilter() }),
-          invoke<string[]>("list_categories"),
-          invoke<PeriodSummary>("get_period_summary", { period: { type: activePeriod } }),
+          transactionApi.list(buildFilter()),
+          transactionApi.listCategories(),
+          transactionApi.getPeriodSummary({ type: activePeriod }),
         ]);
         if (!cancelled) {
           txs           = result.transactions;
@@ -238,7 +238,7 @@
         is_extraordinary: editExtraord, goal_id: editingTx.goal_id,
         gas_km: null, is_debt: editingTx.is_debt,
       };
-      const updated = await invoke<Transaction>("update_transaction", { id: editingTx.id, input });
+      const updated = await transactionApi.update(editingTx.id, input);
       txs = txs.map(t => t.id === updated.id ? updated : t);
       editingTx = null;
       bumpTxVersion();
@@ -257,7 +257,7 @@
     txs = txs.filter(t => t.id !== id);
     totalCount = Math.max(0, totalCount - 1);
     try {
-      await invoke("delete_transaction", { id });
+      await transactionApi.remove(id);
       bumpTxVersion();
     } catch (e) {
       txs = prev;
@@ -279,7 +279,7 @@
     reader.onload = async (ev) => {
       const content = ev.target?.result as string;
       try {
-        const result = await invoke<ImportResult>("import_transactions_csv", { csvContent: content });
+        const result = await transactionApi.importCsv(content);
         importResult = result;
         if (result.imported > 0) { bumpTxVersion(); reloadKey += 1; currentPage = 1; }
       } catch (err) {
@@ -295,13 +295,11 @@
   async function exportCSV() {
     exporting = true;
     try {
-      const result = await invoke<CsvExport>("export_transactions_csv", {
-        filter: {
-          period: { type: activePeriod },
-          kind: filterKind || null,
-          category: filterCat || null,
-          only_debt: filterDebt || null,
-        },
+      const result = await transactionApi.exportCsv({
+        period: { type: activePeriod },
+        kind: filterKind || null,
+        category: filterCat || null,
+        only_debt: filterDebt || null,
       });
       const blob = new Blob([result.content], { type: "text/csv;charset=utf-8;" });
       const url  = URL.createObjectURL(blob);
@@ -698,7 +696,7 @@
         </div>
 
         <div class="field">
-          <label>Categoría</label>
+          <span class="field-label">Categoría</span>
           <CustomSelect
             bind:value={editCategory}
             options={categories.map(c => ({ value: c, label: c }))}
@@ -712,7 +710,7 @@
         </div>
 
         <div class="field">
-          <label>Fecha</label>
+          <span class="field-label">Fecha</span>
           <DatePicker bind:value={editDate} />
         </div>
 

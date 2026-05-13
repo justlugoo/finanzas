@@ -1,5 +1,3 @@
-// Espejo de los tipos Rust definidos en commands_contract.md
-
 export interface Budget {
   category: string;
   monthly_amount: number;
@@ -105,6 +103,13 @@ export interface GoalDetail {
   contributions: Transaction[];
 }
 
+export interface GoalInput {
+  name: string;
+  target_amount: number;
+  target_date: string | null;
+  status?: string;
+}
+
 export interface WeeklyGasPoint {
   week_start: string;
   avg_price: number;
@@ -121,17 +126,16 @@ export interface Vehicle {
   km_per_gallon: number;
 }
 
+export interface VehicleInput {
+  name: string;
+  km_per_gallon: number;
+}
+
 export interface GasPrice {
   id: number;
   date: string;
   price_per_gallon: number;
   source: string;
-}
-
-export interface SyncStatus {
-  last_sync: string | null;
-  pending_writes: number;
-  is_online: boolean;
 }
 
 export interface ImportResult {
@@ -150,6 +154,17 @@ export interface TransactionPage {
   total_count: number;
 }
 
+export interface TransactionFilter {
+  period?: Period | null;
+  kind?: string | null;
+  category?: string | null;
+  search_note?: string | null;
+  only_extraordinary?: boolean | null;
+  only_debt?: boolean | null;
+  page?: number | null;
+  page_size?: number | null;
+}
+
 export interface AppError {
   kind: string;
   message?: string;
@@ -157,6 +172,12 @@ export interface AppError {
 
 export interface CustomRoute {
   id: number;
+  name: string;
+  km_round_trip: number;
+  description: string | null;
+}
+
+export interface CustomRouteInput {
   name: string;
   km_round_trip: number;
   description: string | null;

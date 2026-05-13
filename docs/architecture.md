@@ -29,6 +29,15 @@ Finanzas/
 │   ├── lib/
 │   │   ├── constants.ts        # MESES, MESES_CORTO, DIAS_SEMANA
 │   │   ├── types.ts            # Interfaces TypeScript espejo de structs Rust
+│   │   ├── api/                # Capa de acceso al backend (centraliza invoke)
+│   │   │   ├── index.ts        # Re-exports de todos los módulos
+│   │   │   ├── transactions.ts
+│   │   │   ├── budgets.ts
+│   │   │   ├── goals.ts
+│   │   │   ├── gas.ts
+│   │   │   ├── vehicles.ts
+│   │   │   ├── routes.ts
+│   │   │   └── system.ts
 │   │   └── components/
 │   │       ├── CustomSelect.svelte
 │   │       └── DatePicker.svelte
@@ -42,10 +51,39 @@ Finanzas/
 ├── src-tauri/
 │   └── src/
 │       ├── main.rs             # Entry point
-│       ├── lib.rs              # Setup Tauri: DbState, tray, autostart, comandos
+│       ├── lib.rs              # Setup Tauri: tray, autostart, invoke_handler
 │       ├── error.rs            # AppError con Serialize
 │       ├── db.rs               # Schema SQL, open_database(), apply_pragmas()
-│       └── commands.rs         # Todos los comandos #[tauri::command]
+│       ├── state.rs            # DbState, ConnGuard, get_conn()
+│       ├── utils.rs            # Helpers puros: format_cop, period_to_dates, etc.
+│       ├── models/
+│       │   └── mod.rs          # Todos los tipos: Transaction, Budget, Goal, …
+│       ├── repositories/       # Solo SQL — sin lógica de negocio
+│       │   ├── mod.rs
+│       │   ├── transactions.rs
+│       │   ├── budgets.rs
+│       │   ├── goals.rs
+│       │   ├── gas.rs
+│       │   ├── vehicles.rs
+│       │   └── routes.rs
+│       ├── services/           # Lógica de negocio — orquesta repositorios
+│       │   ├── mod.rs
+│       │   ├── transactions.rs
+│       │   ├── budgets.rs
+│       │   ├── goals.rs
+│       │   ├── gas.rs
+│       │   ├── vehicles.rs
+│       │   ├── routes.rs
+│       │   └── system.rs
+│       └── commands/           # Handlers Tauri delgados — solo adaptadores
+│           ├── mod.rs
+│           ├── transactions.rs
+│           ├── budgets.rs
+│           ├── goals.rs
+│           ├── gas.rs
+│           ├── vehicles.rs
+│           ├── routes.rs
+│           └── system.rs
 ├── docs/
 │   └── architecture.md        # Este archivo
 ├── README.md
@@ -61,25 +99,46 @@ Finanzas/
 
 ## 3. Arquitectura general
 
+El proyecto sigue una **Arquitectura Layered** (por capas de responsabilidad técnica). Cada capa solo habla con la inmediatamente inferior — nunca con capas no adyacentes.
+
 ```
-┌─────────────────────────────────────┐
-│          Tauri App (Finanzas)       │
-│                                     │
-│  ┌──────────────┐  ┌─────────────┐  │
-│  │  Frontend    │  │  Backend    │  │
-│  │  Svelte 5    │◄►│  Rust       │  │
-│  │  (WebView)   │  │  (commands) │  │
-│  └──────────────┘  └──────┬──────┘  │
-│                           │         │
-│  ┌────────────────────────▼──────┐  │
-│  │  SQLite local (libsql)        │  │
-│  │  ~/.local/share/finanzas/     │  │
-│  │  local.db                     │  │
-│  └───────────────────────────────┘  │
-└─────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│                  Tauri App (Finanzas)                 │
+│                                                       │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │               Frontend (Svelte 5)               │  │
+│  │  routes/  ──invoke via──►  lib/api/  ──► Tauri  │  │
+│  └─────────────────────────────────────────────────┘  │
+│                          ▲                            │
+│  ┌───────────────────────┼──────────────────────────┐ │
+│  │              Backend (Rust)                      │ │
+│  │                                                  │ │
+│  │  commands/  ──►  services/  ──►  repositories/  │ │
+│  │  (delgado)      (lógica)          (solo SQL)    │ │
+│  │                                                  │ │
+│  │          models/ · state.rs · utils.rs           │ │
+│  └──────────────────────────────────────────────────┘ │
+│                          │                            │
+│  ┌───────────────────────▼──────────────────────────┐ │
+│  │    SQLite local (libsql)                         │ │
+│  │    ~/.local/share/finanzas/local.db              │ │
+│  └──────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────┘
 ```
 
-El frontend invoca comandos Rust mediante `invoke()` de Tauri. El backend lee y escribe directamente en la DB local. No hay sincronización cloud ni servidor externo.
+**Responsabilidad de cada capa:**
+
+| Capa | Responsabilidad |
+|------|----------------|
+| `commands/` | Adaptadores Tauri: llaman `get_conn()` y delegan al servicio. Sin lógica. |
+| `services/` | Lógica de negocio: validan, coordinan repositorios, calculan y notifican. |
+| `repositories/` | SQL puro: aceptan `&libsql::Connection`, retornan tipos del dominio. |
+| `models/` | Tipos compartidos (structs, enums) usados en todas las capas. |
+| `state.rs` | `DbState`, `ConnGuard`, `get_conn()` — gestión de la conexión lazy. |
+| `utils.rs` | Helpers puros sin dependencias de dominio. |
+| `lib/api/` | Centraliza todos los `invoke()` del frontend. Las páginas nunca llaman `invoke()` directamente. |
+
+No hay sincronización cloud ni servidor externo.
 
 ### Estado compartido en Rust
 
@@ -188,6 +247,13 @@ PRAGMA temp_store   = MEMORY;
 
 ## 5. Convenciones Rust
 
+**Arquitectura por capas:**
+- `repositories/` solo ejecutan SQL. No validan, no calculan, no notifican.
+- `services/` son los únicos que validan datos de entrada, coordinan repositorios, aplican cálculos y envían notificaciones.
+- `commands/` son adaptadores delgados: llaman `get_conn()` y delegan al servicio. No contienen lógica de negocio.
+- `models/mod.rs` concentra todos los tipos. Ninguna capa define tipos propios fuera de este módulo.
+
+**Tipos y serialización:**
 - Errores: `AppResult<T>` = `Result<T, AppError>`. `AppError` implementa `Serialize` para que Tauri lo envíe al frontend.
 - Todos los comandos son `async` y reciben `State<'_, DbState>`.
 - Montos en COP: siempre `i64` (enteros, sin decimales).
@@ -200,8 +266,13 @@ PRAGMA temp_store   = MEMORY;
 
 ## 6. Convenciones Svelte / TypeScript
 
+**Capa de API:**
+- Toda llamada al backend va a través de `$lib/api/`. Ninguna página llama `invoke()` directamente.
+- Importar los módulos así: `import { transactionApi, budgetApi } from "$lib/api"`.
+- Cada módulo de `$lib/api/` exporta funciones tipadas que encapsulan el `invoke()` correspondiente.
+
+**Svelte y estilos:**
 - Svelte 5 runes: `$state()`, `$derived()`, `$effect()`. No usar sintaxis legacy de Svelte 4.
-- Invocar comandos: `invoke<ReturnType>('nombre_comando', { args })`.
 - Tipos TypeScript en `src/lib/types.ts`: espejo de los structs Rust. Mantener sincronizados manualmente.
 - Constantes de fechas y días en `src/lib/constants.ts`: `MESES`, `MESES_CORTO`, `DIAS_SEMANA`.
 - CSS por componente en el bloque `<style>`. Variables globales en `app.css`.

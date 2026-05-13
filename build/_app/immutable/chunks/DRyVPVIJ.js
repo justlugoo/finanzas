@@ -1,0 +1,1 @@
+import{i as a}from"./Cp7FG43L.js";const s=t=>a("list_goals",{status:t}),l=t=>a("create_goal",{input:t}),c=(t,e)=>a("update_goal",{id:t,input:e}),g=t=>a("delete_goal",{id:t}),i=t=>a("get_goal_detail",{id:t});export{l as c,i as g,s as l,g as r,c as u};

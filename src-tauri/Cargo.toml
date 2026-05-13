@@ -1,9 +1,9 @@
 [package]
 name = "finanzas"
-version = "0.1.1"
+version = "1.0.0"
 description = "App de gestión financiera personal"
 authors = ["justlugoo"]
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "finanzas_lib"
