@@ -56,8 +56,10 @@ CREATE TABLE IF NOT EXISTS config (
 CREATE TABLE IF NOT EXISTS custom_routes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL,
-    km_round_trip   REAL    NOT NULL CHECK (km_round_trip > 0),
-    description     TEXT
+    km_round_trip   REAL    NOT NULL DEFAULT 0 CHECK (km_round_trip >= 0),
+    description     TEXT,
+    use_vehicle     INTEGER NOT NULL DEFAULT 1 CHECK (use_vehicle IN (0, 1)),
+    fixed_cost      INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS vehicles (
@@ -131,6 +133,14 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
     let _ = conn.execute(
         "ALTER TABLE budgets ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0 \
          CHECK (is_fixed IN (0, 1))",
+        (),
+    ).await;
+    let _ = conn.execute(
+        "ALTER TABLE custom_routes ADD COLUMN use_vehicle INTEGER NOT NULL DEFAULT 1",
+        (),
+    ).await;
+    let _ = conn.execute(
+        "ALTER TABLE custom_routes ADD COLUMN fixed_cost INTEGER",
         (),
     ).await;
 

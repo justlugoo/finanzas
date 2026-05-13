@@ -211,11 +211,16 @@ pub struct CustomRoute {
     pub name: String,
     pub km_round_trip: f64,
     pub description: Option<String>,
+    pub use_vehicle: bool,
+    pub fixed_cost: Option<i64>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct CustomRouteInput {
     pub name: String,
+    #[serde(default)]
     pub km_round_trip: f64,
     pub description: Option<String>,
+    pub use_vehicle: bool,
+    pub fixed_cost: Option<i64>,
 }

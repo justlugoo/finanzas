@@ -146,11 +146,9 @@
     return () => { cancelled = true; };
   });
 
-  // Pre-fill gas km cuando la categoría de ingreso tiene ruta asociada
+  // Pre-fill gas km cuando la categoría tiene ruta asociada
   $effect(() => {
     const cat = category;
-    const k   = kind;
-    if (k !== "ingreso") { gasKmRaw = ""; return; }
     const budget = budgetsByCategory.get(cat);
     if (budget?.route_id) {
       const route = customRoutes.find(r => r.id === budget.route_id);
@@ -328,7 +326,7 @@
       date          = todayISO();
       // Re-aplica el km por defecto si la categoría tiene ruta; si no, limpia
       const bgt = budgetsByCategory.get(category);
-      if (kind === "ingreso" && bgt?.route_id) {
+      if (bgt?.route_id) {
         const route = customRoutes.find(r => r.id === bgt.route_id);
         gasKmRaw = route ? route.km_round_trip.toString() : "";
       } else {
@@ -436,7 +434,7 @@
       </div>
 
       <!-- Gasolina adicional -->
-      {#if routeCosts && kind === "ingreso"}
+      {#if routeCosts}
         <div class="field gas-field">
           <span class="field-label">Gasolina <span class="optional">(opcional)</span></span>
           {#if vehicles.length === 0}

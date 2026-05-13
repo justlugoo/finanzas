@@ -192,10 +192,6 @@ pub async fn list_categories(
         Some(k) => {
             for c in budgets_repo::list_categories_by_kind(conn, k).await? { cats.insert(c); }
             for c in tx_repo::list_distinct_categories_by_kind(conn, k).await? { cats.insert(c); }
-            if k == "gasto" {
-                let excluded = budgets_repo::list_route_categories(conn).await?;
-                for cat in excluded { cats.remove(&cat); }
-            }
         }
     }
 

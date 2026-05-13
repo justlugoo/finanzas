@@ -690,20 +690,16 @@
                 {/if}
               </div>
 
-              {#if b.type === "ingreso"}
-                <div style="--cs-padding: 0.18rem 0.4rem; font-size: 0.75rem;">
-                  <CustomSelect
-                    value={b.route_id}
-                    options={[
-                      { value: null, label: "Sin ruta" },
-                      ...customRoutes.map(r => ({ value: r.id, label: r.name })),
-                    ]}
-                    onchange={(v) => saveRouteAssoc(b.category, v)}
-                  />
-                </div>
-              {:else}
-                <span class="route-placeholder">—</span>
-              {/if}
+              <div style="--cs-padding: 0.18rem 0.4rem; font-size: 0.75rem;">
+                <CustomSelect
+                  value={b.route_id}
+                  options={[
+                    { value: null, label: "Sin ruta" },
+                    ...customRoutes.map(r => ({ value: r.id, label: r.name })),
+                  ]}
+                  onchange={(v) => saveRouteAssoc(b.category, v)}
+                />
+              </div>
 
               <div class="budget-amount-cell">
                 {#if editingBudget === b.category}
