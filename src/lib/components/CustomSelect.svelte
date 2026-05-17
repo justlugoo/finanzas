@@ -26,6 +26,8 @@
 
   let open = $state(false);
   let wrapEl = $state<HTMLDivElement | undefined>(undefined);
+  let triggerEl = $state<HTMLButtonElement | undefined>(undefined);
+  let menuStyle = $state("");
 
   let allOptions = $derived([
     ...options,
@@ -42,17 +44,28 @@
     onchange?.(v);
   }
 
+  function openMenu() {
+    if (!open && triggerEl) {
+      const rect = triggerEl.getBoundingClientRect();
+      menuStyle = `top:${rect.bottom + 4}px;left:${rect.left}px;width:${rect.width}px`;
+    }
+    open = !open;
+  }
+
   $effect(() => {
     if (!open) return;
     function onWindowClick(e: MouseEvent) {
-      if (wrapEl && !wrapEl.contains(e.target as Node)) {
-        open = false;
-      }
+      if (wrapEl && !wrapEl.contains(e.target as Node)) open = false;
     }
-    const id = setTimeout(() => window.addEventListener("click", onWindowClick), 0);
+    function onScroll() { open = false; }
+    const id = setTimeout(() => {
+      window.addEventListener("click", onWindowClick);
+      window.addEventListener("scroll", onScroll, true);
+    }, 0);
     return () => {
       clearTimeout(id);
       window.removeEventListener("click", onWindowClick);
+      window.removeEventListener("scroll", onScroll, true);
     };
   });
 </script>
@@ -61,14 +74,15 @@
   <button
     type="button"
     class="cs-trigger"
-    onclick={() => (open = !open)}
+    bind:this={triggerEl}
+    onclick={openMenu}
     {disabled}
   >
     <span class="cs-label">{selectedLabel}</span>
     <span class="cs-arrow" class:open>▾</span>
   </button>
   {#if open}
-    <div class="cs-menu">
+    <div class="cs-menu" style={menuStyle}>
       {#each options as opt (String(opt.value))}
         <button
           type="button"
@@ -132,15 +146,11 @@
   .cs-arrow.open { transform: rotate(180deg); }
 
   .cs-menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    min-width: 100%;
+    position: fixed;
     background: #14141f;
     border: 1px solid var(--border);
     border-radius: 8px;
-    overflow: hidden;
-    z-index: 200;
+    z-index: 1000;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55);
     max-height: 260px;
     overflow-y: auto;

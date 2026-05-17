@@ -905,6 +905,7 @@
   .config-left,
   .config-right {
     overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 1rem;
