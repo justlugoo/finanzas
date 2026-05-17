@@ -8,3 +8,7 @@ export const MESES_CORTO = [
 ];
 
 export const DIAS_SEMANA = ["dom","lun","mar","mié","jue","vie","sáb"];
+
+export const WIDGET_RECENT_SIZE   = 10;
+export const HISTORY_PAGE_SIZE    = 20;
+export const DASHBOARD_RECENT_SIZE = 5;

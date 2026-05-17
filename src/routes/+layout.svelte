@@ -2,6 +2,7 @@
   import { page } from '$app/stores';
   import { txState } from "$lib/txState.svelte";
   import { transactionApi, goalApi } from "$lib/api";
+  import { MESES_CORTO, WIDGET_RECENT_SIZE } from "$lib/constants";
   import type { CurrentBalance, PeriodSummary, TransactionPage, GoalWithProgress, Transaction } from "$lib/types";
   import '../app.css';
 
@@ -36,7 +37,7 @@
     Promise.all([
       transactionApi.getBalance(),
       transactionApi.getPeriodSummary({ type: "Monthly" }),
-      transactionApi.list({ page: 1, page_size: 10 }),
+      transactionApi.list({ page: 1, page_size: WIDGET_RECENT_SIZE }),
       goalApi.list("activo"),
     ]).then(([bal, summary, recent, goals]) => {
       if (cancelled) return;
@@ -57,8 +58,7 @@
 
   function formatDate(iso: string): string {
     const [, m, d] = iso.split("-");
-    const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
-    return `${parseInt(d)} ${meses[parseInt(m) - 1]}`;
+    return `${parseInt(d)} ${MESES_CORTO[parseInt(m) - 1]}`;
   }
 </script>
 
