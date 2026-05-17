@@ -24,6 +24,7 @@ pub async fn factory_reset(conn: &libsql::Connection) -> AppResult<()> {
     conn.execute("DELETE FROM budgets",       libsql::params![]).await?;
     conn.execute("DELETE FROM custom_routes", libsql::params![]).await?;
     conn.execute("DELETE FROM vehicles",      libsql::params![]).await?;
+    conn.execute("DELETE FROM sqlite_sequence", libsql::params![]).await?;
     Ok(())
 }
 
@@ -72,7 +73,7 @@ pub async fn set_autostart(_app: &tauri::AppHandle, enabled: bool) -> AppResult<
         return Ok(());
     }
 
-    #[allow(unreachable_code)]
+    #[cfg(not(target_os = "linux"))]
     {
         use tauri_plugin_autostart::ManagerExt;
         let al = _app.autolaunch();
