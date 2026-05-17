@@ -19,8 +19,10 @@ pub async fn create(
         return Err(AppError::ValidationError("tipo debe ser 'ingreso' o 'gasto'".into()));
     }
 
-    let gas_km_val = input.gas_km.unwrap_or(0.0);
-    let auto_gas   = gas_km_val > 0.0;
+    let gas_km_val    = input.gas_km.unwrap_or(0.0);
+    let auto_gas      = gas_km_val > 0.0;
+    let is_debt_gasto = input.is_debt && input.kind == "gasto";
+    let needs_tx      = auto_gas || is_debt_gasto;
 
     let vehicle_id = if auto_gas {
         match input.vehicle_id {
@@ -31,17 +33,18 @@ pub async fn create(
         }
     } else { 0 };
 
-    if auto_gas {
+    if needs_tx {
         conn.execute("BEGIN", ()).await?;
+        // Patrón de rollback: si una operación falla, ya retornamos Err con el error primario.
+        // El ROLLBACK podría fallar también, pero no hay forma significativa de reportarlo
+        // (no se puede encadenar a un Err ya emitido), así que descartamos su resultado.
     }
 
-    let tx = {
-        match tx_repo::insert(conn, &input).await {
-            Ok(t) => t,
-            Err(e) => {
-                if auto_gas { let _ = conn.execute("ROLLBACK", ()).await; }
-                return Err(e);
-            }
+    let mut tx = match tx_repo::insert(conn, &input).await {
+        Ok(t) => t,
+        Err(e) => {
+            if needs_tx { let _ = conn.execute("ROLLBACK", ()).await; }
+            return Err(e);
         }
     };
 
@@ -50,19 +53,37 @@ pub async fn create(
             let _ = conn.execute("ROLLBACK", ()).await;
             return Err(e);
         }
-        if let Err(e) = conn.execute("COMMIT", ()).await {
-            let _ = conn.execute("ROLLBACK", ()).await;
-            return Err(AppError::DatabaseError(e.to_string()));
-        }
     }
 
-    // Auto-crear objetivo de deuda
-    if input.is_debt && input.kind == "gasto" {
+    // Auto-crear objetivo de deuda (find-or-create) y enlazar la transacción
+    if is_debt_gasto {
         let debt_name = match &input.note {
             Some(n) if !n.trim().is_empty() => format!("Deuda: {}", n.trim()),
             _ => format!("Deuda: {}", input.category),
         };
-        let _ = goals_repo::insert_debt_goal(conn, &debt_name, input.amount).await;
+        let goal_id = match goals_repo::find_debt_goal_by_name(conn, &debt_name).await {
+            Ok(Some(id)) => id,
+            Ok(None) => match goals_repo::insert_debt_goal(conn, &debt_name, input.amount).await {
+                Ok(id) => id,
+                Err(e) => { let _ = conn.execute("ROLLBACK", ()).await; return Err(e); }
+            },
+            Err(e) => { let _ = conn.execute("ROLLBACK", ()).await; return Err(e); }
+        };
+        if let Err(e) = conn.execute(
+            "UPDATE transactions SET goal_id = ? WHERE id = ?",
+            libsql::params![goal_id, tx.id],
+        ).await {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(AppError::DatabaseError(e.to_string()));
+        }
+        tx.goal_id = Some(goal_id);
+    }
+
+    if needs_tx {
+        if let Err(e) = conn.execute("COMMIT", ()).await {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(AppError::DatabaseError(e.to_string()));
+        }
     }
 
     // Trigger: presupuesto excedido
@@ -204,11 +225,11 @@ pub async fn export_csv(
 ) -> AppResult<CsvExport> {
     let rows = tx_repo::list_for_export(conn, &filter).await?;
     let mut csv = String::from(
-        "ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,ID Objetivo,Creado en\n",
+        "ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,ID Objetivo,Es deuda,Creado en\n",
     );
     for tx in &rows {
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             tx.id,
             tx.date,
             tx.kind,
@@ -217,6 +238,7 @@ pub async fn export_csv(
             csv_escape(tx.note.as_deref().unwrap_or("")),
             if tx.is_extraordinary { "Sí" } else { "No" },
             tx.goal_id.map(|id| id.to_string()).unwrap_or_default(),
+            if tx.is_debt { "Sí" } else { "No" },
             tx.created_at,
         ));
     }
@@ -289,10 +311,26 @@ pub async fn import_csv(
             .map(|s| matches!(s.trim(), "Sí" | "Si" | "1" | "true"))
             .unwrap_or(false);
 
+        let goal_id: Option<i64> = match fields.get(offset + 6).map(|s| s.trim()) {
+            Some(s) if !s.is_empty() => match s.parse::<i64>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    skipped += 1;
+                    errors.push(format!("Fila {row_num}: goal_id inválido '{s}'"));
+                    continue;
+                }
+            },
+            _ => None,
+        };
+
+        let is_debt: bool = fields.get(offset + 7)
+            .map(|s| matches!(s.trim(), "Sí" | "Si" | "1" | "true"))
+            .unwrap_or(false);
+
         match conn.execute(
-            "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id) \
-             VALUES (?, ?, ?, ?, ?, ?, NULL)",
-            libsql::params![date, kind, category, amount, note, is_extraordinary as i64],
+            "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id, is_debt) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            libsql::params![date, kind, category, amount, note, is_extraordinary as i64, goal_id, is_debt as i64],
         ).await {
             Ok(_)  => imported += 1,
             Err(e) => { skipped += 1; errors.push(format!("Fila {row_num}: {e}")); }

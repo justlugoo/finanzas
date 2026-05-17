@@ -71,16 +71,27 @@ pub async fn insert(
     Ok(conn.last_insert_rowid())
 }
 
+pub async fn find_debt_goal_by_name(
+    conn: &libsql::Connection,
+    name: &str,
+) -> AppResult<Option<i64>> {
+    let mut rows = conn.query(
+        "SELECT id FROM goals WHERE name = ? AND is_debt_goal = 1 LIMIT 1",
+        libsql::params![name.to_string()],
+    ).await?;
+    Ok(rows.next().await?.map(|r| r.get(0).unwrap_or(0)))
+}
+
 pub async fn insert_debt_goal(
     conn: &libsql::Connection,
     name: &str,
     amount: i64,
-) -> AppResult<()> {
+) -> AppResult<i64> {
     conn.execute(
         "INSERT INTO goals (name, target_amount, is_debt_goal) VALUES (?, ?, 1)",
         libsql::params![name.to_string(), amount],
     ).await?;
-    Ok(())
+    Ok(conn.last_insert_rowid())
 }
 
 pub async fn update(
