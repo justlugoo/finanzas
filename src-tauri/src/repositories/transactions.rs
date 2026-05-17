@@ -211,6 +211,7 @@ pub async fn list_category_budget_rows(
             COALESCE((
                 SELECT SUM(amount) FROM transactions
                 WHERE category = b.category AND date >= ? AND date <= ?
+                  AND is_extraordinary = 0
             ), 0) AS current_amount,
             b.type,
             b.is_fixed
