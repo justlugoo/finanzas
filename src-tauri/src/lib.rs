@@ -200,7 +200,6 @@ pub fn run() {
 async fn init_db() -> Result<libsql::Database, Box<dyn std::error::Error + Send + Sync>> {
     let database = db::open_database().await?;
     let conn = database.connect()?;
-    db::apply_pragmas(&conn).await?;
     db::apply_schema(&conn).await?;
     Ok(database)
 }
