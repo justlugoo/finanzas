@@ -47,7 +47,8 @@ pub async fn list(conn: &libsql::Connection, limit: i64) -> AppResult<Vec<GasPri
 
 pub async fn upsert(conn: &libsql::Connection, date: &str, price: i64) -> AppResult<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO gas_prices (date, price_per_gallon, source) VALUES (?, ?, 'manual')",
+        "INSERT INTO gas_prices (date, price_per_gallon, source) VALUES (?, ?, 'manual') \
+         ON CONFLICT(date) DO UPDATE SET price_per_gallon = excluded.price_per_gallon, source = 'manual'",
         libsql::params![date.to_string(), price],
     ).await?;
     Ok(())
