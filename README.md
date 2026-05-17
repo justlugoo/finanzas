@@ -67,7 +67,7 @@ La app aparece en el menú de aplicaciones y en el system tray al iniciar sesió
 Al abrir la app por primera vez estará completamente vacía. Flujo recomendado:
 
 1. **Configuración → Vehículos** — agrega al menos un vehículo con su rendimiento en km/galón.
-2. **Configuración → Gasolina** — registra el precio actual del galón.
+2. **Configuración → Gasolina** — registra el precio actual del galón. Necesario antes de registrar transacciones con km recorridos — el cálculo automático de costo de gasolina lo requiere.
 3. **Configuración → Presupuestos mensuales** — crea tus categorías de ingreso y gasto con sus metas.
 4. **Configuración → Costos por ruta** — agrega las rutas que recorres frecuentemente (km ida y vuelta).
 5. **Registrar** — ya puedes registrar tu primer movimiento.

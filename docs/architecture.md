@@ -161,8 +161,13 @@ La conexión se crea lazy en el primer `get_conn()` y se reutiliza en todas las 
 
 
 **Motor:** SQLite via `libsql` (modo local)  
-**Ubicación:** `~/.local/share/finanzas/local.db`  
-**Inicialización:** El schema se aplica en cada arranque con `CREATE TABLE IF NOT EXISTS` (idempotente). No hay sistema de migraciones formal — solo `ALTER TABLE ADD COLUMN` para columnas añadidas posteriormente.
+**Ubicación:**
+- Release: `~/.local/share/finanzas/local.db`
+- Debug (`pnpm tauri dev`): `~/.local/share/finanzas-dev/local.db`
+
+El aislamiento de path evita que las pruebas de desarrollo modifiquen los datos reales del usuario.
+
+**Inicialización:** El schema se aplica en cada arranque con `CREATE TABLE IF NOT EXISTS` (idempotente). Las migraciones destructivas (ej. eliminación de columnas) se detectan vía `pragma_table_info` y reconstruyen la tabla afectada preservando datos.
 
 **PRAGMAs activos** (aplicados en cada conexión):
 
@@ -185,7 +190,7 @@ PRAGMA temp_store   = MEMORY;
 | category | TEXT | Nombre de categoría (string directo) |
 | amount | INTEGER | Valor en COP (siempre positivo) |
 | note | TEXT | Nullable |
-| is_extraordinary | INTEGER | `0` \| `1` — excluye de progreso de presupuesto |
+| is_extraordinary | INTEGER | `0` \| `1` — excluye del cálculo de `CategoryProgress.current_amount` (progreso de presupuesto), pero sí se suma en los totales generales de `PeriodSummary` |
 | goal_id | INTEGER | FK → `goals.id` ON DELETE SET NULL. Nullable |
 | created_at | TEXT | ISO timestamp |
 | is_debt | INTEGER | `0` \| `1` — gasto financiado a futuro |
@@ -213,6 +218,8 @@ PRAGMA temp_store   = MEMORY;
 | is_debt_goal | INTEGER | `0` \| `1` — objetivo de tipo deuda |
 
 `current_amount` no se almacena: se calcula con `SELECT SUM(amount) FROM transactions WHERE goal_id = ?`.
+
+Los goals con `is_debt_goal = 1` son idempotentes por nombre: al registrar un gasto con `is_debt = true`, el backend busca primero un goal existente con ese nombre (`"Deuda: <nota>"` o `"Deuda: <categoría>"`). Si existe lo reutiliza; si no, lo crea. La transacción origen queda vinculada al goal vía `goal_id`.
 
 #### `gas_prices`
 | Campo | Tipo | Descripción |
@@ -294,8 +301,8 @@ Todos los comandos se invocan con `invoke('nombre', { params })`. Retornan `Prom
 | `delete_transaction` | `id: i64` | `()` |
 | `delete_transactions_bulk` | `ids: Vec<i64>` | `i64` (cantidad eliminada) |
 | `get_current_balance` | — | `CurrentBalance` |
-| `export_transactions_csv` | `filter: TransactionFilter` | `CsvExport` |
-| `import_transactions_csv` | `content: String` | `ImportResult` |
+| `export_transactions_csv` | `filter: TransactionFilter` | `CsvExport` — header: `ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,ID Objetivo,Es deuda,Creado en` |
+| `import_transactions_csv` | `content: String` | `ImportResult` — lee columnas `ID Objetivo` y `Es deuda`; si no están presentes (CSVs antiguos), defaultean a `NULL`/`false` sin error |
 
 **`TransactionInput`:**
 ```
@@ -349,7 +356,7 @@ Al eliminar un objetivo, las transacciones asociadas pierden el `goal_id` (FK ON
 | `get_weekly_gas_comparison` | — | `Vec<WeeklyGasPoint>` |
 | `get_route_costs` | — | `RoutesCost` |
 
-`register_gas_price_manual` hace UPSERT por fecha (un precio por día).
+`register_gas_price_manual` hace UPSERT por fecha vía `ON CONFLICT(date) DO UPDATE`. Preserva el `id` de la fila existente y fuerza `source = 'manual'`. El registro manual siempre gana en colisión de fecha (decisión explícita, no efecto secundario de `REPLACE`).
 
 ### Vehículos
 
@@ -377,7 +384,7 @@ Al eliminar un objetivo, las transacciones asociadas pierden el `goal_id` (FK ON
 | `backup_database` | — | `String` (path del backup) |
 | `factory_reset` | — | `()` |
 
-`factory_reset` elimina todas las filas de: `transactions`, `goals`, `gas_prices`, `budgets`, `custom_routes`, `vehicles`. La tabla `config` no se toca.
+`factory_reset` elimina todas las filas de: `transactions`, `goals`, `gas_prices`, `budgets`, `custom_routes`, `vehicles`. También borra `sqlite_sequence` para que los próximos inserts arranquen desde `id = 1` en todas las tablas con `AUTOINCREMENT`. La tabla `config` no se toca.
 
 ---
 
