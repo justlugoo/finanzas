@@ -541,7 +541,7 @@
     {#if catLoading && !catBudget && catRecentTxs.length === 0}
       <div class="ctx-loading">
         <span class="ctx-loading-dot"></span>
-        <span class="ctx-loading-label">{category}</span>
+        <span class="ctx-loading-label">Cargando {category}…</span>
       </div>
     {:else if showCatPanel}
 
