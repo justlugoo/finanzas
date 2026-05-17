@@ -2,7 +2,7 @@
   import { transactionApi } from "$lib/api";
   import type { PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
-  import { MESES, MESES_CORTO } from "$lib/constants";
+  import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE } from "$lib/constants";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
 
@@ -62,7 +62,7 @@
           const [sum, cats, page, cmp] = await Promise.all([
             transactionApi.getPeriodSummary(p),
             transactionApi.getCategoryProgress(p),
-            transactionApi.list({ period: p, page_size: 5 }),
+            transactionApi.list({ period: p, page_size: DASHBOARD_RECENT_SIZE }),
             transactionApi.getMonthComparison(),
           ]);
           if (!cancelled) {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { transactionApi } from "$lib/api";
+  import { HISTORY_PAGE_SIZE } from "$lib/constants";
   import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
@@ -12,7 +13,7 @@
     Daily: "Diario", Weekly: "Semanal", Monthly: "Mensual", Yearly: "Anual",
   };
 
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = HISTORY_PAGE_SIZE;
 
   // ── Filtros ────────────────────────────────────────────────────────────────
   let activePeriod  = $state<PeriodKey>("Monthly");
