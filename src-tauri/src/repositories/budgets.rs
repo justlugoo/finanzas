@@ -141,13 +141,3 @@ pub async fn list_all_categories(conn: &libsql::Connection) -> AppResult<Vec<Str
     while let Some(row) = rows.next().await? { cats.push(row.get(0)?); }
     Ok(cats)
 }
-
-pub async fn list_route_categories(conn: &libsql::Connection) -> AppResult<Vec<String>> {
-    let mut rows = conn.query(
-        "SELECT category FROM budgets WHERE route_id IS NOT NULL",
-        (),
-    ).await?;
-    let mut cats = Vec::new();
-    while let Some(row) = rows.next().await? { cats.push(row.get::<String>(0)?); }
-    Ok(cats)
-}
