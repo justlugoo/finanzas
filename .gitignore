@@ -29,6 +29,7 @@ src-tauri/gen/
 credentials.toml
 
 # Build artifacts
+build/
 *.AppImage
 *.msi
 *.deb
