@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS vehicles (
 pub async fn open_database() -> AppResult<libsql::Database> {
     let mut path = dirs::data_local_dir()
         .ok_or_else(|| AppError::DatabaseError("no se pudo determinar directorio local".into()))?;
+    #[cfg(debug_assertions)]
+    path.push("finanzas-dev");
+    #[cfg(not(debug_assertions))]
     path.push("finanzas");
     std::fs::create_dir_all(&path)?;
     path.push("local.db");

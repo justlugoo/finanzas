@@ -2,9 +2,10 @@ use chrono::Local;
 use crate::error::{AppError, AppResult};
 
 pub async fn backup_database() -> AppResult<String> {
+    let db_dir = if cfg!(debug_assertions) { "finanzas-dev" } else { "finanzas" };
     let src = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("finanzas")
+        .join(db_dir)
         .join("local.db");
     if !src.exists() {
         return Err(AppError::NotFound("archivo de base de datos local no encontrado".into()));
