@@ -57,9 +57,7 @@ CREATE TABLE IF NOT EXISTS custom_routes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL,
     km_round_trip   REAL    NOT NULL DEFAULT 0 CHECK (km_round_trip >= 0),
-    description     TEXT,
-    use_vehicle     INTEGER NOT NULL DEFAULT 1 CHECK (use_vehicle IN (0, 1)),
-    fixed_cost      INTEGER
+    description     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS vehicles (
@@ -118,6 +116,20 @@ pub async fn apply_pragmas(conn: &libsql::Connection) -> AppResult<()> {
     .map_err(|e| AppError::DatabaseError(e.to_string()))
 }
 
+async fn column_exists(conn: &libsql::Connection, table: &str, column: &str) -> AppResult<bool> {
+    let mut rows = conn
+        .query(&format!("PRAGMA table_info({table})"), ())
+        .await
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    while let Some(row) = rows.next().await.map_err(|e| AppError::DatabaseError(e.to_string()))? {
+        let name: String = row.get(1).map_err(|e| AppError::DatabaseError(e.to_string()))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
     conn.execute_batch(SCHEMA)
         .await
@@ -125,25 +137,20 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
     // Migraciones de esquema — solo añaden columnas, nunca insertan ni modifican datos.
-    let _ = conn.execute(
-        "ALTER TABLE budgets ADD COLUMN type TEXT NOT NULL DEFAULT 'gasto' \
-         CHECK (type IN ('ingreso', 'gasto'))",
-        (),
-    ).await;
-    let _ = conn.execute(
-        "ALTER TABLE budgets ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0 \
-         CHECK (is_fixed IN (0, 1))",
-        (),
-    ).await;
-    let _ = conn.execute(
-        "ALTER TABLE custom_routes ADD COLUMN use_vehicle INTEGER NOT NULL DEFAULT 1",
-        (),
-    ).await;
-    let _ = conn.execute(
-        "ALTER TABLE custom_routes ADD COLUMN fixed_cost INTEGER",
-        (),
-    ).await;
-
+    if !column_exists(conn, "budgets", "type").await? {
+        conn.execute(
+            "ALTER TABLE budgets ADD COLUMN type TEXT NOT NULL DEFAULT 'gasto' \
+             CHECK (type IN ('ingreso', 'gasto'))",
+            (),
+        ).await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
+    if !column_exists(conn, "budgets", "is_fixed").await? {
+        conn.execute(
+            "ALTER TABLE budgets ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0 \
+             CHECK (is_fixed IN (0, 1))",
+            (),
+        ).await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
     // Migración: versiones antiguas crearon `transactions` con FK explícitas a
     // budgets(category) y goals(id). libsql compila SQLite con
     // SQLITE_DEFAULT_FOREIGN_KEYS=1, así que esas FKs se aplican y bloquean
@@ -191,6 +198,43 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         )
         .await
         .map_err(|e| AppError::DatabaseError(format!("migración FK transactions: {e}")))?;
+    }
+
+    // Migración: versiones antiguas tenían use_vehicle y fixed_cost en custom_routes.
+    // Esas columnas ya no existen en el modelo; se recrea la tabla sin ellas.
+    let needs_routes_rebuild: bool = {
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM pragma_table_info('custom_routes') WHERE name = 'use_vehicle'",
+                (),
+            )
+            .await
+            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+        rows.next()
+            .await
+            .map(|r| r.is_some())
+            .unwrap_or(false)
+    };
+
+    if needs_routes_rebuild {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             BEGIN;
+             CREATE TABLE custom_routes_new (
+                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name            TEXT    NOT NULL,
+                 km_round_trip   REAL    NOT NULL DEFAULT 0 CHECK (km_round_trip >= 0),
+                 description     TEXT
+             );
+             INSERT INTO custom_routes_new SELECT id, name, km_round_trip, description
+                 FROM custom_routes;
+             DROP TABLE custom_routes;
+             ALTER TABLE custom_routes_new RENAME TO custom_routes;
+             COMMIT;
+             PRAGMA foreign_keys = ON;",
+        )
+        .await
+        .map_err(|e| AppError::DatabaseError(format!("migración custom_routes: {e}")))?;
     }
 
     Ok(())

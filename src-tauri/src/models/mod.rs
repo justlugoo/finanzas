@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct Budget {
     pub category: String,
     pub monthly_amount: i64,
@@ -192,7 +192,7 @@ pub struct RoutesCost {
     pub precio_galon: i64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct Vehicle {
     pub id: i64,
     pub name: String,
@@ -211,8 +211,6 @@ pub struct CustomRoute {
     pub name: String,
     pub km_round_trip: f64,
     pub description: Option<String>,
-    pub use_vehicle: bool,
-    pub fixed_cost: Option<i64>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -221,6 +219,4 @@ pub struct CustomRouteInput {
     #[serde(default)]
     pub km_round_trip: f64,
     pub description: Option<String>,
-    pub use_vehicle: bool,
-    pub fixed_cost: Option<i64>,
 }
