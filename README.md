@@ -17,12 +17,20 @@ Descarga el paquete de la sección [Releases](../../releases) del repositorio:
 - **Fedora / openSUSE:** `Finanzas-x.x.x-1.x86_64.rpm`
 - **Debian / Ubuntu:** `finanzas_x.x.x_amd64.deb`
 
+> **Versiones mínimas soportadas:**
+> - Fedora 37 o superior (recomendado 40+)
+> - Debian 12 (Bookworm) o superior
+> - Ubuntu 22.04 LTS (Jammy) o superior
+> - Linux Mint 21+, Pop!_OS 22.04+, Elementary OS 7+ (derivados de Ubuntu 22.04+)
+>
+> El requisito real es que la distribución provea `webkit2gtk` versión 4.1 en sus repositorios oficiales. Para Arch Linux, openSUSE, NixOS, Gentoo u otras distribuciones sin paquete precompilado, compila desde el código fuente (Opción B).
+
 ```bash
 # Fedora
-sudo rpm -i Finanzas-*.rpm
+sudo dnf install ./Finanzas-*.rpm
 
 # Debian / Ubuntu
-sudo dpkg -i finanzas_*.deb
+sudo apt install ./finanzas_*.deb
 ```
 
 ### Opción B — Compilar desde el código fuente
@@ -52,10 +60,10 @@ pnpm tauri build
 
 ```bash
 # Fedora
-sudo rpm -i src-tauri/target/release/bundle/rpm/Finanzas-*.rpm
+sudo dnf install ./src-tauri/target/release/bundle/rpm/Finanzas-*.rpm
 
 # Debian / Ubuntu
-sudo dpkg -i src-tauri/target/release/bundle/deb/finanzas_*.deb
+sudo apt install ./src-tauri/target/release/bundle/deb/finanzas_*.deb
 ```
 
 La app aparece en el menú de aplicaciones y en el system tray al iniciar sesión si el autoarranque está activado desde Configuración.
