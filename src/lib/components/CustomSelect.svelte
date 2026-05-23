@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ScrollArea from "$lib/components/ScrollArea.svelte";
+
   interface Option {
     value: any;
     label: string;
@@ -38,6 +40,11 @@
     allOptions.find((o: Option) => o.value === value)?.label ?? placeholder
   );
 
+  let widestLabel = $derived(
+    [placeholder, ...allOptions.map((o: Option) => String(o.label))]
+      .reduce((a, b) => b.length > a.length ? b : a, "")
+  );
+
   function select(v: any) {
     value = v;
     open = false;
@@ -47,7 +54,7 @@
   function openMenu() {
     if (!open && triggerEl) {
       const rect = triggerEl.getBoundingClientRect();
-      menuStyle = `top:${rect.bottom + 4}px;left:${rect.left}px;width:${rect.width}px`;
+      menuStyle = `top:${rect.bottom + 4}px;left:${rect.left}px;min-width:${rect.width}px`;
     }
     open = !open;
   }
@@ -57,7 +64,10 @@
     function onWindowClick(e: MouseEvent) {
       if (wrapEl && !wrapEl.contains(e.target as Node)) open = false;
     }
-    function onScroll() { open = false; }
+    function onScroll(e: Event) {
+      if (wrapEl?.contains(e.target as Node)) return;
+      open = false;
+    }
     const id = setTimeout(() => {
       window.addEventListener("click", onWindowClick);
       window.addEventListener("scroll", onScroll, true);
@@ -71,6 +81,10 @@
 </script>
 
 <div class="cs-wrap" bind:this={wrapEl}>
+  <div class="cs-sizer" aria-hidden="true">
+    <span class="cs-sizer-lbl">{widestLabel}</span>
+    <span class="cs-arrow">▾</span>
+  </div>
   <button
     type="button"
     class="cs-trigger"
@@ -83,25 +97,27 @@
   </button>
   {#if open}
     <div class="cs-menu" style={menuStyle}>
-      {#each options as opt (String(opt.value))}
-        <button
-          type="button"
-          class="cs-opt"
-          class:selected={opt.value === value}
-          onclick={() => select(opt.value)}
-        >{opt.label}</button>
-      {/each}
-      {#each groups as group, gi}
-        <div class="cs-group-label" class:first={gi === 0}>{group.label}</div>
-        {#each group.options as opt (String(opt.value))}
+      <ScrollArea maxHeight="260px" scrollbar="none">
+        {#each options as opt (String(opt.value))}
           <button
             type="button"
-            class="cs-opt cs-opt-in"
+            class="cs-opt"
             class:selected={opt.value === value}
             onclick={() => select(opt.value)}
           >{opt.label}</button>
         {/each}
-      {/each}
+        {#each groups as group, gi}
+          <div class="cs-group-label" class:first={gi === 0}>{group.label}</div>
+          {#each group.options as opt (String(opt.value))}
+            <button
+              type="button"
+              class="cs-opt cs-opt-in"
+              class:selected={opt.value === value}
+              onclick={() => select(opt.value)}
+            >{opt.label}</button>
+          {/each}
+        {/each}
+      </ScrollArea>
     </div>
   {/if}
 </div>
@@ -112,7 +128,20 @@
     display: block;
   }
 
+  .cs-sizer {
+    visibility: hidden;
+    pointer-events: none;
+    padding: var(--cs-padding, 0.55rem 0.75rem);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+  }
+  .cs-sizer-lbl { flex: 1; }
+
   .cs-trigger {
+    position: absolute;
+    inset: 0;
     -webkit-appearance: none;
     appearance: none;
     background: var(--bg-elevated);
@@ -152,17 +181,13 @@
     border-radius: 8px;
     z-index: 1000;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55);
-    max-height: 260px;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: #2a2a40 transparent;
   }
 
   .cs-opt {
     display: block;
     width: 100%;
     text-align: left;
-    padding: 0.5rem 0.75rem;
+    padding: 0.5rem 1rem 0.5rem 0.75rem;
     font: inherit;
     color: var(--text-secondary);
     cursor: pointer;

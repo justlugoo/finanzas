@@ -35,6 +35,8 @@ pub struct CurrentBalance {
 pub struct TransactionPage {
     pub transactions: Vec<Transaction>,
     pub total_count: i64,
+    pub filtered_income: i64,
+    pub filtered_expenses: i64,
 }
 
 #[derive(Deserialize, Debug)]

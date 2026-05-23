@@ -152,6 +152,8 @@ export interface CsvExport {
 export interface TransactionPage {
   transactions: Transaction[];
   total_count: number;
+  filtered_income: number;
+  filtered_expenses: number;
 }
 
 export interface TransactionFilter {

@@ -40,7 +40,8 @@ Finanzas/
 │   │   │   └── system.ts
 │   │   └── components/
 │   │       ├── CustomSelect.svelte
-│   │       └── DatePicker.svelte
+│   │       ├── DatePicker.svelte
+│   │       └── ScrollArea.svelte
 │   └── routes/
 │       ├── +layout.svelte      # Layout global: nav + widget sidebar
 │       ├── +page.svelte        # Resumen (dashboard)

@@ -4,6 +4,7 @@
   import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
+  import ScrollArea from "$lib/components/ScrollArea.svelte";
   import { txState, bumpTxVersion } from "$lib/txState.svelte";
   import { MESES_CORTO, DIAS_SEMANA } from "$lib/constants";
 
@@ -35,11 +36,20 @@
   });
 
   // ── Datos ─────────────────────────────────────────────────────────────────
-  let txs           = $state<Transaction[]>([]);
-  let categories    = $state<string[]>([]);
-  let periodSummary = $state<PeriodSummary | null>(null);
-  let loading       = $state(true);
-  let error         = $state<string | null>(null);
+  let txs              = $state<Transaction[]>([]);
+  let categories       = $state<string[]>([]);
+  let periodSummary    = $state<PeriodSummary | null>(null);
+  let filteredIncome   = $state(0);
+  let filteredExpenses = $state(0);
+  let loading          = $state(true);
+  let error            = $state<string | null>(null);
+
+  // ── Sumatoria filtrada (todas las páginas, viene del backend) ─────────────
+  let filteredTotals = $derived({
+    income:   filteredIncome,
+    expenses: filteredExpenses,
+    net:      filteredIncome - filteredExpenses,
+  });
 
   // ── Agrupamiento por fecha ─────────────────────────────────────────────────
   let grouped = $derived.by(() => {
@@ -190,11 +200,13 @@
           transactionApi.getPeriodSummary({ type: activePeriod }),
         ]);
         if (!cancelled) {
-          txs           = result.transactions;
-          totalCount    = result.total_count;
-          categories    = cats;
-          periodSummary = pSummary;
-          loading       = false;
+          txs              = result.transactions;
+          totalCount       = result.total_count;
+          filteredIncome   = result.filtered_income;
+          filteredExpenses = result.filtered_expenses;
+          categories       = cats;
+          periodSummary    = pSummary;
+          loading          = false;
         }
       } catch (e) {
         if (!cancelled) {
@@ -394,7 +406,7 @@
       <CustomSelect
         value={filterCat}
         options={[
-          { value: "", label: "Todas las categorías" },
+          { value: "", label: "Categorías" },
           ...categories.map(c => ({ value: c, label: c })),
         ]}
         onchange={(v) => { filterCat = v; currentPage = 1; }}
@@ -499,6 +511,7 @@
     </div>
   {:else}
     <div class="timeline-wrap">
+      <ScrollArea class="tl-scroll" scrollbar="thin">
       {#each grouped as group (group.date)}
         {@const net = group.items.reduce((s, t) => s + (t.type === "ingreso" ? t.amount : -t.amount), 0)}
         <div class="date-group">
@@ -599,6 +612,33 @@
           {/if}
         </div>
       {/each}
+      </ScrollArea>
+    </div>
+  {/if}
+
+  <!-- Sumatoria filtrada -->
+  {#if !loading && txs.length > 0}
+    <div class="filter-totals">
+      <span class="ft-prefix">Filtrado</span>
+      <span class="ft-div">|</span>
+      <span class="ft-item">
+        <span class="ft-lbl">Ingresos</span>
+        <span class="ft-val income">+{formatCOP(filteredTotals.income)}</span>
+      </span>
+      <span class="ft-div">|</span>
+      <span class="ft-item">
+        <span class="ft-lbl">Gastos</span>
+        <span class="ft-val expense">−{formatCOP(filteredTotals.expenses)}</span>
+      </span>
+      <span class="ft-div">|</span>
+      <span class="ft-item">
+        <span class="ft-lbl">Neto</span>
+        <span
+          class="ft-val"
+          class:income={filteredTotals.net >= 0}
+          class:expense={filteredTotals.net < 0}
+        >{filteredTotals.net >= 0 ? "+" : "−"}{formatCOP(Math.abs(filteredTotals.net))}</span>
+      </span>
     </div>
   {/if}
 
@@ -1080,9 +1120,16 @@
   .timeline-wrap {
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+  }
+
+  :global(.tl-scroll) {
+    flex: 1;
+    min-height: 0;
   }
 
   .empty-state {
@@ -1385,4 +1432,40 @@
   }
   .btn-save:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-save:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Sumatoria filtrada ── */
+  .filter-totals {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.76rem;
+  }
+
+  .ft-prefix {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .ft-div { color: var(--border); font-size: 0.9rem; flex-shrink: 0; }
+
+  .ft-item { display: flex; align-items: center; gap: 0.35rem; }
+
+  .ft-lbl { color: var(--text-muted); }
+
+  .ft-val {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+  }
+  .ft-val.income  { color: var(--success); }
+  .ft-val.expense { color: var(--danger); }
 </style>

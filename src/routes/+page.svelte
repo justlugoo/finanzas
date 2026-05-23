@@ -2,6 +2,7 @@
   import { transactionApi } from "$lib/api";
   import type { PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
+  import ScrollArea from "$lib/components/ScrollArea.svelte";
   import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE } from "$lib/constants";
 
   type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
@@ -127,6 +128,7 @@
   <div class="resumen-grid">
     <!-- Left column: KPIs + comparison + budgets -->
     <div class="left-col">
+      <ScrollArea class="left-scroll" scrollbar="thin">
       <section class="kpis">
         <div class="kpi-card income">
           <span class="kpi-label">Ingresos</span>
@@ -307,10 +309,12 @@
           {/if}
         {/if}
       </section>
+      </ScrollArea>
     </div>
 
     <!-- Right column: recent transactions -->
     <div class="right-col">
+      <ScrollArea class="right-scroll" scrollbar="thin">
       <section class="section">
         <h2>Últimas transacciones</h2>
         {#if loading}
@@ -334,6 +338,7 @@
           <a href="/historial" class="ver-todo">Ver todo →</a>
         {/if}
       </section>
+      </ScrollArea>
     </div>
   </div>
 </div>
@@ -401,17 +406,31 @@
   }
 
   .left-col {
-    overflow-y: auto;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
     padding: 0.875rem 0.75rem 0.875rem 1rem;
     border-right: 1px solid var(--border);
   }
 
   .right-col {
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     padding: 0.875rem 1rem;
+  }
+
+  :global(.left-scroll) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  :global(.right-scroll) {
+    flex: 1;
+    min-height: 0;
   }
 
   /* Period selector */

@@ -2,6 +2,7 @@
   import { gasApi, budgetApi, vehicleApi, routeApi, systemApi } from "$lib/api";
   import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute, Vehicle } from "$lib/types";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
+  import ScrollArea from "$lib/components/ScrollArea.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
@@ -400,6 +401,7 @@
 
   <div class="config-grid">
     <div class="config-left">
+      <ScrollArea class="config-left-scroll" scrollbar="thin">
       {#if loading}
         <p class="muted">Cargando…</p>
       {:else}
@@ -513,7 +515,7 @@
       {#if priceHistory.length > 0}
         <div class="subsection">
           <h3>Historial de precios</h3>
-          <div class="table-wrap">
+          <ScrollArea orientation="horizontal" scrollbar="thin">
             <table class="data-table">
               <thead>
                 <tr>
@@ -532,7 +534,7 @@
                 {/each}
               </tbody>
             </table>
-          </div>
+          </ScrollArea>
         </div>
       {/if}
 
@@ -540,7 +542,7 @@
       {#if weeklyData.length > 0}
         <div class="subsection">
           <h3>Comparación semanal</h3>
-          <div class="table-wrap">
+          <ScrollArea orientation="horizontal" scrollbar="thin">
             <table class="data-table">
               <thead>
                 <tr>
@@ -568,7 +570,7 @@
                 {/each}
               </tbody>
             </table>
-          </div>
+          </ScrollArea>
         </div>
       {/if}
     </section>
@@ -661,9 +663,11 @@
     </section>
 
       {/if}
+      </ScrollArea>
     </div>
 
     <div class="config-right">
+      <ScrollArea class="config-right-scroll" scrollbar="thin">
       {#if !loading}
     <!-- ══ Presupuestos ══════════════════════════════════════════════════════ -->
     <section class="section">
@@ -834,6 +838,7 @@
       </button>
     </div>
   </section>
+      </ScrollArea>
     </div>
   </div>
 </div>
@@ -904,27 +909,22 @@
 
   .config-left,
   .config-right {
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  :global(.config-left-scroll),
+  :global(.config-right-scroll) {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    min-width: 0;
     padding-bottom: 1rem;
-    scrollbar-width: thin;
-    scrollbar-color: #2a2a40 transparent;
+    overscroll-behavior: contain;
   }
-  .config-left::-webkit-scrollbar,
-  .config-right::-webkit-scrollbar { width: 4px; }
-  .config-left::-webkit-scrollbar-track,
-  .config-right::-webkit-scrollbar-track { background: transparent; }
-  .config-left::-webkit-scrollbar-thumb,
-  .config-right::-webkit-scrollbar-thumb {
-    background: #2a2a40;
-    border-radius: 999px;
-  }
-  .config-left::-webkit-scrollbar-thumb:hover,
-  .config-right::-webkit-scrollbar-thumb:hover { background: #3a3a55; }
 
   h1 {
     font-size: 1.1rem;
@@ -1078,8 +1078,6 @@
   .inline-form { display: flex; gap: 0.5rem; }
 
   /* ── Tablas ── */
-  .table-wrap { overflow-x: auto; }
-
   .data-table {
     width: 100%;
     font-size: 0.82rem;

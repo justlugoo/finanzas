@@ -6,6 +6,7 @@
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
+  import ScrollArea from "$lib/components/ScrollArea.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
 
   // ── Estado del formulario ──────────────────────────────────────────────────
@@ -346,6 +347,7 @@
 
   <!-- ═══════════════════════ LEFT: FORM ═══════════════════════ -->
   <div class="form-col">
+    <ScrollArea class="form-scroll" scrollbar="thin">
     <h1>Registrar</h1>
 
     {#if loadError}
@@ -405,7 +407,7 @@
       </div>
     {/if}
 
-    <form onsubmit={handleSubmit} class="form">
+    <form id="tx-form" onsubmit={handleSubmit} class="form">
 
       <!-- Toggle tipo -->
       <div class="type-toggle">
@@ -529,15 +531,16 @@
         </div>
       {/if}
 
-      <button type="submit" class="submit-btn" disabled={saving || amount <= 0}>
-        {saving ? "Guardando…" : "Guardar"}
-      </button>
-
     </form>
+    </ScrollArea>
+    <button type="submit" form="tx-form" class="submit-btn" disabled={saving || amount <= 0}>
+      {saving ? "Guardando…" : "Guardar"}
+    </button>
   </div>
 
   <!-- ═══════════════════════ RIGHT: CONTEXT PANEL ═══════════════════════ -->
   <div class="context-col">
+    <ScrollArea class="ctx-scroll" scrollbar="thin">
     {#if catLoading && !catBudget && catRecentTxs.length === 0}
       <div class="ctx-loading">
         <span class="ctx-loading-dot"></span>
@@ -670,6 +673,7 @@
 
       {/if}
     {/if}
+    </ScrollArea>
   </div>
 
 </div>
@@ -687,7 +691,7 @@
   .form-col {
     width: 420px;
     flex-shrink: 0;
-    overflow-y: auto;
+    overflow: hidden;
     padding: 1rem;
     box-sizing: border-box;
     display: flex;
@@ -700,13 +704,30 @@
   .context-col {
     flex: 1;
     min-width: 0;
-    overflow-y: auto;
+    overflow: hidden;
     padding: 1rem 1.125rem;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
+  }
+
+  :global(.form-scroll) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     gap: 0.75rem;
   }
+
+  :global(.ctx-scroll) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .submit-btn { flex-shrink: 0; }
 
   h1 {
     font-size: 1.1rem;

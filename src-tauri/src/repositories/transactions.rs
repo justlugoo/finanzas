@@ -90,6 +90,19 @@ pub async fn list(
         row.get(0)?
     };
 
+    let (filtered_income, filtered_expenses): (i64, i64) = {
+        let sum_sql = format!(
+            "SELECT \
+             COALESCE(SUM(CASE WHEN type='ingreso' THEN amount ELSE 0 END), 0), \
+             COALESCE(SUM(CASE WHEN type='gasto'   THEN amount ELSE 0 END), 0) \
+             FROM transactions{where_sql}"
+        );
+        let mut rows = conn.query(&sum_sql, base_params.clone()).await?;
+        let row = rows.next().await?
+            .ok_or_else(|| AppError::DatabaseError("filtered sum query failed".into()))?;
+        (row.get(0)?, row.get(1)?)
+    };
+
     let page      = filter.page.unwrap_or(1).max(1);
     let page_size = filter.page_size.unwrap_or(200).max(1);
     let offset    = (page - 1) * page_size;
@@ -108,7 +121,7 @@ pub async fn list(
         transactions.push(row_to_transaction(&row).map_err(|e| AppError::DatabaseError(e.to_string()))?);
     }
 
-    Ok(TransactionPage { transactions, total_count })
+    Ok(TransactionPage { transactions, total_count, filtered_income, filtered_expenses })
 }
 
 pub async fn get_balance(conn: &libsql::Connection) -> AppResult<CurrentBalance> {

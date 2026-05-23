@@ -3,6 +3,7 @@
   import type { GoalWithProgress, GoalDetail } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
+  import ScrollArea from "$lib/components/ScrollArea.svelte";
 
   let goals       = $state<GoalWithProgress[]>([]);
   let loading     = $state(true);
@@ -207,7 +208,8 @@
       {/if}
     </div>
   {:else}
-    <div class="goal-grid">
+    <ScrollArea class="goals-scroll" scrollbar="thin">
+      <div class="goal-grid">
       {#each filtered as g (g.goal.id)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -269,7 +271,8 @@
           </div>
         </div>
       {/each}
-    </div>
+      </div>
+    </ScrollArea>
   {/if}
 </main>
 
@@ -279,11 +282,12 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="overlay" onclick={() => { createOpen = false; }}></div>
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
-    <h2>Nuevo objetivo</h2>
-    {#if cError}
-      <div class="banner error small"><pre>{cError}</pre></div>
-    {/if}
-    <form onsubmit={handleCreate} class="modal-form">
+    <ScrollArea class="modal-scroll" scrollbar="thin">
+      <h2>Nuevo objetivo</h2>
+      {#if cError}
+        <div class="banner error small"><pre>{cError}</pre></div>
+      {/if}
+      <form onsubmit={handleCreate} class="modal-form">
       <div class="field">
         <label for="c-name">Nombre</label>
         <input id="c-name" type="text" bind:value={cName} placeholder="Ej: Laptop, Viaje…" maxlength="100" />
@@ -304,12 +308,13 @@
         <DatePicker bind:value={cDate} />
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn-secondary" onclick={() => { createOpen = false; }}>Cancelar</button>
-        <button type="submit" class="btn-primary" disabled={creating || cAmount <= 0 || !cName.trim()}>
-          {creating ? "Creando…" : "Crear"}
-        </button>
-      </div>
-    </form>
+          <button type="button" class="btn-secondary" onclick={() => { createOpen = false; }}>Cancelar</button>
+          <button type="submit" class="btn-primary" disabled={creating || cAmount <= 0 || !cName.trim()}>
+            {creating ? "Creando…" : "Crear"}
+          </button>
+        </div>
+      </form>
+    </ScrollArea>
   </div>
 {/if}
 
@@ -319,11 +324,12 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="overlay" onclick={() => { editGoal = null; }}></div>
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
-    <h2>Editar objetivo</h2>
-    {#if eError}
-      <div class="banner error small"><pre>{eError}</pre></div>
-    {/if}
-    <form onsubmit={handleEdit} class="modal-form">
+    <ScrollArea class="modal-scroll" scrollbar="thin">
+      <h2>Editar objetivo</h2>
+      {#if eError}
+        <div class="banner error small"><pre>{eError}</pre></div>
+      {/if}
+      <form onsubmit={handleEdit} class="modal-form">
       <div class="field">
         <label for="e-name">Nombre</label>
         <input id="e-name" type="text" bind:value={eName} maxlength="100" />
@@ -354,12 +360,13 @@
         />
       </div>
       <div class="modal-actions">
-        <button type="button" class="btn-secondary" onclick={() => { editGoal = null; }}>Cancelar</button>
-        <button type="submit" class="btn-primary" disabled={editing || eAmount <= 0 || !eName.trim()}>
-          {editing ? "Guardando…" : "Guardar"}
-        </button>
-      </div>
-    </form>
+          <button type="button" class="btn-secondary" onclick={() => { editGoal = null; }}>Cancelar</button>
+          <button type="submit" class="btn-primary" disabled={editing || eAmount <= 0 || !eName.trim()}>
+            {editing ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </form>
+    </ScrollArea>
   </div>
 {/if}
 
@@ -369,6 +376,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="overlay" onclick={() => { detail = null; }}></div>
   <div class="modal modal-wide" role="dialog" aria-modal="true" tabindex="-1">
+    <ScrollArea class="modal-scroll" scrollbar="thin">
     {#if detailLoading}
       <p class="muted">Cargando…</p>
     {:else if detail}
@@ -398,7 +406,7 @@
       {#if detail.contributions.length === 0}
         <p class="muted">Sin transacciones asociadas aún.</p>
       {:else}
-        <div class="contrib-table-wrap">
+        <ScrollArea orientation="horizontal" scrollbar="thin">
           <table class="contrib-table">
             <thead>
               <tr>
@@ -419,12 +427,13 @@
               {/each}
             </tbody>
           </table>
-        </div>
+        </ScrollArea>
       {/if}
       <div class="modal-actions">
         <button class="btn-secondary" onclick={() => { detail = null; }}>Cerrar</button>
       </div>
     {/if}
+    </ScrollArea>
   </div>
 {/if}
 
@@ -499,11 +508,11 @@
     border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   }
 
+  :global(.goals-scroll) { flex: 1; min-height: 0; }
+  :global(.modal-scroll) { flex: 1; min-height: 0; }
+
   /* ── Cards ── */
   .goal-grid {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 1rem;
@@ -708,7 +717,9 @@
     z-index: 21;
     width: min(440px, 92vw);
     max-height: 85vh;
-    overflow-y: auto;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   .modal-wide { width: min(600px, 96vw); }
@@ -772,8 +783,6 @@
   }
   .stat-label { font-size: 0.7rem; color: var(--text-muted); }
   .stat-value { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
-
-  .contrib-table-wrap { overflow-x: auto; }
 
   .contrib-table {
     width: 100%;
