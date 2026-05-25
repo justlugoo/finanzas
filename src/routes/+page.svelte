@@ -1,6 +1,6 @@
 <script lang="ts">
   import { transactionApi } from "$lib/api";
-  import type { PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
+  import type { CurrentBalance, PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE } from "$lib/constants";
@@ -15,6 +15,7 @@
   };
 
   let activePeriod = $state<PeriodKey>("Monthly");
+  let globalBal    = $state<CurrentBalance | null>(null);
   let summary      = $state<PeriodSummary | null>(null);
   let categories   = $state<CategoryProgress[]>([]);
   let recent       = $state<{ id: number; date: string; type: string; category: string; amount: number }[]>([]);
@@ -60,17 +61,19 @@
       while (!cancelled) {
         try {
           const p = { type: period };
-          const [sum, cats, page, cmp] = await Promise.all([
+          const [sum, cats, page, cmp, bal] = await Promise.all([
             transactionApi.getPeriodSummary(p),
             transactionApi.getCategoryProgress(p),
             transactionApi.list({ period: p, page_size: DASHBOARD_RECENT_SIZE }),
             transactionApi.getMonthComparison(),
+            transactionApi.getBalance(),
           ]);
           if (!cancelled) {
             summary    = sum;
             categories = cats;
             recent     = page.transactions;
             comparison = cmp;
+            globalBal  = bal;
             loading    = false;
           }
           return;
@@ -129,6 +132,24 @@
     <!-- Left column: KPIs + comparison + budgets -->
     <div class="left-col">
       <ScrollArea class="left-scroll" scrollbar="thin">
+      <!-- Saldo global (cash_on_hand y patrimonio) -->
+      <section class="global-balance">
+        <div
+          class="kpi-card kpi-wide"
+          class:balance-pos={!loading && (globalBal?.cash_on_hand ?? 0) >= 0}
+          class:balance-neg={!loading && (globalBal?.cash_on_hand ?? 0) < 0}
+        >
+          <span class="kpi-label">Saldo en mano</span>
+          <span class="kpi-value">{loading ? "…" : formatCOP(globalBal?.cash_on_hand ?? 0)}</span>
+        </div>
+        {#if !loading && globalBal && globalBal.net_worth !== globalBal.cash_on_hand}
+          <div class="kpi-card kpi-wide">
+            <span class="kpi-label">Patrimonio <span class="kpi-sublabel">incl. préstamos por cobrar</span></span>
+            <span class="kpi-value kpi-secondary">{formatCOP(globalBal.net_worth)}</span>
+          </div>
+        {/if}
+      </section>
+
       <section class="kpis">
         <div class="kpi-card income">
           <span class="kpi-label">Ingresos</span>
@@ -455,6 +476,13 @@
   .period-selector button.active { background: var(--accent); color: #fff; }
 
   /* KPIs */
+  .global-balance { display: flex; gap: 0.6rem; }
+  .kpi-wide { flex: 1; }
+  .kpi-sublabel { font-size: 0.6rem; font-weight: 400; color: var(--text-muted); text-transform: none; letter-spacing: 0; }
+  .kpi-secondary { color: var(--text-secondary) !important; font-size: 0.95rem; }
+  .global-balance .kpi-card.balance-pos .kpi-value { color: var(--accent); }
+  .global-balance .kpi-card.balance-neg .kpi-value { color: var(--danger); }
+
   .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
 
   .kpi-card {

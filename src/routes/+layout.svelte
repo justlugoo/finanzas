@@ -9,11 +9,12 @@
   let { children } = $props();
 
   const navItems = [
-    { href: '/',          label: 'Resumen'   },
-    { href: '/registrar', label: 'Registrar' },
-    { href: '/historial', label: 'Historial' },
-    { href: '/objetivos', label: 'Objetivos' },
-    { href: '/config',    label: 'Config'    },
+    { href: '/',           label: 'Resumen'   },
+    { href: '/registrar',  label: 'Registrar' },
+    { href: '/historial',  label: 'Historial' },
+    { href: '/objetivos',  label: 'Objetivos' },
+    { href: '/prestamos',  label: 'Préstamos' },
+    { href: '/config',     label: 'Config'    },
   ];
 
   // ── Estado del widget ──────────────────────────────────────────────────────
@@ -21,6 +22,7 @@
 
   // ── Datos del widget ───────────────────────────────────────────────────────
   let balance      = $state<number | null>(null);
+  let netWorth     = $state<number | null>(null);
   let monthSummary = $state<PeriodSummary | null>(null);
   let lastTx       = $state<Transaction | null>(null);
   let nextGoal     = $state<GoalWithProgress | null>(null);
@@ -41,7 +43,8 @@
       goalApi.list("activo"),
     ]).then(([bal, summary, recent, goals]) => {
       if (cancelled) return;
-      balance      = bal.balance;
+      balance      = bal.cash_on_hand;
+      netWorth     = bal.net_worth;
       monthSummary = summary;
       lastTx       = recent.transactions.find(tx => !tx.note?.startsWith('Auto:') && !tx.note?.startsWith('Externo para')) ?? null;
       nextGoal     = goals.find(g => !g.goal.is_debt_goal) ?? null;
@@ -101,6 +104,22 @@
       <!-- Expanded panel -->
       {#if widgetOpen}
         <div class="widget-panel">
+
+          <!-- Saldo en mano / Patrimonio -->
+          {#if netWorth !== null && netWorth !== balance}
+            <div class="wp-section">
+              <div class="wp-label">Saldo en mano</div>
+              <div class="wp-row">
+                <span class="wp-key">Patrimonio</span>
+                <span class="wp-val" class:pos={netWorth >= 0} class:neg={netWorth < 0}>{formatCOP(netWorth)}</span>
+              </div>
+              <div class="wp-row">
+                <span class="wp-key">Préstamos por cobrar</span>
+                <span class="wp-val loan">{formatCOP(netWorth - (balance ?? 0))}</span>
+              </div>
+            </div>
+            <div class="wp-divider"></div>
+          {/if}
 
           <!-- Este mes -->
           {#if monthSummary}
@@ -324,6 +343,9 @@
   }
   .wp-val.income  { color: var(--success); }
   .wp-val.expense { color: var(--danger); }
+  .wp-val.loan    { color: var(--accent); }
+  .wp-val.pos     { color: var(--success); }
+  .wp-val.neg     { color: var(--danger); }
 
   .wp-last-cat {
     font-size: 0.75rem;

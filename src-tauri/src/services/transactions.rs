@@ -4,7 +4,7 @@ use crate::models::{
     CategoryProgress, CsvExport, CurrentBalance, ImportResult, MonthComparison,
     Period, PeriodSummary, Transaction, TransactionFilter, TransactionInput, TransactionPage,
 };
-use crate::repositories::{budgets as budgets_repo, goals as goals_repo, transactions as tx_repo};
+use crate::repositories::{budgets as budgets_repo, goals as goals_repo, loans as loans_repo, transactions as tx_repo};
 use crate::utils::{csv_escape, format_cop_simple, is_valid_date, parse_csv_line, period_to_dates, scale_monthly, send_notification};
 
 pub async fn create(
@@ -138,7 +138,11 @@ pub async fn list(
 }
 
 pub async fn get_balance(conn: &libsql::Connection) -> AppResult<CurrentBalance> {
-    tx_repo::get_balance(conn).await
+    let mut base = tx_repo::get_balance(conn).await?;
+    let loans_pending = loans_repo::total_pending(conn).await?;
+    base.cash_on_hand = base.balance - loans_pending;
+    base.net_worth    = base.balance;  // cash_on_hand + loans_pending = balance
+    Ok(base)
 }
 
 pub async fn update(

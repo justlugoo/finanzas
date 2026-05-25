@@ -29,6 +29,8 @@ pub struct CurrentBalance {
     pub total_income: i64,
     pub total_expenses: i64,
     pub balance: i64,
+    pub cash_on_hand: i64,
+    pub net_worth: i64,
 }
 
 #[derive(Serialize, Debug)]
@@ -221,4 +223,47 @@ pub struct CustomRouteInput {
     #[serde(default)]
     pub km_round_trip: f64,
     pub description: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Loan {
+    pub id: i64,
+    pub person_name: String,
+    pub amount: i64,
+    pub date: String,
+    pub note: Option<String>,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct LoanPayment {
+    pub id: i64,
+    pub loan_id: i64,
+    pub amount: i64,
+    pub date: String,
+    pub created_at: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LoanInput {
+    pub person_name: String,
+    pub amount: i64,
+    pub date: String,
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LoanPaymentInput {
+    pub loan_id: i64,
+    pub amount: i64,
+    pub date: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct LoanWithBalance {
+    pub loan: Loan,
+    pub paid: i64,
+    pub pending: i64,
+    pub payments: Vec<LoanPayment>,
 }

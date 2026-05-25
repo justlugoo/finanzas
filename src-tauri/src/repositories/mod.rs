@@ -4,3 +4,4 @@ pub mod goals;
 pub mod gas;
 pub mod vehicles;
 pub mod routes;
+pub mod loans;

@@ -192,6 +192,12 @@ pub fn run() {
             commands::system::set_autostart_enabled,
             commands::system::backup_database,
             commands::system::factory_reset,
+            commands::loans::loan_create,
+            commands::loans::loan_list,
+            commands::loans::loan_get,
+            commands::loans::loan_add_payment,
+            commands::loans::loan_delete,
+            commands::loans::loans_total_pending,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

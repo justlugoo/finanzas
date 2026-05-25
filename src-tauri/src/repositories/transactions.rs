@@ -139,7 +139,7 @@ pub async fn get_balance(conn: &libsql::Connection) -> AppResult<CurrentBalance>
     let total_income: i64  = row.get(0)?;
     let total_expenses: i64 = row.get(1)?;
 
-    Ok(CurrentBalance { total_income, total_expenses, balance: total_income - total_expenses })
+    Ok(CurrentBalance { total_income, total_expenses, balance: total_income - total_expenses, cash_on_hand: 0, net_worth: 0 })
 }
 
 pub async fn update(

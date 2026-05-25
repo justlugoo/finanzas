@@ -66,6 +66,29 @@ CREATE TABLE IF NOT EXISTS vehicles (
     km_per_gallon   REAL    NOT NULL CHECK (km_per_gallon > 0)
 );
 
+CREATE TABLE IF NOT EXISTS loans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_name     TEXT    NOT NULL,
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    date            TEXT    NOT NULL,
+    note            TEXT,
+    status          TEXT    NOT NULL DEFAULT 'pendiente'
+                            CHECK (status IN ('pendiente', 'pagado')),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS loan_payments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loan_id         INTEGER NOT NULL,
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    date            TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_loans_status  ON loans(status);
+CREATE INDEX IF NOT EXISTS idx_loans_person  ON loans(person_name);
+CREATE INDEX IF NOT EXISTS idx_lp_loan_id    ON loan_payments(loan_id);
+
 ";
 
 pub async fn open_database() -> AppResult<libsql::Database> {

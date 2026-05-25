@@ -36,6 +36,8 @@ export interface CurrentBalance {
   total_income: number;
   total_expenses: number;
   balance: number;
+  cash_on_hand: number;
+  net_worth: number;
 }
 
 export type Period =
@@ -183,4 +185,42 @@ export interface CustomRouteInput {
   name: string;
   km_round_trip: number;
   description: string | null;
+}
+
+export interface Loan {
+  id: number;
+  person_name: string;
+  amount: number;
+  date: string;
+  note: string | null;
+  status: "pendiente" | "pagado";
+  created_at: string;
+}
+
+export interface LoanPayment {
+  id: number;
+  loan_id: number;
+  amount: number;
+  date: string;
+  created_at: string;
+}
+
+export interface LoanWithBalance {
+  loan: Loan;
+  paid: number;
+  pending: number;
+  payments: LoanPayment[];
+}
+
+export interface LoanInput {
+  person_name: string;
+  amount: number;
+  date: string;
+  note: string | null;
+}
+
+export interface LoanPaymentInput {
+  loan_id: number;
+  amount: number;
+  date: string;
 }
