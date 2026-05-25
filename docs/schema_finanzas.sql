@@ -128,3 +128,43 @@ CREATE TABLE IF NOT EXISTS config (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+
+-- =====================================================
+-- TABLA: loans  [v1.1.0]
+-- Dinero prestado a terceros.
+--   status se gestiona automáticamente:
+--     'pendiente' → 'pagado' cuando SUM(loan_payments) >= amount.
+--   paid y pending son campos calculados, no almacenados.
+-- =====================================================
+CREATE TABLE IF NOT EXISTS loans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_name     TEXT    NOT NULL,
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    date            TEXT    NOT NULL,
+    note            TEXT,
+    status          TEXT    NOT NULL DEFAULT 'pendiente'
+                            CHECK (status IN ('pendiente', 'pagado')),
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_loans_status  ON loans(status);
+CREATE INDEX IF NOT EXISTS idx_loans_person  ON loans(person_name);
+
+
+-- =====================================================
+-- TABLA: loan_payments  [v1.1.0]
+-- Abonos a un préstamo.
+--   loan_id es referencia lógica a loans.id — SIN FK explícita.
+--   Razón: libsql compila con SQLITE_DEFAULT_FOREIGN_KEYS=1;
+--   las FK explícitas bloquean INSERTs en modo local. Ver db.rs.
+-- =====================================================
+CREATE TABLE IF NOT EXISTS loan_payments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    loan_id         INTEGER NOT NULL,
+    amount          INTEGER NOT NULL CHECK (amount > 0),
+    date            TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lp_loan_id    ON loan_payments(loan_id);

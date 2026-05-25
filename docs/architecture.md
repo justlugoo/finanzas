@@ -34,6 +34,7 @@ Finanzas/
 │   │   │   ├── transactions.ts
 │   │   │   ├── budgets.ts
 │   │   │   ├── goals.ts
+│   │   │   ├── loans.ts
 │   │   │   ├── gas.ts
 │   │   │   ├── vehicles.ts
 │   │   │   ├── routes.ts
@@ -48,6 +49,7 @@ Finanzas/
 │       ├── registrar/+page.svelte
 │       ├── historial/+page.svelte
 │       ├── objetivos/+page.svelte
+│       ├── prestamos/+page.svelte
 │       └── config/+page.svelte
 ├── src-tauri/
 │   └── src/
@@ -64,6 +66,7 @@ Finanzas/
 │       │   ├── transactions.rs
 │       │   ├── budgets.rs
 │       │   ├── goals.rs
+│       │   ├── loans.rs
 │       │   ├── gas.rs
 │       │   ├── vehicles.rs
 │       │   └── routes.rs
@@ -72,6 +75,7 @@ Finanzas/
 │       │   ├── transactions.rs
 │       │   ├── budgets.rs
 │       │   ├── goals.rs
+│       │   ├── loans.rs
 │       │   ├── gas.rs
 │       │   ├── vehicles.rs
 │       │   ├── routes.rs
@@ -81,6 +85,7 @@ Finanzas/
 │           ├── transactions.rs
 │           ├── budgets.rs
 │           ├── goals.rs
+│           ├── loans.rs
 │           ├── gas.rs
 │           ├── vehicles.rs
 │           ├── routes.rs
@@ -182,6 +187,8 @@ PRAGMA temp_store   = MEMORY;
 
 ### Tablas
 
+9 tablas en total. Las dos tablas de préstamos (`loans`, `loan_payments`) se crearon en v1.1.0 como migración aditiva — bases de datos anteriores las adquieren automáticamente en el primer arranque post-actualización.
+
 #### `transactions`
 | Campo | Tipo | Descripción |
 |-------|------|-------------|
@@ -251,6 +258,36 @@ Los goals con `is_debt_goal = 1` son idempotentes por nombre: al registrar un ga
 | key | TEXT PK | Identificador de la configuración |
 | value | TEXT | Valor serializado como string |
 
+#### `loans` _(v1.1.0)_
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| id | INTEGER PK | Autoincremental |
+| person_name | TEXT | Nombre del deudor (texto libre) |
+| amount | INTEGER | Monto original prestado en COP. Debe ser > 0 |
+| date | TEXT | `YYYY-MM-DD` — fecha del préstamo |
+| note | TEXT | Nullable |
+| status | TEXT | `pendiente` \| `pagado`. Calculado automáticamente al registrar abonos |
+| created_at | TEXT | ISO timestamp |
+
+Índices: `(status)`, `(person_name)`.
+
+#### `loan_payments` _(v1.1.0)_
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| id | INTEGER PK | Autoincremental |
+| loan_id | INTEGER | Referencia lógica a `loans.id` — **sin FK explícita** (libsql compila con `SQLITE_DEFAULT_FOREIGN_KEYS=1` y las FK explícitas bloquean INSERTs) |
+| amount | INTEGER | Monto del abono en COP. Debe ser > 0 |
+| date | TEXT | `YYYY-MM-DD` — fecha del abono |
+| created_at | TEXT | ISO timestamp |
+
+Índice: `(loan_id)`.
+
+**Lógica de negocio de préstamos:**
+- `paid` y `pending` son campos calculados: `paid = SUM(loan_payments.amount)`, `pending = amount - paid`.
+- Al registrar un abono, el servicio verifica que `paid + nuevo_abono ≤ amount` (rechaza si se supera).
+- Si `paid ≥ amount` tras el abono, el repositorio actualiza `loans.status = 'pagado'` automáticamente.
+- `loans_total_pending` calcula en SQL la suma de `pending` de todos los préstamos con `status = 'pendiente'`.
+
 ---
 
 ## 5. Convenciones Rust
@@ -301,7 +338,7 @@ Todos los comandos se invocan con `invoke('nombre', { params })`. Retornan `Prom
 | `update_transaction` | `id: i64, input: TransactionInput` | `Transaction` |
 | `delete_transaction` | `id: i64` | `()` |
 | `delete_transactions_bulk` | `ids: Vec<i64>` | `i64` (cantidad eliminada) |
-| `get_current_balance` | — | `CurrentBalance` |
+| `get_current_balance` | — | `CurrentBalance` — incluye `cash_on_hand` y `net_worth` desde v1.1.0 |
 | `export_transactions_csv` | `filter: TransactionFilter` | `CsvExport` — header: `ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,ID Objetivo,Es deuda,Creado en` |
 | `import_transactions_csv` | `content: String` | `ImportResult` — lee columnas `ID Objetivo` y `Es deuda`; si no están presentes (CSVs antiguos), defaultean a `NULL`/`false` sin error |
 
@@ -346,6 +383,20 @@ Si `gas_km > 0`, `vehicle_id` es obligatorio. El backend inserta automáticament
 
 `status` válidos: `"activo"`, `"completado"`, `"pausado"`.  
 Al eliminar un objetivo, las transacciones asociadas pierden el `goal_id` (FK ON DELETE SET NULL).
+
+### Préstamos
+
+| Comando | Parámetros | Retorna |
+|---------|-----------|---------|
+| `loan_create` | `input: LoanInput` | `LoanWithBalance` |
+| `loan_list` | — | `Vec<LoanWithBalance>` |
+| `loan_get` | `id: i64` | `LoanWithBalance` |
+| `loan_add_payment` | `input: LoanPaymentInput` | `LoanWithBalance` |
+| `loan_delete` | `id: i64` | `()` |
+| `loans_total_pending` | — | `i64` (suma de `pending` de préstamos con `status = 'pendiente'`) |
+
+`loan_delete` elimina en cascada manual todos los `loan_payments` del préstamo antes de borrar el registro en `loans`.  
+`loan_add_payment` rechaza con `ValidationError` si el abono haría que la suma supere el monto original.
 
 ### Gasolina
 
@@ -436,6 +487,43 @@ type Period =
   | { type: "Daily" } | { type: "Weekly" }
   | { type: "Monthly" } | { type: "Yearly" }
   | { type: "Custom"; value: { start: string; end: string } };
+
+// v1.1.0: cash_on_hand y net_worth añadidos
+interface CurrentBalance {
+  total_income: number;
+  total_expenses: number;
+  balance: number;
+  cash_on_hand: number;  // balance − total préstamos pendientes por cobrar
+  net_worth: number;     // balance (= cash_on_hand + préstamos pendientes)
+}
+
+// v1.1.0: préstamos a terceros
+interface Loan {
+  id: number; person_name: string; amount: number;
+  date: string; note: string | null;
+  status: "pendiente" | "pagado"; created_at: string;
+}
+
+interface LoanPayment {
+  id: number; loan_id: number; amount: number;
+  date: string; created_at: string;
+}
+
+interface LoanWithBalance {
+  loan: Loan;
+  paid: number;    // SUM(loan_payments.amount)
+  pending: number; // loan.amount - paid
+  payments: LoanPayment[];
+}
+
+interface LoanInput {
+  person_name: string; amount: number;
+  date: string; note: string | null;
+}
+
+interface LoanPaymentInput {
+  loan_id: number; amount: number; date: string;
+}
 ```
 
 ---

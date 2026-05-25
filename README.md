@@ -1,6 +1,6 @@
 # Finanzas
 
-App de escritorio para gestión financiera personal. Registra ingresos y gastos, controla presupuestos por categoría, sigue objetivos de ahorro y calcula costos de gasolina por vehículo y ruta.
+App de escritorio para gestión financiera personal. Registra ingresos y gastos, controla presupuestos por categoría, sigue objetivos de ahorro, gestiona préstamos a terceros y calcula costos de gasolina por vehículo y ruta.
 
 **Plataforma:** Linux (Fedora / Debian / Ubuntu)  
 **Idioma:** Español  
@@ -86,10 +86,11 @@ Al abrir la app por primera vez estará completamente vacía. Flujo recomendado:
 
 | Pantalla | Descripción |
 |----------|-------------|
-| **Resumen** | Dashboard: saldo, KPIs del mes, progreso por categoría, comparativa con el mes anterior, últimas transacciones y próximo objetivo |
+| **Resumen** | Dashboard: saldo en mano, patrimonio (cuando hay préstamos pendientes), KPIs del mes, progreso por categoría, comparativa con el mes anterior y últimas transacciones |
 | **Registrar** | Formulario para ingresos y gastos. Soporta categoría, monto, fecha, nota, gasto extraordinario, objetivo asociado y km recorridos con selector de vehículo |
 | **Historial** | Lista filtrable por período, tipo y categoría. Edición y eliminación inline, selección múltiple y exportación a CSV |
 | **Objetivos** | Metas de ahorro y deudas con progreso, monto mensual requerido y fecha estimada de cumplimiento |
+| **Préstamos** | Dinero prestado a terceros: registra deudor, monto y fecha; abonos parciales con transición automática a "pagado"; saldo pendiente por cobrar |
 | **Configuración** | Categorías, vehículos, rutas, precio de gasolina, autoarranque, backup y restablecimiento de fábrica |
 
 ---
