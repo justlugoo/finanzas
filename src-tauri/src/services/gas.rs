@@ -54,23 +54,3 @@ pub async fn get_weekly_comparison(conn: &libsql::Connection) -> AppResult<Vec<W
 pub async fn get_route_costs(conn: &libsql::Connection) -> AppResult<RoutesCost> {
     repo::get_route_costs(conn).await
 }
-
-pub async fn insert_auto(
-    conn: &libsql::Connection,
-    date: &str,
-    context: &str,
-    km: f64,
-    vehicle_id: i64,
-) -> AppResult<()> {
-    let km_per_gallon = repo::get_vehicle_km_per_gallon(conn, vehicle_id).await?
-        .ok_or_else(|| AppError::ValidationError(format!("vehículo {vehicle_id} no encontrado")))?;
-
-    let precio = repo::find_latest_price(conn).await?
-        .ok_or_else(|| AppError::ValidationError(
-            "no hay precio de gasolina registrado — ve a Configuración para añadirlo".into(),
-        ))?;
-
-    let gas_cost = ((km / km_per_gallon) * precio as f64).round() as i64;
-    let gas_note = format!("Auto: Gasolina {} ({:.1}km)", context, km);
-    repo::insert_gas_transaction(conn, date, gas_cost, &gas_note).await
-}

@@ -22,6 +22,8 @@ pub struct Transaction {
     pub goal_id: Option<i64>,
     pub created_at: String,
     pub is_debt: bool,
+    pub gas_km: Option<f64>,
+    pub trip_vehicle_id: Option<i64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -223,6 +225,27 @@ pub struct CustomRouteInput {
     #[serde(default)]
     pub km_round_trip: f64,
     pub description: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct FuelFillup {
+    pub id: i64,
+    pub date: String,
+    pub vehicle_id: i64,
+    pub gallons: f64,
+    pub price_per_gallon: i64,
+    pub total_cost: i64,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct FuelFillupInput {
+    pub date: String,
+    pub vehicle_id: i64,
+    pub gallons: f64,
+    pub price_per_gallon: i64,
+    pub note: Option<String>,
 }
 
 #[derive(Serialize, Debug)]

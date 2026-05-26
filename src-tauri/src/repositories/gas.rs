@@ -27,6 +27,14 @@ pub async fn find_latest_price(conn: &libsql::Connection) -> AppResult<Option<i6
     Ok(rows.next().await?.and_then(|r| r.get(0).ok()))
 }
 
+pub async fn find_price_for_date(conn: &libsql::Connection, date: &str) -> AppResult<Option<i64>> {
+    let mut rows = conn.query(
+        "SELECT price_per_gallon FROM gas_prices WHERE date <= ? ORDER BY date DESC LIMIT 1",
+        libsql::params![date.to_string()],
+    ).await?;
+    Ok(rows.next().await?.and_then(|r| r.get(0).ok()))
+}
+
 pub async fn list(conn: &libsql::Connection, limit: i64) -> AppResult<Vec<GasPrice>> {
     let mut rows = conn.query(
         "SELECT id, date, price_per_gallon, source FROM gas_prices ORDER BY date DESC LIMIT ?",
@@ -81,20 +89,6 @@ pub async fn get_vehicle_km_per_gallon(
         libsql::params![vehicle_id],
     ).await?;
     Ok(rows.next().await?.and_then(|r| r.get::<f64>(0).ok()))
-}
-
-pub async fn insert_gas_transaction(
-    conn: &libsql::Connection,
-    date: &str,
-    gas_cost: i64,
-    gas_note: &str,
-) -> AppResult<()> {
-    conn.execute(
-        "INSERT INTO transactions (date, type, category, amount, note, is_extraordinary, goal_id) \
-         VALUES (?, 'gasto', 'Gasolina', ?, ?, 0, NULL)",
-        libsql::params![date.to_string(), gas_cost, gas_note.to_string()],
-    ).await?;
-    Ok(())
 }
 
 pub async fn get_weekly_comparison(conn: &libsql::Connection) -> AppResult<Vec<WeeklyGasPoint>> {

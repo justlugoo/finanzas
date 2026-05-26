@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     goal_id             INTEGER,
     created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     is_debt             INTEGER NOT NULL DEFAULT 0
-                                CHECK (is_debt IN (0, 1))
+                                CHECK (is_debt IN (0, 1)),
+    gas_km              REAL    DEFAULT NULL,
+    trip_vehicle_id     INTEGER DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tx_date          ON transactions(date);
@@ -88,6 +90,20 @@ CREATE TABLE IF NOT EXISTS loan_payments (
 CREATE INDEX IF NOT EXISTS idx_loans_status  ON loans(status);
 CREATE INDEX IF NOT EXISTS idx_loans_person  ON loans(person_name);
 CREATE INDEX IF NOT EXISTS idx_lp_loan_id    ON loan_payments(loan_id);
+
+CREATE TABLE IF NOT EXISTS fuel_fillups (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                TEXT    NOT NULL,
+    vehicle_id          INTEGER NOT NULL,
+    gallons             REAL    NOT NULL CHECK (gallons > 0),
+    price_per_gallon    INTEGER NOT NULL CHECK (price_per_gallon > 0),
+    total_cost          INTEGER NOT NULL CHECK (total_cost > 0),
+    note                TEXT,
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fillups_date    ON fuel_fillups(date);
+CREATE INDEX IF NOT EXISTS idx_fillups_vehicle ON fuel_fillups(vehicle_id);
 
 ";
 
@@ -208,7 +224,9 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
                  goal_id             INTEGER,
                  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
                  is_debt             INTEGER NOT NULL DEFAULT 0
-                                             CHECK (is_debt IN (0, 1))
+                                             CHECK (is_debt IN (0, 1)),
+                 gas_km              REAL    DEFAULT NULL,
+                 trip_vehicle_id     INTEGER DEFAULT NULL
              );
              INSERT INTO transactions_new
                  SELECT id, date, type, category, amount, note,
@@ -261,6 +279,15 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         )
         .await
         .map_err(|e| AppError::DatabaseError(format!("migración custom_routes: {e}")))?;
+    }
+
+    if !column_exists(conn, "transactions", "gas_km").await? {
+        conn.execute("ALTER TABLE transactions ADD COLUMN gas_km REAL DEFAULT NULL", ())
+            .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
+    if !column_exists(conn, "transactions", "trip_vehicle_id").await? {
+        conn.execute("ALTER TABLE transactions ADD COLUMN trip_vehicle_id INTEGER DEFAULT NULL", ())
+            .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
     }
 
     Ok(())

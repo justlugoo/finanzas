@@ -19,19 +19,8 @@ pub async fn create(
         return Err(AppError::ValidationError("tipo debe ser 'ingreso' o 'gasto'".into()));
     }
 
-    let gas_km_val    = input.gas_km.unwrap_or(0.0);
-    let auto_gas      = gas_km_val > 0.0;
     let is_debt_gasto = input.is_debt && input.kind == "gasto";
-    let needs_tx      = auto_gas || is_debt_gasto;
-
-    let vehicle_id = if auto_gas {
-        match input.vehicle_id {
-            Some(id) => id,
-            None => return Err(AppError::ValidationError(
-                "selecciona un vehículo para calcular el gasto de gasolina".into(),
-            )),
-        }
-    } else { 0 };
+    let needs_tx      = is_debt_gasto;
 
     if needs_tx {
         conn.execute("BEGIN", ()).await?;
@@ -47,13 +36,6 @@ pub async fn create(
             return Err(e);
         }
     };
-
-    if auto_gas {
-        if let Err(e) = crate::services::gas::insert_auto(conn, &input.date, &input.category, gas_km_val, vehicle_id).await {
-            let _ = conn.execute("ROLLBACK", ()).await;
-            return Err(e);
-        }
-    }
 
     // Auto-crear objetivo de deuda (find-or-create) y enlazar la transacción
     if is_debt_gasto {
