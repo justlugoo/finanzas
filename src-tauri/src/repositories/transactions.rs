@@ -18,6 +18,8 @@ pub fn row_to_transaction(row: &libsql::Row) -> Result<Transaction, libsql::Erro
         goal_id: row.get(7)?,
         created_at: row.get(8)?,
         is_debt: row.get::<i64>(9).unwrap_or(0) != 0,
+        gas_km: row.get(10).ok(),
+        trip_vehicle_id: row.get(11).ok(),
     })
 }
 
@@ -27,10 +29,10 @@ pub async fn insert(
 ) -> AppResult<Transaction> {
     let mut rows = conn.query(
         "INSERT INTO transactions \
-         (date, type, category, amount, note, is_extraordinary, goal_id, is_debt) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+         (date, type, category, amount, note, is_extraordinary, goal_id, is_debt, gas_km, trip_vehicle_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          RETURNING id, date, type, category, amount, note, \
-                   is_extraordinary, goal_id, created_at, is_debt",
+                   is_extraordinary, goal_id, created_at, is_debt, gas_km, trip_vehicle_id",
         libsql::params![
             input.date.clone(),
             input.kind.clone(),
@@ -39,7 +41,9 @@ pub async fn insert(
             input.note.clone(),
             input.is_extraordinary as i64,
             input.goal_id,
-            input.is_debt as i64
+            input.is_debt as i64,
+            input.gas_km,
+            input.vehicle_id
         ],
     ).await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
@@ -108,7 +112,7 @@ pub async fn list(
     let offset    = (page - 1) * page_size;
 
     let select_sql = format!(
-        "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
+        "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt, gas_km, trip_vehicle_id \
          FROM transactions{where_sql} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?"
     );
     let mut params = base_params;
@@ -149,10 +153,11 @@ pub async fn update(
 ) -> AppResult<Transaction> {
     let mut rows = conn.query(
         "UPDATE transactions \
-         SET date=?, type=?, category=?, amount=?, note=?, is_extraordinary=?, goal_id=?, is_debt=? \
+         SET date=?, type=?, category=?, amount=?, note=?, is_extraordinary=?, goal_id=?, is_debt=?, \
+             gas_km=?, trip_vehicle_id=? \
          WHERE id=? \
          RETURNING id, date, type, category, amount, note, \
-                   is_extraordinary, goal_id, created_at, is_debt",
+                   is_extraordinary, goal_id, created_at, is_debt, gas_km, trip_vehicle_id",
         libsql::params![
             input.date.clone(),
             input.kind.clone(),
@@ -162,6 +167,8 @@ pub async fn update(
             input.is_extraordinary as i64,
             input.goal_id,
             input.is_debt as i64,
+            input.gas_km,
+            input.vehicle_id,
             id
         ],
     ).await?;
@@ -320,7 +327,7 @@ pub async fn list_by_goal(
     goal_id: i64,
 ) -> AppResult<Vec<Transaction>> {
     let mut rows = conn.query(
-        "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
+        "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt, gas_km, trip_vehicle_id \
          FROM transactions WHERE goal_id = ? ORDER BY date DESC, id DESC",
         libsql::params![goal_id],
     ).await?;
@@ -334,7 +341,8 @@ pub async fn list_by_goal(
 
 pub async fn sum_by_goal(conn: &libsql::Connection, goal_id: i64) -> AppResult<i64> {
     let mut rows = conn.query(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE goal_id = ?",
+        "SELECT COALESCE(SUM(amount), 0) FROM transactions \
+         WHERE goal_id = ? AND NOT (is_debt = 1 AND type = 'gasto')",
         libsql::params![goal_id],
     ).await?;
     Ok(rows.next().await?.map(|r| r.get::<i64>(0).unwrap_or(0)).unwrap_or(0))
@@ -343,7 +351,8 @@ pub async fn sum_by_goal(conn: &libsql::Connection, goal_id: i64) -> AppResult<i
 pub async fn sum_by_goal_recent(conn: &libsql::Connection, goal_id: i64) -> AppResult<i64> {
     let mut rows = conn.query(
         "SELECT COALESCE(SUM(amount), 0) FROM transactions \
-         WHERE goal_id = ? AND date >= date('now', '-3 months')",
+         WHERE goal_id = ? AND NOT (is_debt = 1 AND type = 'gasto') \
+         AND date >= date('now', '-3 months')",
         libsql::params![goal_id],
     ).await?;
     Ok(rows.next().await?.map(|r| r.get::<i64>(0).unwrap_or(0)).unwrap_or(0))
@@ -368,7 +377,8 @@ pub async fn sum_for_goal_completion(
     goal_id: i64,
 ) -> AppResult<i64> {
     let mut rows = conn.query(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE goal_id = ?",
+        "SELECT COALESCE(SUM(amount), 0) FROM transactions \
+         WHERE goal_id = ? AND NOT (is_debt = 1 AND type = 'gasto')",
         libsql::params![goal_id],
     ).await?;
     Ok(rows.next().await?.and_then(|r| r.get(0).ok()).unwrap_or(0))
@@ -387,7 +397,7 @@ pub async fn list_for_export(
     conn: &libsql::Connection,
     filter: &TransactionFilter,
 ) -> AppResult<Vec<Transaction>> {
-    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt \
+    let mut sql = "SELECT id, date, type, category, amount, note, is_extraordinary, goal_id, created_at, is_debt, gas_km, trip_vehicle_id \
                    FROM transactions WHERE 1=1".to_string();
     let mut params: Vec<libsql::Value> = Vec::new();
 
