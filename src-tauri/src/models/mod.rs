@@ -59,6 +59,8 @@ pub struct TransactionInput {
     pub is_debt: bool,
     #[serde(default)]
     pub vehicle_id: Option<i64>,
+    #[serde(default)]
+    pub installments: Option<i64>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -152,6 +154,7 @@ pub struct Goal {
     pub status: String,
     pub created_at: String,
     pub is_debt_goal: bool,
+    pub installments: Option<i64>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -289,4 +292,26 @@ pub struct LoanWithBalance {
     pub paid: i64,
     pub pending: i64,
     pub payments: Vec<LoanPayment>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct MetaAbono {
+    pub id: i64,
+    pub date: String,
+    pub amount: i64,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Meta {
+    pub id: String,
+    pub tipo: String,
+    pub nombre: String,
+    pub total: i64,
+    pub abonado: i64,
+    pub pendiente: i64,
+    pub estado: String,
+    pub fecha: Option<String>,
+    pub nota: Option<String>,
+    pub cuotas: Option<i64>,
+    pub abonos: Vec<MetaAbono>,
 }

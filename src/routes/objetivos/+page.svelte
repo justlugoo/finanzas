@@ -4,6 +4,7 @@
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
+  import PaymentModal from "$lib/components/PaymentModal.svelte";
 
   let goals       = $state<GoalWithProgress[]>([]);
   let loading     = $state(true);
@@ -173,6 +174,16 @@
       detailLoading = false;
     }
   }
+
+  // ── Abono a objetivo ──────────────────────────────────────────────────────
+  async function handleAddContribution(amount: number, date: string) {
+    if (!detail) return;
+    const goalId = detail.goal.goal.id;
+    await goalApi.addContribution(goalId, amount, date);
+    const refreshed = await goalApi.getDetail(goalId);
+    detail = refreshed;
+    goals = goals.map(g => g.goal.id === goalId ? refreshed.goal : g);
+  }
 </script>
 
 <main>
@@ -246,6 +257,12 @@
               <span class="debt-label">abonado</span>
             {/if}
           </div>
+
+          {#if g.goal.is_debt_goal && g.goal.installments && g.goal.installments > 0}
+            <div class="installments-hint">
+              ≈ {formatCOP(Math.round(g.goal.target_amount / g.goal.installments))}/mes · {g.goal.installments} cuotas
+            </div>
+          {/if}
 
           {#if g.goal.target_date}
             <div class="meta-row">
@@ -371,70 +388,39 @@
 {/if}
 
 <!-- ── Modal: Detalle ───────────────────────────────────────────────────── -->
-{#if detail || detailLoading}
+{#if detailLoading}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="overlay" onclick={() => { detail = null; }}></div>
-  <div class="modal modal-wide" role="dialog" aria-modal="true" tabindex="-1">
-    <ScrollArea class="modal-scroll" scrollbar="thin">
-    {#if detailLoading}
-      <p class="muted">Cargando…</p>
-    {:else if detail}
-      <h2>{detail.goal.goal.name}</h2>
-      <div class="detail-stats">
-        <div class="stat">
-          <span class="stat-label">Acumulado</span>
-          <span class="stat-value">{formatCOP(detail.goal.current_amount)}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Meta</span>
-          <span class="stat-value">{formatCOP(detail.goal.goal.target_amount)}</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Progreso</span>
-          <span class="stat-value">{detail.goal.percentage.toFixed(1)}%</span>
-        </div>
-        {#if detail.goal.monthly_required}
-          <div class="stat">
-            <span class="stat-label">Mensual req.</span>
-            <span class="stat-value">{formatCOP(detail.goal.monthly_required)}</span>
-          </div>
-        {/if}
-      </div>
-
-      <h3>Contribuciones ({detail.contributions.length})</h3>
-      {#if detail.contributions.length === 0}
-        <p class="muted">Sin transacciones asociadas aún.</p>
-      {:else}
-        <ScrollArea orientation="horizontal" scrollbar="thin">
-          <table class="contrib-table">
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Categoría</th>
-                <th class="right">Monto</th>
-                <th>Nota</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each detail.contributions as tx (tx.id)}
-                <tr>
-                  <td>{tx.date}</td>
-                  <td>{tx.category}</td>
-                  <td class="right amount-cell">{formatCOP(tx.amount)}</td>
-                  <td class="note-cell">{tx.note ?? "—"}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </ScrollArea>
-      {/if}
-      <div class="modal-actions">
-        <button class="btn-secondary" onclick={() => { detail = null; }}>Cerrar</button>
-      </div>
-    {/if}
-    </ScrollArea>
+  <div class="overlay" onclick={() => { detailLoading = false; }}></div>
+  <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
+    <p class="muted">Cargando…</p>
   </div>
+{:else if detail}
+  {@const g = detail.goal}
+  {@const contribs = detail.contributions.filter(tx => !(tx.is_debt && tx.type === "gasto"))}
+  {@const pendiente = Math.max(0, g.goal.target_amount - g.current_amount)}
+  {@const fechaStat = g.goal.target_date ?? g.goal.created_at.slice(0, 10)}
+  <PaymentModal
+    title={g.goal.name}
+    subtitle={statusLabel(g.goal.status)}
+    subtitleClass="status-{g.goal.status}"
+    stats={[
+      { label: g.goal.is_debt_goal ? "Deuda total"  : "Meta total",  value: formatCOP(g.goal.target_amount) },
+      { label: g.goal.is_debt_goal ? "Abonado"      : "Acumulado",   value: formatCOP(g.current_amount),  colorClass: "success" },
+      { label: "Pendiente",                                            value: formatCOP(pendiente),          colorClass: pendiente > 0 ? "accent" : undefined },
+      { label: g.goal.target_date  ? "Fecha meta"   : "Creado",       value: fechaStat },
+    ]}
+    paid={g.current_amount}
+    total={g.goal.target_amount}
+    progressDone={g.goal.status === "completado"}
+    items={contribs.map(tx => ({ id: tx.id, date: tx.date, amount: tx.amount, category: tx.category, note: tx.note }))}
+    itemsLabel={g.goal.is_debt_goal ? "Abonos" : "Contribuciones"}
+    showCategory={true}
+    showNote={true}
+    canPay={g.goal.status === "activo"}
+    onAddPayment={handleAddContribution}
+    onClose={() => { detail = null; }}
+  />
 {/if}
 
 <!-- ── Confirm: Eliminar ─────────────────────────────────────────────────── -->
@@ -481,7 +467,6 @@
   }
 
   h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1rem; }
-  h3 { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin: 1rem 0 0.5rem; }
 
   /* ── Filtro ── */
   .filter-row {
@@ -569,6 +554,11 @@
     font-size: 0.72rem;
     color: var(--danger);
     font-weight: 500;
+  }
+
+  .installments-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
   }
 
   .status-badge {
@@ -783,22 +773,6 @@
   }
   .stat-label { font-size: 0.7rem; color: var(--text-muted); }
   .stat-value { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
-
-  .contrib-table {
-    width: 100%;
-    font-size: 0.8rem;
-    border-collapse: collapse;
-  }
-
-  .contrib-table th,
-  .contrib-table td {
-    padding: 0.4rem 0.5rem;
-    text-align: left;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .contrib-table th { color: var(--text-muted); font-weight: 500; font-size: 0.72rem; }
-  .contrib-table td { color: var(--text-secondary); }
 
   .right       { text-align: right; }
   .amount-cell { color: var(--text-primary); font-weight: 500; }

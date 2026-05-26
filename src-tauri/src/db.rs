@@ -289,6 +289,10 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         conn.execute("ALTER TABLE transactions ADD COLUMN trip_vehicle_id INTEGER DEFAULT NULL", ())
             .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
     }
+    if !column_exists(conn, "goals", "installments").await? {
+        conn.execute("ALTER TABLE goals ADD COLUMN installments INTEGER DEFAULT NULL", ())
+            .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
 
     Ok(())
 }

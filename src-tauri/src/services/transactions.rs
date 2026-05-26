@@ -45,7 +45,7 @@ pub async fn create(
         };
         let goal_id = match goals_repo::find_debt_goal_by_name(conn, &debt_name).await {
             Ok(Some(id)) => id,
-            Ok(None) => match goals_repo::insert_debt_goal(conn, &debt_name, input.amount).await {
+            Ok(None) => match goals_repo::insert_debt_goal(conn, &debt_name, input.amount, input.installments).await {
                 Ok(id) => id,
                 Err(e) => { let _ = conn.execute("ROLLBACK", ()).await; return Err(e); }
             },

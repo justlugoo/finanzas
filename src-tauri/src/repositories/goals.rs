@@ -7,13 +7,13 @@ pub async fn list(
 ) -> AppResult<Vec<Goal>> {
     let mut rows = if let Some(s) = status {
         conn.query(
-            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal, installments \
              FROM goals WHERE status = ? ORDER BY name",
             libsql::params![s.to_string()],
         ).await?
     } else {
         conn.query(
-            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
+            "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal, installments \
              FROM goals ORDER BY name",
             (),
         ).await?
@@ -31,7 +31,7 @@ pub async fn find_by_id(
     id: i64,
 ) -> AppResult<Option<Goal>> {
     let mut rows = conn.query(
-        "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal \
+        "SELECT id, name, target_amount, target_date, status, created_at, is_debt_goal, installments \
          FROM goals WHERE id = ?",
         libsql::params![id],
     ).await?;
@@ -86,10 +86,11 @@ pub async fn insert_debt_goal(
     conn: &libsql::Connection,
     name: &str,
     amount: i64,
+    installments: Option<i64>,
 ) -> AppResult<i64> {
     conn.execute(
-        "INSERT INTO goals (name, target_amount, is_debt_goal) VALUES (?, ?, 1)",
-        libsql::params![name.to_string(), amount],
+        "INSERT INTO goals (name, target_amount, is_debt_goal, installments) VALUES (?, ?, 1, ?)",
+        libsql::params![name.to_string(), amount, installments],
     ).await?;
     Ok(conn.last_insert_rowid())
 }
@@ -144,5 +145,6 @@ fn row_to_goal(row: &libsql::Row) -> AppResult<Goal> {
         status: row.get(4)?,
         created_at: row.get(5)?,
         is_debt_goal: row.get::<i64>(6).unwrap_or(0) != 0,
+        installments: row.get(7).ok(),
     })
 }

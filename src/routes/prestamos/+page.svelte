@@ -3,6 +3,7 @@
   import type { LoanWithBalance } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
+  import PaymentModal from "$lib/components/PaymentModal.svelte";
 
   let loans        = $state<LoanWithBalance[]>([]);
   let loading      = $state(true);
@@ -34,12 +35,6 @@
   let detailLoading = $state(false);
 
   // ── Abono ─────────────────────────────────────────────────────────────────
-  let showPaymentForm = $state(false);
-  let pAmountRaw      = $state("");
-  let pDate           = $state("");
-  let pError          = $state<string | null>(null);
-  let paying          = $state(false);
-  let pAmount         = $derived(parseInt(pAmountRaw.replace(/\D/g, ""), 10) || 0);
 
   // ── Eliminar ──────────────────────────────────────────────────────────────
   let deleteId  = $state<number | null>(null);
@@ -115,7 +110,6 @@
   async function openDetail(id: number) {
     if (deleteId !== null) return;
     detailLoading = true;
-    showPaymentForm = false; pAmountRaw = ""; pDate = ""; pError = null;
     try {
       detail = await loanApi.get(id);
     } catch (e) {
@@ -127,23 +121,11 @@
   }
 
   // ── Abono ─────────────────────────────────────────────────────────────────
-  async function handleAddPayment(ev: Event) {
-    ev.preventDefault();
+  async function handleAddPayment(amount: number, date: string) {
     if (!detail) return;
-    if (pAmount <= 0)  { pError = "El monto debe ser mayor que 0."; return; }
-    if (!pDate)        { pError = "La fecha es requerida."; return; }
-    paying = true; pError = null;
-    try {
-      const updated = await loanApi.addPayment({ loan_id: detail.loan.id, amount: pAmount, date: pDate });
-      detail = updated;
-      loans = loans.map(l => l.loan.id === updated.loan.id ? updated : l);
-      showPaymentForm = false; pAmountRaw = ""; pDate = "";
-    } catch (e) {
-      console.error("[prestamos] payment:", e);
-      pError = extractMsg(e);
-    } finally {
-      paying = false;
-    }
+    const updated = await loanApi.addPayment({ loan_id: detail.loan.id, amount, date });
+    detail = updated;
+    loans = loans.map(l => l.loan.id === updated.loan.id ? updated : l);
   }
 
   // ── Eliminar ──────────────────────────────────────────────────────────────
@@ -320,124 +302,34 @@
 {/if}
 
 <!-- ── Modal: Detalle ─────────────────────────────────────────────────────── -->
-{#if detail || detailLoading}
+{#if detailLoading}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="overlay" onclick={() => { detail = null; }}></div>
-  <div class="modal modal-wide" role="dialog" aria-modal="true" tabindex="-1">
-    <ScrollArea class="modal-scroll" scrollbar="thin">
-      {#if detailLoading}
-        <p class="muted">Cargando…</p>
-      {:else if detail}
-        <div class="detail-header">
-          <h2>{detail.loan.person_name}</h2>
-          <span class="status-badge status-{detail.loan.status}">
-            {detail.loan.status === "pendiente" ? "Pendiente" : "Pagado"}
-          </span>
-        </div>
-
-        {#if detail.loan.note}
-          <p class="detail-note">{detail.loan.note}</p>
-        {/if}
-
-        <div class="detail-stats">
-          <div class="stat">
-            <span class="stat-label">Monto original</span>
-            <span class="stat-value">{formatCOP(detail.loan.amount)}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Pagado</span>
-            <span class="stat-value success">{formatCOP(detail.paid)}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Pendiente</span>
-            <span class="stat-value" class:accent={detail.loan.status === "pendiente"}>{formatCOP(detail.pending)}</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Fecha</span>
-            <span class="stat-value">{detail.loan.date}</span>
-          </div>
-        </div>
-
-        <div class="progress-wrap detail-progress">
-          <div class="progress-bar">
-            <div
-              class="progress-fill"
-              class:fill-done={detail.loan.status === "pagado"}
-              style="width: {loanPct(detail)}%"
-            ></div>
-          </div>
-          <span class="pct">{loanPct(detail).toFixed(0)}%</span>
-        </div>
-
-        <h3>Abonos ({detail.payments.length})</h3>
-
-        {#if detail.payments.length === 0}
-          <p class="muted">Sin abonos registrados aún.</p>
-        {:else}
-          <ScrollArea orientation="horizontal" scrollbar="thin">
-            <table class="payments-table">
-              <thead>
-                <tr>
-                  <th>Fecha</th>
-                  <th class="right">Monto</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each detail.payments as p (p.id)}
-                  <tr>
-                    <td>{p.date}</td>
-                    <td class="right amount-cell">{formatCOP(p.amount)}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </ScrollArea>
-        {/if}
-
-        {#if showPaymentForm}
-          <div class="payment-form-wrap">
-            <h3>Registrar abono</h3>
-            {#if pError}
-              <div class="banner error small"><pre>{pError}</pre></div>
-            {/if}
-            <form onsubmit={handleAddPayment} class="modal-form">
-              <div class="field">
-                <label for="p-amount">Monto del abono</label>
-                <input
-                  id="p-amount"
-                  type="text"
-                  inputmode="numeric"
-                  placeholder="0"
-                  value={pAmountRaw ? new Intl.NumberFormat("es-CO").format(pAmount) : ""}
-                  oninput={(e) => handleAmountInput(e, (v) => { pAmountRaw = v; })}
-                />
-              </div>
-              <div class="field">
-                <span class="field-label">Fecha del abono</span>
-                <DatePicker bind:value={pDate} />
-              </div>
-              <div class="modal-actions">
-                <button type="button" class="btn-secondary" onclick={() => { showPaymentForm = false; pAmountRaw = ""; pDate = ""; pError = null; }}>Cancelar</button>
-                <button type="submit" class="btn-primary" disabled={paying || pAmount <= 0 || !pDate}>
-                  {paying ? "Guardando…" : "Registrar"}
-                </button>
-              </div>
-            </form>
-          </div>
-        {:else if detail.loan.status === "pendiente"}
-          <div class="modal-actions">
-            <button class="btn-secondary" onclick={() => { detail = null; }}>Cerrar</button>
-            <button class="btn-primary" onclick={() => { showPaymentForm = true; }}>+ Registrar abono</button>
-          </div>
-        {:else}
-          <div class="modal-actions">
-            <button class="btn-secondary" onclick={() => { detail = null; }}>Cerrar</button>
-          </div>
-        {/if}
-      {/if}
-    </ScrollArea>
+  <div class="overlay" onclick={() => { detailLoading = false; }}></div>
+  <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
+    <p class="muted">Cargando…</p>
   </div>
+{:else if detail}
+  <PaymentModal
+    title={detail.loan.person_name}
+    subtitle={detail.loan.status === "pendiente" ? "Pendiente" : "Pagado"}
+    subtitleClass="status-{detail.loan.status}"
+    note={detail.loan.note}
+    stats={[
+      { label: "Monto original", value: formatCOP(detail.loan.amount) },
+      { label: "Pagado",         value: formatCOP(detail.paid),    colorClass: "success" },
+      { label: "Pendiente",      value: formatCOP(detail.pending), colorClass: detail.loan.status === "pendiente" ? "accent" : undefined },
+      { label: "Fecha",          value: detail.loan.date },
+    ]}
+    paid={detail.paid}
+    total={detail.loan.amount}
+    progressDone={detail.loan.status === "pagado"}
+    items={detail.payments}
+    itemsLabel="Abonos"
+    canPay={detail.loan.status === "pendiente"}
+    onAddPayment={handleAddPayment}
+    onClose={() => { detail = null; }}
+  />
 {/if}
 
 <!-- ── Confirm: Eliminar ───────────────────────────────────────────────────── -->
@@ -478,7 +370,6 @@
 
   h1 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
   h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.75rem; }
-  h3 { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin: 1rem 0 0.5rem; }
 
   /* ── Filtro ── */
   .filter-row { flex-shrink: 0; display: flex; gap: 0.4rem; }
@@ -624,7 +515,7 @@
   .banner.small { padding: 0.4rem 0.75rem; margin-bottom: 0.5rem; }
   .banner pre { font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; }
 
-  /* ── Overlay / Modal ── */
+  /* ── Overlay / Modal (para modales propios de esta página) ── */
   .overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 20;
   }
@@ -635,8 +526,7 @@
     width: min(440px, 92vw); max-height: 85vh; overflow: hidden;
     display: flex; flex-direction: column;
   }
-  .modal-wide { width: min(560px, 96vw); }
-  .modal-sm   { width: min(340px, 92vw); }
+  .modal-sm { width: min(340px, 92vw); }
 
   .modal-form { display: flex; flex-direction: column; gap: 0.9rem; }
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
@@ -654,42 +544,6 @@
     transition: border-color 0.15s; width: 100%;
   }
   input:focus { border-color: var(--accent); }
-
-  /* ── Detalle ── */
-  .detail-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
-  .detail-header h2 { margin-bottom: 0; }
-  .detail-note { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem; }
-
-  .detail-stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-    gap: 0.75rem; margin-bottom: 0.5rem;
-  }
-  .stat {
-    background: var(--bg-elevated); border-radius: var(--radius);
-    padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.2rem;
-  }
-  .stat-label { font-size: 0.7rem; color: var(--text-muted); }
-  .stat-value { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
-  .stat-value.success { color: var(--success); }
-  .stat-value.accent  { color: var(--accent);  }
-
-  .detail-progress { margin-bottom: 0.25rem; }
-
-  .payments-table { width: 100%; font-size: 0.8rem; border-collapse: collapse; }
-  .payments-table th,
-  .payments-table td { padding: 0.4rem 0.5rem; text-align: left; border-bottom: 1px solid var(--border); }
-  .payments-table th { color: var(--text-muted); font-weight: 500; font-size: 0.72rem; }
-  .payments-table td { color: var(--text-secondary); }
-  .right       { text-align: right; }
-  .amount-cell { color: var(--text-primary); font-weight: 500; }
-
-  .payment-form-wrap {
-    border-top: 1px solid var(--border);
-    padding-top: 0.75rem;
-    margin-top: 0.5rem;
-  }
-  .payment-form-wrap h3 { margin-top: 0; }
 
   /* ── Misc ── */
   .muted { color: var(--text-muted); font-size: 0.85rem; }

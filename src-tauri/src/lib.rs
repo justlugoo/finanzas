@@ -198,6 +198,7 @@ pub fn run() {
             commands::loans::loan_add_payment,
             commands::loans::loan_delete,
             commands::loans::loans_total_pending,
+            commands::metas::metas_list,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

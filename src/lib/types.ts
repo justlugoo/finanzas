@@ -30,6 +30,7 @@ export interface TransactionInput {
   gas_km: number | null;
   is_debt?: boolean;
   vehicle_id?: number | null;
+  installments?: number | null;
 }
 
 export interface CurrentBalance {
@@ -89,6 +90,7 @@ export interface Goal {
   status: string;
   created_at: string;
   is_debt_goal: boolean;
+  installments: number | null;
 }
 
 export interface GoalWithProgress {

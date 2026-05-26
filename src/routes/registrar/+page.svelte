@@ -70,6 +70,8 @@
   let showDebtDialog    = $state(false);
   let debtDialogBalance = $state(0);
   let debtDialogAmount  = $state(0);
+  let installmentsRaw   = $state("");
+  let installments      = $derived(parseInt(installmentsRaw.replace(/\D/g, ""), 10) || 0);
 
   let amount = $derived(parseInt(amountRaw.replace(/\D/g, ""), 10) || 0);
 
@@ -312,6 +314,7 @@
           gas_km: gasKmToSend,
           is_debt: isDebt,
           vehicle_id: gasKmToSend !== null ? vehicleId : null,
+          installments: isDebt && installments > 0 ? installments : null,
       });
 
       bumpTxVersion();
@@ -320,11 +323,12 @@
       lastTx        = tx;
       statsRevision++;
 
-      amountRaw     = "";
-      note          = "";
-      extraordinary = false;
-      goalId        = null;
-      date          = todayISO();
+      amountRaw       = "";
+      note            = "";
+      extraordinary   = false;
+      goalId          = null;
+      installmentsRaw = "";
+      date            = todayISO();
       // Re-aplica el km por defecto si la categoría tiene ruta; si no, limpia
       const bgt = budgetsByCategory.get(category);
       if (bgt?.route_id) {
@@ -515,6 +519,24 @@
           data-tooltip="Evento único o no recurrente — no forma parte del presupuesto mensual habitual (ej. un regalo, una emergencia)"
         >?</span>
       </label>
+
+      <!-- Cuotas (solo en gastos) -->
+      {#if kind === "gasto"}
+        <div class="field">
+          <label for="installments">Cuotas estimadas <span class="optional">(opcional)</span></label>
+          <input
+            id="installments"
+            type="text"
+            inputmode="numeric"
+            placeholder="Ej: 12"
+            maxlength="3"
+            bind:value={installmentsRaw}
+          />
+          {#if installments > 0 && amount > 0}
+            <span class="field-hint">≈ {formatCOP(Math.round(amount / installments))}/mes</span>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Objetivo / Deuda (solo en gastos) -->
       {#if kind === "gasto" && goals.length > 0}

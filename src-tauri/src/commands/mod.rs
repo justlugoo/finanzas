@@ -6,3 +6,4 @@ pub mod vehicles;
 pub mod routes;
 pub mod system;
 pub mod loans;
+pub mod metas;
