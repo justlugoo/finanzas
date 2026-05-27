@@ -4,6 +4,8 @@
   import type { StatEntry, PaymentItem } from "$lib/components/PaymentModal.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import PaymentModal from "$lib/components/PaymentModal.svelte";
+  import CustomSelect from "$lib/components/CustomSelect.svelte";
+  import DatePicker from "$lib/components/DatePicker.svelte";
 
   let metas     = $state<Meta[]>([]);
   let loading   = $state(true);
@@ -45,9 +47,9 @@
   }
 
   function tipoLabel(tipo: string): string {
-    if (tipo === "me_deben")      return "Me deben";
-    if (tipo === "debo")          return "Debo";
-    if (tipo === "quiero_juntar") return "Ahorro";
+    if (tipo === "me_deben")      return "Préstamos";
+    if (tipo === "debo")          return "Deudas";
+    if (tipo === "quiero_juntar") return "Ahorros";
     return tipo;
   }
 
@@ -58,10 +60,10 @@
   }
 
   function tipoAccent(tipo: string): string {
-    if (tipo === "me_deben")      return "var(--accent)";
-    if (tipo === "debo")          return "var(--warning)";
-    if (tipo === "quiero_juntar") return "var(--success)";
-    return "var(--accent)";
+    if (tipo === "me_deben")      return "#8e8abd";   /* lavanda apagada  */
+    if (tipo === "debo")          return "#a99060";   /* ámbar cálido     */
+    if (tipo === "quiero_juntar") return "#5fa386";   /* salvia/teal suave */
+    return "#8e8abd";
   }
 
   function buildStats(m: Meta): StatEntry[] {
@@ -89,6 +91,78 @@
 
   function toPaymentItems(m: Meta): PaymentItem[] {
     return m.abonos.map(a => ({ id: a.id, date: a.date, amount: a.amount }));
+  }
+
+  // ── Crear ─────────────────────────────────────────────────────────────────
+  const tipoOptions = [
+    { value: "me_deben",      label: "Préstamos" },
+    { value: "debo",          label: "Deudas"    },
+    { value: "quiero_juntar", label: "Ahorros"   },
+  ];
+
+  let createOpen  = $state(false);
+  let creating    = $state(false);
+  let cTipo       = $state("");
+  let cNombre     = $state("");
+  let cAmountRaw  = $state("");
+  let cDate       = $state("");
+  let cTargetDate = $state("");
+  let cNota       = $state("");
+  let cError      = $state<string | null>(null);
+  let cAmount     = $derived(parseInt(cAmountRaw.replace(/\D/g, ""), 10) || 0);
+
+  function handleAmountInput(
+    e: Event & { currentTarget: HTMLInputElement },
+    setter: (v: string) => void
+  ) {
+    const digits = e.currentTarget.value.replace(/\D/g, "");
+    setter(digits);
+    e.currentTarget.value = digits
+      ? new Intl.NumberFormat("es-CO").format(parseInt(digits, 10))
+      : "";
+  }
+
+  function extractMsg(e: unknown): string {
+    if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+    return "Error desconocido. Intenta de nuevo.";
+  }
+
+  function resetCreate() {
+    cTipo = ""; cNombre = ""; cAmountRaw = ""; cDate = ""; cTargetDate = ""; cNota = ""; cError = null;
+  }
+
+  async function handleCreate(ev: Event) {
+    ev.preventDefault();
+    if (!cTipo)          { cError = "Selecciona el tipo de meta."; return; }
+    if (!cNombre.trim()) { cError = "El nombre no puede estar vacío."; return; }
+    if (cAmount <= 0)    { cError = "El monto debe ser mayor que 0."; return; }
+    if (cTipo === "me_deben" && !cDate) { cError = "La fecha del préstamo es requerida."; return; }
+    creating = true; cError = null;
+    try {
+      if (cTipo === "me_deben") {
+        await loanApi.create({
+          person_name: cNombre.trim(),
+          amount: cAmount,
+          date: cDate,
+          note: cNota.trim() || null,
+        });
+      } else {
+        await goalApi.create({
+          name: cNombre.trim(),
+          target_amount: cAmount,
+          target_date: cTargetDate || null,
+          status: "activo",
+        });
+      }
+      await loadMetas();
+      createOpen = false;
+      resetCreate();
+    } catch (e) {
+      console.error("[metas] create:", e);
+      cError = extractMsg(e);
+    } finally {
+      creating = false;
+    }
   }
 
   // ── Carga ─────────────────────────────────────────────────────────────────
@@ -125,6 +199,7 @@
 <main>
   <div class="header">
     <h1>Metas</h1>
+    <button class="btn-primary" onclick={() => { createOpen = true; }}>+ Nueva</button>
   </div>
 
   {#if pageError}
@@ -132,7 +207,7 @@
   {/if}
 
   <div class="filter-row">
-    {#each [["todas", "Todas"], ["me_deben", "Me deben"], ["debo", "Debo"], ["quiero_juntar", "Ahorro"]] as [val, lbl]}
+    {#each [["todas", "Todas"], ["me_deben", "Préstamos"], ["debo", "Deudas"], ["quiero_juntar", "Ahorros"]] as [val, lbl]}
       <button
         class="filter-btn"
         class:active={filterTipo === val}
@@ -252,6 +327,108 @@
     </div>
   </div>
 {/snippet}
+
+<!-- ── Modal: Nueva Meta ─────────────────────────────────────────────────── -->
+{#if createOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="overlay" onclick={() => { createOpen = false; resetCreate(); }}>
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+    <ScrollArea class="modal-scroll" scrollbar="thin">
+      <h2>Nueva meta</h2>
+
+      {#if cError}
+        <div class="banner error small"><pre>{cError}</pre></div>
+      {/if}
+
+      <form onsubmit={handleCreate} class="modal-form">
+
+        <div class="field">
+          <span class="field-label">Tipo</span>
+          <CustomSelect
+            bind:value={cTipo}
+            options={tipoOptions}
+            placeholder="Selecciona el tipo…"
+            onchange={() => { cError = null; }}
+          />
+        </div>
+
+        {#if cTipo === "debo"}
+          <div class="deuda-info">
+            <p>Las deudas se registran automáticamente al agregar un gasto en la pestaña <strong>Registrar</strong>. Activa la opción "¿Es deuda?" en el formulario de gasto.</p>
+          </div>
+        {:else if cTipo}
+          <div class="field">
+            <label for="c-nombre">
+              {cTipo === "me_deben" ? "A quién prestaste" : "Nombre del objetivo"}
+            </label>
+            <input
+              id="c-nombre"
+              type="text"
+              bind:value={cNombre}
+              placeholder={cTipo === "me_deben" ? "Ej: Juan, María…" : "Ej: Viaje, Laptop…"}
+              maxlength="100"
+            />
+          </div>
+
+          <div class="field">
+            <label for="c-amount">Monto</label>
+            <input
+              id="c-amount"
+              type="text"
+              inputmode="numeric"
+              placeholder="0"
+              value={cAmountRaw ? new Intl.NumberFormat("es-CO").format(cAmount) : ""}
+              oninput={(e) => handleAmountInput(e, (v) => { cAmountRaw = v; })}
+            />
+          </div>
+
+          {#if cTipo === "me_deben"}
+            <div class="field">
+              <span class="field-label">Fecha del préstamo</span>
+              <DatePicker bind:value={cDate} />
+            </div>
+          {:else}
+            <div class="field">
+              <span class="field-label">Fecha meta <span class="optional">(opcional)</span></span>
+              <DatePicker bind:value={cTargetDate} />
+            </div>
+          {/if}
+
+          <div class="field">
+            <label for="c-nota">Nota <span class="optional">(opcional)</span></label>
+            <input
+              id="c-nota"
+              type="text"
+              bind:value={cNota}
+              placeholder="Para qué es…"
+              maxlength="200"
+            />
+          </div>
+        {/if}
+
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="btn-secondary"
+            onclick={() => { createOpen = false; resetCreate(); }}
+          >Cancelar</button>
+          <button
+            type="submit"
+            class="btn-primary"
+            disabled={creating || !cTipo || cTipo === "debo" || !cNombre.trim() || cAmount <= 0 || (cTipo === "me_deben" && !cDate)}
+          >
+            {creating ? "Creando…" : "Crear"}
+          </button>
+        </div>
+
+      </form>
+    </ScrollArea>
+  </div>
+  </div>
+{/if}
 
 {#if detail}
   <PaymentModal
@@ -410,9 +587,9 @@
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .tipo-me_deben      { background: color-mix(in srgb, var(--accent) 20%, transparent);  color: var(--accent);  }
-  .tipo-debo          { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
-  .tipo-quiero_juntar { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+  .tipo-me_deben      { background: rgba(142, 138, 189, 0.12); color: #8e8abd; }
+  .tipo-debo          { background: rgba(169, 144,  96, 0.12); color: #a99060; }
+  .tipo-quiero_juntar { background: rgba( 95, 163, 134, 0.12); color: #5fa386; }
 
   /* ── Pending amount ── */
   .pending-amount { display: flex; align-items: baseline; gap: 0.4rem; }
@@ -451,6 +628,70 @@
     color: var(--danger);
   }
   .banner pre { font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; }
+
+  /* ── Botones ── */
+  .btn-primary {
+    padding: 0.45rem 1rem; background: var(--accent); color: #fff;
+    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-secondary {
+    padding: 0.45rem 1rem; background: var(--bg-elevated); color: var(--text-secondary);
+    font-size: 0.85rem; font-weight: 500; border-radius: var(--radius);
+    border: 1px solid var(--border); transition: background 0.15s;
+  }
+  .btn-secondary:hover { background: var(--bg-surface); }
+
+  /* ── Overlay / Modal ── */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal {
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1.5rem;
+    width: min(440px, 92vw); max-height: 85vh; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  :global(.modal-scroll) { flex: 1; min-height: 0; }
+
+  h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.75rem; }
+
+  /* ── Formulario ── */
+  .modal-form    { display: flex; flex-direction: column; gap: 0.9rem; }
+  .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+
+  .field { display: flex; flex-direction: column; gap: 0.3rem; }
+  label, .field-label { font-size: 0.78rem; font-weight: 500; color: var(--text-secondary); }
+  .optional { font-weight: 400; color: var(--text-muted); }
+
+  input[type="text"] {
+    -webkit-appearance: none; appearance: none;
+    background-color: #14141f; border: 1px solid #2a2a40;
+    border-radius: var(--radius); color: #e8e8f0; font: inherit;
+    font-size: 0.9rem; padding: 0.5rem 0.75rem; outline: none;
+    transition: border-color 0.15s; width: 100%;
+  }
+  input:focus { border-color: var(--accent); }
+
+  .hint {
+    font-size: 0.72rem; color: var(--text-muted);
+    line-height: 1.4; margin-top: 0.1rem;
+  }
+
+  .deuda-info {
+    background: color-mix(in srgb, var(--bg-elevated) 80%, var(--warning) 20%);
+    border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
+    border-radius: var(--radius);
+    padding: 0.75rem 1rem;
+  }
+  .deuda-info p {
+    font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;
+  }
+  .deuda-info strong { color: var(--text-primary); font-weight: 600; }
 
   /* ── Misc ── */
   .muted { color: var(--text-muted); font-size: 0.85rem; }
