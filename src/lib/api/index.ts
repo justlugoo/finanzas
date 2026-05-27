@@ -6,3 +6,4 @@ export * as vehicleApi    from "./vehicles";
 export * as routeApi      from "./routes";
 export * as systemApi     from "./system";
 export * as loanApi       from "./loans";
+export * as metaApi       from "./metas";

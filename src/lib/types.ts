@@ -226,3 +226,23 @@ export interface LoanPaymentInput {
   amount: number;
   date: string;
 }
+
+export interface MetaAbono {
+  id: number;
+  date: string;
+  amount: number;
+}
+
+export interface Meta {
+  id: string;
+  tipo: string;
+  nombre: string;
+  total: number;
+  abonado: number;
+  pendiente: number;
+  estado: string;
+  fecha: string | null;
+  nota: string | null;
+  cuotas: number | null;
+  abonos: MetaAbono[];
+}
