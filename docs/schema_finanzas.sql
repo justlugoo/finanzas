@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS custom_routes (
 CREATE TABLE IF NOT EXISTS vehicles (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT    NOT NULL,
-    km_per_gallon   REAL    NOT NULL CHECK (km_per_gallon > 0)
+    km_per_gallon   REAL    NOT NULL CHECK (km_per_gallon > 0),
+    tank_liters     REAL    DEFAULT NULL CHECK (tank_liters IS NULL OR tank_liters > 0)
 );
 
 
@@ -71,7 +72,8 @@ CREATE TABLE IF NOT EXISTS goals (
                             CHECK (status IN ('activo', 'completado', 'pausado')),
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     is_debt_goal    INTEGER NOT NULL DEFAULT 0
-                            CHECK (is_debt_goal IN (0, 1))
+                            CHECK (is_debt_goal IN (0, 1)),
+    installments    INTEGER DEFAULT NULL
 );
 
 
@@ -94,7 +96,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     goal_id             INTEGER REFERENCES goals(id) ON DELETE SET NULL,
     created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     is_debt             INTEGER NOT NULL DEFAULT 0
-                                CHECK (is_debt IN (0, 1))
+                                CHECK (is_debt IN (0, 1)),
+    gas_km              REAL    DEFAULT NULL,
+    trip_vehicle_id     INTEGER DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tx_date          ON transactions(date);
@@ -168,3 +172,26 @@ CREATE TABLE IF NOT EXISTS loan_payments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_lp_loan_id    ON loan_payments(loan_id);
+
+
+-- =====================================================
+-- TABLA: fuel_fillups  [v1.2.0]
+-- Tanqueos registrados por el usuario.
+--   gallons = amount_cop / price_per_gallon al momento del tanqueo.
+--   transaction_id → gasto en transactions creado simultáneamente.
+--   El nivel del tanque se deriva: SUM(gallons) - SUM(trips_km / km_per_gallon).
+-- =====================================================
+CREATE TABLE IF NOT EXISTS fuel_fillups (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    date                TEXT    NOT NULL,
+    vehicle_id          INTEGER NOT NULL,
+    gallons             REAL    NOT NULL CHECK (gallons > 0),
+    price_per_gallon    INTEGER NOT NULL CHECK (price_per_gallon > 0),
+    total_cost          INTEGER NOT NULL CHECK (total_cost > 0),
+    note                TEXT,
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+    transaction_id      INTEGER DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_fillups_date    ON fuel_fillups(date);
+CREATE INDEX IF NOT EXISTS idx_fillups_vehicle ON fuel_fillups(vehicle_id);

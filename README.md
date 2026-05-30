@@ -1,6 +1,6 @@
 # FinCapX
 
-App de escritorio para gestión financiera personal. Registra ingresos y gastos, controla presupuestos por categoría, sigue objetivos de ahorro, gestiona préstamos a terceros y calcula costos de gasolina por vehículo y ruta.
+App de escritorio para gestión financiera personal. Registra ingresos, gastos y tanqueos; controla presupuestos por categoría; unifica objetivos de ahorro, deudas y préstamos en un módulo de Metas; y hace seguimiento del nivel de gasolina del tanque con autonomía estimada por vehículo.
 
 **Plataforma:** Linux (Fedora / Debian / Ubuntu)  
 **Idioma:** Español  
@@ -74,11 +74,11 @@ La app aparece en el menú de aplicaciones y en el system tray al iniciar sesió
 
 Al abrir la app por primera vez estará completamente vacía. Flujo recomendado:
 
-1. **Configuración → Vehículos** — agrega al menos un vehículo con su rendimiento en km/galón.
-2. **Configuración → Gasolina** — registra el precio actual del galón. Necesario antes de registrar transacciones con km recorridos — el cálculo automático de costo de gasolina lo requiere.
+1. **Configuración → Vehículos** — agrega al menos un vehículo con su rendimiento en km/galón. Opcionalmente añade la capacidad del tanque en litros para ver el nivel y la autonomía en el dashboard.
+2. **Configuración → Gasolina** — registra el precio actual del galón. Necesario antes de registrar viajes o tanqueos.
 3. **Configuración → Presupuestos mensuales** — crea tus categorías de ingreso y gasto con sus metas.
 4. **Configuración → Costos por ruta** — agrega las rutas que recorres frecuentemente (km ida y vuelta).
-5. **Registrar** — ya puedes registrar tu primer movimiento.
+5. **Registrar** — ya puedes registrar ingresos, gastos y tanqueos.
 
 ---
 
@@ -86,11 +86,11 @@ Al abrir la app por primera vez estará completamente vacía. Flujo recomendado:
 
 | Pantalla | Descripción |
 |----------|-------------|
-| **Resumen** | Dashboard: saldo en mano, patrimonio (cuando hay préstamos pendientes), KPIs del mes, progreso por categoría, comparativa con el mes anterior y últimas transacciones |
-| **Registrar** | Formulario para ingresos y gastos. Soporta categoría, monto, fecha, nota, gasto extraordinario, objetivo asociado y km recorridos con selector de vehículo |
+| **Resumen** | Dashboard: saldo en mano, patrimonio (con préstamos pendientes), KPIs del mes, progreso por categoría, comparativa con el mes anterior, últimas transacciones y widget de nivel de gasolina por vehículo |
+| **Registrar** | Tres modos: Ingreso, Gasto y Tanqueo. Soporta categoría, monto, fecha, nota, gasto extraordinario, cuotas estimadas, objetivo asociado y km recorridos con selector de vehículo |
 | **Historial** | Lista filtrable por período, tipo y categoría. Edición y eliminación inline, selección múltiple y exportación a CSV |
-| **Metas** | Vista unificada de préstamos a terceros, deudas propias y objetivos de ahorro. Abonos parciales, edición de nombre y monto, eliminación, badges de progreso y fecha estimada de cumplimiento |
-| **Configuración** | Categorías, vehículos, rutas, precio de gasolina, autoarranque, backup y restablecimiento de fábrica |
+| **Metas** | Vista unificada de préstamos por cobrar, deudas por pagar y objetivos de ahorro. Abonos parciales, edición, eliminación, badges de progreso, estado automático y fecha estimada de cumplimiento |
+| **Configuración** | Categorías, vehículos (con capacidad de tanque), rutas, precio de gasolina, autoarranque, backup y restablecimiento de fábrica |
 
 ---
 

@@ -35,6 +35,8 @@ Finanzas/
 │   │   │   ├── budgets.ts
 │   │   │   ├── goals.ts
 │   │   │   ├── loans.ts
+│   │   │   ├── metas.ts
+│   │   │   ├── fillups.ts
 │   │   │   ├── gas.ts
 │   │   │   ├── vehicles.ts
 │   │   │   ├── routes.ts
@@ -67,6 +69,7 @@ Finanzas/
 │       │   ├── budgets.rs
 │       │   ├── goals.rs
 │       │   ├── loans.rs
+│       │   ├── fillups.rs
 │       │   ├── gas.rs
 │       │   ├── vehicles.rs
 │       │   └── routes.rs
@@ -77,6 +80,7 @@ Finanzas/
 │       │   ├── goals.rs
 │       │   ├── loans.rs
 │       │   ├── metas.rs
+│       │   ├── fillups.rs
 │       │   ├── gas.rs
 │       │   ├── vehicles.rs
 │       │   ├── routes.rs
@@ -88,10 +92,12 @@ Finanzas/
 │           ├── goals.rs
 │           ├── loans.rs
 │           ├── metas.rs
+│           ├── fillups.rs
 │           ├── gas.rs
 │           ├── vehicles.rs
 │           ├── routes.rs
 │           └── system.rs
+├── static/                     # Assets estáticos servidos en / (íconos, favicon, webmanifest)
 ├── docs/
 │   └── architecture.md        # Este archivo
 ├── README.md
@@ -189,7 +195,7 @@ PRAGMA temp_store   = MEMORY;
 
 ### Tablas
 
-9 tablas en total. Las dos tablas de préstamos (`loans`, `loan_payments`) se crearon en v1.1.0 como migración aditiva — bases de datos anteriores las adquieren automáticamente en el primer arranque post-actualización.
+10 tablas en total. `loans`/`loan_payments` se añadieron en v1.1.0; `fuel_fillups` y las columnas `gas_km`, `trip_vehicle_id`, `tank_liters`, `installments` se añadieron en v1.2.0, todas como migraciones aditivas no destructivas.
 
 #### `transactions`
 | Campo | Tipo | Descripción |
@@ -204,6 +210,8 @@ PRAGMA temp_store   = MEMORY;
 | goal_id | INTEGER | FK → `goals.id` ON DELETE SET NULL. Nullable |
 | created_at | TEXT | ISO timestamp |
 | is_debt | INTEGER | `0` \| `1` — gasto financiado a futuro |
+| gas_km | REAL | Nullable — km del viaje; si está presente se consume galones del tanque del vehículo asociado |
+| trip_vehicle_id | INTEGER | Nullable — vehículo usado en el viaje (FK lógica a `vehicles.id`) |
 
 Índices: `(date)`, `(category)`, `(date, category)`.
 
@@ -226,6 +234,7 @@ PRAGMA temp_store   = MEMORY;
 | status | TEXT | `activo` \| `completado` \| `pausado`. El módulo Metas auto-deriva `completado` cuando `current_amount >= target_amount`; `pausado` es solo a nivel DB |
 | created_at | TEXT | ISO timestamp |
 | is_debt_goal | INTEGER | `0` \| `1` — objetivo de tipo deuda |
+| installments | INTEGER | Nullable — cuotas estimadas (informativo, no afecta cálculos) |
 
 `current_amount` no se almacena: se calcula con `SELECT SUM(amount) FROM transactions WHERE goal_id = ?`.
 
@@ -253,6 +262,7 @@ Los goals con `is_debt_goal = 1` son idempotentes por nombre: al registrar un ga
 | id | INTEGER PK | Autoincremental |
 | name | TEXT | Nombre del vehículo |
 | km_per_gallon | REAL | Rendimiento. Debe ser > 0 |
+| tank_liters | REAL | Nullable — capacidad del tanque en litros. Habilita el cálculo de nivel y autonomía |
 
 #### `config`
 | Campo | Tipo | Descripción |
@@ -289,6 +299,28 @@ Los goals con `is_debt_goal = 1` son idempotentes por nombre: al registrar un ga
 - Al registrar un abono, el servicio verifica que `paid + nuevo_abono ≤ amount` (rechaza si se supera).
 - Si `paid ≥ amount` tras el abono, el repositorio actualiza `loans.status = 'pagado'` automáticamente.
 - `loans_total_pending` calcula en SQL la suma de `pending` de todos los préstamos con `status = 'pendiente'`.
+
+#### `fuel_fillups` _(v1.2.0)_
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| id | INTEGER PK | Autoincremental |
+| date | TEXT | `YYYY-MM-DD` — fecha del tanqueo |
+| vehicle_id | INTEGER | Referencia lógica a `vehicles.id` (sin FK explícita) |
+| gallons | REAL | Galones cargados: `amount_cop / price_per_gallon` al momento del registro |
+| price_per_gallon | INTEGER | Precio del galón en COP vigente en esa fecha |
+| total_cost | INTEGER | Monto pagado en COP (= `amount_cop` del input) |
+| note | TEXT | Nullable |
+| created_at | TEXT | ISO timestamp |
+| transaction_id | INTEGER | Nullable — ID del gasto en `transactions` creado simultáneamente |
+
+Índices: `(date)`, `(vehicle_id)`.
+
+**Lógica de negocio de tanqueos:**
+- Al crear un tanqueo, el servicio abre una transacción DB y (1) inserta un `gasto` en `transactions` con la categoría indicada (normalmente "Gasolina") y (2) inserta el registro en `fuel_fillups` con el `transaction_id` resultante. Si cualquier paso falla se hace ROLLBACK.
+- El precio del galón se resuelve con `find_price_for_date`: toma el precio más reciente con `date <= fecha_tanqueo`. Si no existe, retorna `ValidationError`.
+- **Nivel del tanque** (derivado, nunca almacenado): `level_gallons = SUM(fuel_fillups.gallons) - SUM(transactions.gas_km / vehicles.km_per_gallon)` para el vehículo dado. Puede ser negativo si hay viajes registrados sin tanqueos previos — el frontend lo muestra como "sin datos".
+- **Autonomía**: `autonomy_km = max(level_gallons, 0) * km_per_gallon`. Nunca negativa.
+- **Porcentaje de tanque**: `level_gallons / (tank_liters / 3.785) * 100`, clamped a [0, 100]. Solo disponible si `tank_liters` está configurado.
 
 ---
 
@@ -347,9 +379,10 @@ Todos los comandos se invocan con `invoke('nombre', { params })`. Retornan `Prom
 **`TransactionInput`:**
 ```
 date, type, category, amount, note?, is_extraordinary,
-goal_id?, gas_km?, is_debt?, vehicle_id?
+goal_id?, gas_km?, is_debt?, vehicle_id?, installments?
 ```
-Si `gas_km > 0`, `vehicle_id` es obligatorio. El backend inserta automáticamente una transacción de gasto de gasolina calculando `(gas_km / km_per_gallon) * precio_galon`.
+Si `gas_km > 0`, `vehicle_id` es obligatorio: el backend registra los km en `trip_vehicle_id` de la transacción, y `vehicle_fuel_status` los descuenta del nivel del tanque.  
+`installments` es informativo (cuotas estimadas en deudas); no afecta el cálculo del balance.
 
 ### Resumen y analytics
 
@@ -422,6 +455,17 @@ Vista unificada que agrega préstamos (`me_deben`), goals de deuda (`debo`) y go
 
 `register_gas_price_manual` hace UPSERT por fecha vía `ON CONFLICT(date) DO UPDATE`. Preserva el `id` de la fila existente y fuerza `source = 'manual'`. El registro manual siempre gana en colisión de fecha (decisión explícita, no efecto secundario de `REPLACE`).
 
+### Tanqueos _(v1.2.0)_
+
+| Comando | Parámetros | Retorna |
+|---------|-----------|---------|
+| `fillup_create` | `input: FuelFillupInput` | `FuelFillup` |
+| `fillups_list` | `vehicleId?: i64` | `Vec<FuelFillup>` |
+| `vehicle_fuel_status` | `vehicleId: i64` | `VehicleFuelStatus` |
+
+`fillup_create` inserta atómicamente un `gasto` en `transactions` y un registro en `fuel_fillups`. Requiere que exista un precio de gasolina para la fecha (busca el más reciente con `date ≤ fecha_tanqueo`).  
+`vehicle_fuel_status` devuelve nivel en galones, autonomía en km y porcentaje de tanque (solo si `tank_liters` está configurado).
+
 ### Vehículos
 
 | Comando | Parámetros | Retorna |
@@ -430,6 +474,8 @@ Vista unificada que agrega préstamos (`me_deben`), goals de deuda (`debo`) y go
 | `create_vehicle` | `input: VehicleInput` | `Vehicle` |
 | `update_vehicle` | `id: i64, input: VehicleInput` | `Vehicle` |
 | `delete_vehicle` | `id: i64` | `()` |
+
+`VehicleInput` incluye `tank_liters?: f64` (opcional). Si se provee, habilita el widget de nivel de tanque en el dashboard.
 
 ### Rutas personalizadas
 
@@ -459,12 +505,15 @@ interface Transaction {
   id: number; date: string; type: string; category: string;
   amount: number; note: string | null; is_extraordinary: boolean;
   goal_id: number | null; created_at: string; is_debt: boolean;
+  gas_km: number | null;          // km del viaje (v1.2.0)
+  trip_vehicle_id: number | null; // vehículo del viaje (v1.2.0)
 }
 
 interface TransactionInput {
   date: string; type: string; category: string; amount: number;
   note: string | null; is_extraordinary: boolean; goal_id: number | null;
   gas_km: number | null; is_debt?: boolean; vehicle_id?: number | null;
+  installments?: number | null; // cuotas estimadas (v1.2.0)
 }
 
 interface Budget {
@@ -476,6 +525,7 @@ interface Goal {
   id: number; name: string; target_amount: number;
   target_date: string | null; status: string;
   created_at: string; is_debt_goal: boolean;
+  installments: number | null; // cuotas estimadas (v1.2.0)
 }
 
 interface GoalWithProgress {
@@ -484,7 +534,37 @@ interface GoalWithProgress {
   projected_completion_date: string | null; on_track: boolean;
 }
 
-interface Vehicle { id: number; name: string; km_per_gallon: number; }
+interface Vehicle {
+  id: number; name: string; km_per_gallon: number;
+  tank_liters: number | null; // capacidad del tanque en litros (v1.2.0)
+}
+
+interface VehicleInput {
+  name: string; km_per_gallon: number;
+  tank_liters?: number | null;
+}
+
+// v1.2.0: tanqueos
+interface FuelFillup {
+  id: number; date: string; vehicle_id: number;
+  gallons: number; price_per_gallon: number; total_cost: number;
+  note: string | null; created_at: string; transaction_id: number | null;
+}
+
+interface FuelFillupInput {
+  date: string; vehicle_id: number;
+  amount_cop: number;   // monto pagado; el backend calcula los galones
+  category: string;     // normalmente "Gasolina"
+  note: string | null;
+}
+
+interface VehicleFuelStatus {
+  vehicle_id: number; vehicle_name: string; km_per_gallon: number;
+  tank_liters: number | null;
+  level_gallons: number;      // puede ser negativo si hay viajes sin tanqueos previos
+  autonomy_km: number;        // siempre ≥ 0
+  tank_percentage: number | null; // solo si tank_liters está configurado
+}
 
 interface CustomRoute {
   id: number; name: string; km_round_trip: number; description: string | null;
