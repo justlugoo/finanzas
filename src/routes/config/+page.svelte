@@ -19,12 +19,14 @@
   // ── Vehículos ─────────────────────────────────────────────────────────────
   let newVehicleName      = $state("");
   let newVehicleKmRaw     = $state("");
+  let newVehicleTankRaw   = $state("");
   let addingVehicle       = $state(false);
   let vehicleFormError    = $state<string | null>(null);
   let deletingVehicleId   = $state<number | null>(null);
   let editingVehicleId    = $state<number | null>(null);
   let editVehicleName     = $state("");
   let editVehicleKmRaw    = $state("");
+  let editVehicleTankRaw  = $state("");
   let savingVehicle       = $state(false);
 
   // ── Rutas personalizadas ──────────────────────────────────────────────────
@@ -261,14 +263,17 @@
     ev.preventDefault();
     const name = newVehicleName.trim();
     const km = parseFloat(newVehicleKmRaw.replace(",", "."));
+    const tankRaw = newVehicleTankRaw.trim().replace(",", ".");
+    const tank = tankRaw ? parseFloat(tankRaw) : null;
     if (!name) { vehicleFormError = "El nombre es obligatorio."; return; }
     if (!km || km <= 0) { vehicleFormError = "El rendimiento debe ser mayor que 0."; return; }
+    if (tank !== null && tank <= 0) { vehicleFormError = "La capacidad del tanque debe ser mayor que 0."; return; }
     addingVehicle = true; vehicleFormError = null;
     try {
-      const created = await vehicleApi.create({ name, km_per_gallon: km });
+      const created = await vehicleApi.create({ name, km_per_gallon: km, tank_liters: tank });
       vehicles = [...vehicles, created].sort((a, b) => a.name.localeCompare(b.name));
       if (selectedVehicleId === null) selectedVehicleId = created.id;
-      newVehicleName = ""; newVehicleKmRaw = "";
+      newVehicleName = ""; newVehicleKmRaw = ""; newVehicleTankRaw = "";
     } catch (e: any) {
       vehicleFormError = e?.message ?? "No se pudo crear el vehículo.";
     } finally {
@@ -277,18 +282,22 @@
   }
 
   function startEditVehicle(v: Vehicle) {
-    editingVehicleId = v.id;
-    editVehicleName  = v.name;
-    editVehicleKmRaw = v.km_per_gallon.toString();
+    editingVehicleId   = v.id;
+    editVehicleName    = v.name;
+    editVehicleKmRaw   = v.km_per_gallon.toString();
+    editVehicleTankRaw = v.tank_liters != null ? v.tank_liters.toString() : "";
   }
 
   async function saveEditVehicle(id: number) {
     const name = editVehicleName.trim();
     const km = parseFloat(editVehicleKmRaw.replace(",", "."));
+    const tankRaw = editVehicleTankRaw.trim().replace(",", ".");
+    const tank = tankRaw ? parseFloat(tankRaw) : null;
     if (!name || !km || km <= 0) { editingVehicleId = null; return; }
+    if (tank !== null && tank <= 0) { editingVehicleId = null; return; }
     savingVehicle = true;
     try {
-      const updated = await vehicleApi.update(id, { name, km_per_gallon: km });
+      const updated = await vehicleApi.update(id, { name, km_per_gallon: km, tank_liters: tank });
       vehicles = vehicles.map(v => v.id === id ? updated : v);
       editingVehicleId = null;
     } catch (e) {
@@ -602,6 +611,14 @@
                     disabled={savingVehicle}
                     placeholder="km/gal"
                   />
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    class="route-input route-input-km"
+                    bind:value={editVehicleTankRaw}
+                    disabled={savingVehicle}
+                    placeholder="litros (opcional)"
+                  />
                   <button
                     class="budget-icon-btn budget-save"
                     onclick={() => saveEditVehicle(v.id)}
@@ -617,7 +634,7 @@
                 </div>
               {:else}
                 <span class="vehicle-name">{v.name}</span>
-                <span class="vehicle-km">{v.km_per_gallon} km/gal</span>
+                <span class="vehicle-km">{v.km_per_gallon} km/gal{#if v.tank_liters != null} · {v.tank_liters} L{/if}</span>
                 <button class="cr-edit" onclick={() => startEditVehicle(v)} title="Editar">✎</button>
                 <button
                   class="cr-del"
@@ -650,6 +667,14 @@
             inputmode="decimal"
             placeholder="km/gal"
             bind:value={newVehicleKmRaw}
+            class="route-input route-input-km"
+            disabled={addingVehicle}
+          />
+          <input
+            type="text"
+            inputmode="decimal"
+            placeholder="litros (opcional)"
+            bind:value={newVehicleTankRaw}
             class="route-input route-input-km"
             disabled={addingVehicle}
           />

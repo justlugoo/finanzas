@@ -200,6 +200,9 @@ pub fn run() {
             commands::loans::loan_delete,
             commands::loans::loans_total_pending,
             commands::metas::metas_list,
+            commands::fillups::fillup_create,
+            commands::fillups::fillups_list,
+            commands::fillups::vehicle_fuel_status,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

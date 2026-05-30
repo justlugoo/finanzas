@@ -293,6 +293,14 @@ pub async fn apply_schema(conn: &libsql::Connection) -> AppResult<()> {
         conn.execute("ALTER TABLE goals ADD COLUMN installments INTEGER DEFAULT NULL", ())
             .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
     }
+    if !column_exists(conn, "vehicles", "tank_liters").await? {
+        conn.execute("ALTER TABLE vehicles ADD COLUMN tank_liters REAL DEFAULT NULL", ())
+            .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
+    if !column_exists(conn, "fuel_fillups", "transaction_id").await? {
+        conn.execute("ALTER TABLE fuel_fillups ADD COLUMN transaction_id INTEGER DEFAULT NULL", ())
+            .await.map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    }
 
     Ok(())
 }

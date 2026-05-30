@@ -27,8 +27,6 @@ pub async fn find_latest_price(conn: &libsql::Connection) -> AppResult<Option<i6
     Ok(rows.next().await?.and_then(|r| r.get(0).ok()))
 }
 
-// Frente 2 (gasolina): usado por el módulo de tanqueos, pendiente de completar. No eliminar.
-#[allow(dead_code)]
 pub async fn find_price_for_date(conn: &libsql::Connection, date: &str) -> AppResult<Option<i64>> {
     let mut rows = conn.query(
         "SELECT price_per_gallon FROM gas_prices WHERE date <= ? ORDER BY date DESC LIMIT 1",
@@ -82,8 +80,6 @@ pub async fn find_by_date(conn: &libsql::Connection, date: &str) -> AppResult<Op
     }}
 }
 
-// Frente 2 (gasolina): usado por el módulo de tanqueos, pendiente de completar. No eliminar.
-#[allow(dead_code)]
 pub async fn get_vehicle_km_per_gallon(
     conn: &libsql::Connection,
     vehicle_id: i64,

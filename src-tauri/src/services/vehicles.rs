@@ -14,8 +14,13 @@ pub async fn create(conn: &libsql::Connection, input: VehicleInput) -> AppResult
     if input.km_per_gallon <= 0.0 {
         return Err(AppError::ValidationError("el rendimiento debe ser mayor que 0".into()));
     }
-    let id = repo::insert(conn, &name, input.km_per_gallon).await?;
-    Ok(Vehicle { id, name, km_per_gallon: input.km_per_gallon })
+    if let Some(t) = input.tank_liters {
+        if t <= 0.0 {
+            return Err(AppError::ValidationError("la capacidad del tanque debe ser mayor que 0".into()));
+        }
+    }
+    let id = repo::insert(conn, &name, input.km_per_gallon, input.tank_liters).await?;
+    Ok(Vehicle { id, name, km_per_gallon: input.km_per_gallon, tank_liters: input.tank_liters })
 }
 
 pub async fn update(
@@ -30,11 +35,16 @@ pub async fn update(
     if input.km_per_gallon <= 0.0 {
         return Err(AppError::ValidationError("el rendimiento debe ser mayor que 0".into()));
     }
-    let affected = repo::update(conn, id, &name, input.km_per_gallon).await?;
+    if let Some(t) = input.tank_liters {
+        if t <= 0.0 {
+            return Err(AppError::ValidationError("la capacidad del tanque debe ser mayor que 0".into()));
+        }
+    }
+    let affected = repo::update(conn, id, &name, input.km_per_gallon, input.tank_liters).await?;
     if affected == 0 {
         return Err(AppError::NotFound(format!("vehículo {id} no existe")));
     }
-    Ok(Vehicle { id, name, km_per_gallon: input.km_per_gallon })
+    Ok(Vehicle { id, name, km_per_gallon: input.km_per_gallon, tank_liters: input.tank_liters })
 }
 
 pub async fn delete(conn: &libsql::Connection, id: i64) -> AppResult<()> {

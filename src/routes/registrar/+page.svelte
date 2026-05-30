@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { transactionApi, budgetApi, goalApi, gasApi, vehicleApi, routeApi } from "$lib/api";
+  import { transactionApi, budgetApi, goalApi, gasApi, vehicleApi, routeApi, fillupApi } from "$lib/api";
   import type {
     Budget, GoalWithProgress, Transaction, TransactionPage,
     RoutesCost, CurrentBalance, PeriodSummary, CategoryProgress, CustomRoute, Vehicle,
+    FuelFillup,
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
@@ -10,8 +11,8 @@
   import { bumpTxVersion } from "$lib/txState.svelte";
 
   // ── Estado del formulario ──────────────────────────────────────────────────
-  let kind = $state<"ingreso" | "gasto">(
-    (localStorage.getItem("registrar_kind") as "ingreso" | "gasto") ?? "gasto"
+  let kind = $state<"ingreso" | "gasto" | "tanqueo">(
+    (localStorage.getItem("registrar_kind") as "ingreso" | "gasto" | "tanqueo") ?? "gasto"
   );
   let category      = $state("");
   let amountRaw     = $state("");
@@ -26,6 +27,14 @@
   let savedGasKm = $state(0);
   let vehicles   = $state<Vehicle[]>([]);
   let vehicleId  = $state<number | null>(null);
+
+  // ── Tanqueo ───────────────────────────────────────────────────────────────
+  let fillupVehicleId  = $state<number | null>(null);
+  let fillupAmountRaw  = $state("");
+  let fillupDate       = $state(todayISO());
+  let fillupNote       = $state("");
+  let fillupSaved      = $state<FuelFillup | null>(null);
+  let fillupAmount     = $derived(parseInt(fillupAmountRaw.replace(/\D/g, ""), 10) || 0);
 
   // ── Datos cargados ─────────────────────────────────────────────────────────
   let categories    = $state<string[]>([]);
@@ -128,6 +137,14 @@
     e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
   }
 
+  function handleFillupAmountInput(e: Event & { currentTarget: HTMLInputElement }) {
+    const digits = e.currentTarget.value.replace(/\D/g, "");
+    if (!digits) { fillupAmountRaw = ""; e.currentTarget.value = ""; return; }
+    const num = parseInt(digits, 10);
+    fillupAmountRaw = digits;
+    e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
+  }
+
   // ── Effects ────────────────────────────────────────────────────────────────
 
   // Persist kind
@@ -138,6 +155,7 @@
     const k = kind;
     let cancelled = false;
     async function apply() {
+      if (k === "tanqueo") return; // tanqueo usa categoría fija "Gasolina"
       await loadCategories();
       if (cancelled) return;
       const data = k === "ingreso" ? _catsIngreso : _catsGasto;
@@ -169,6 +187,7 @@
     vehicleApi.list().then(vs => {
       vehicles = vs;
       if (vehicleId === null && vs.length > 0) vehicleId = vs[0].id;
+      if (fillupVehicleId === null && vs.length > 0) fillupVehicleId = vs[0].id;
     }).catch(() => {});
   });
 
@@ -249,6 +268,12 @@
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
+
+    if (kind === "tanqueo") {
+      await doFillupSave();
+      return;
+    }
+
     if (amount <= 0) { saveError = "El monto debe ser mayor que 0."; return; }
     if (!category)   { saveError = "Selecciona una categoría."; return; }
 
@@ -345,6 +370,38 @@
       saving = false;
     }
   }
+
+  async function doFillupSave() {
+    if (fillupAmount <= 0) { saveError = "El monto debe ser mayor que 0."; return; }
+    if (fillupVehicleId === null) { saveError = "Selecciona un vehículo."; return; }
+
+    saving    = true;
+    saveError = null;
+    fillupSaved = null;
+
+    try {
+      const result = await fillupApi.create({
+        date: fillupDate,
+        vehicle_id: fillupVehicleId,
+        amount_cop: fillupAmount,
+        category: "Gasolina",
+        note: fillupNote.trim() || null,
+      });
+
+      fillupSaved    = result;
+      fillupAmountRaw = "";
+      fillupNote      = "";
+      fillupDate      = todayISO();
+      bumpTxVersion();
+      statsRevision++;
+      setTimeout(() => { fillupSaved = null; }, 6000);
+    } catch (e: any) {
+      console.error("[registrar] fillup save error:", e);
+      saveError = e?.message ?? "No se pudo registrar el tanqueo. Intenta de nuevo.";
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 <div class="registrar-shell">
@@ -356,6 +413,16 @@
 
     {#if loadError}
       <div class="banner error"><strong>Error cargando datos</strong><pre>{loadError}</pre></div>
+    {/if}
+
+    {#if fillupSaved}
+      <div class="banner success">
+        <div class="banner-body">
+          ⛽ Tanqueo guardado · {formatCOP(fillupSaved.total_cost)}
+          <span class="auto-gas-note">~{fillupSaved.gallons.toFixed(2)} gal cargados</span>
+        </div>
+        <button class="banner-close" onclick={() => { fillupSaved = null; }}>×</button>
+      </div>
     {/if}
 
     {#if saved}
@@ -419,144 +486,205 @@
           type="button"
           class="toggle-btn income"
           class:active={kind === "ingreso"}
-          onclick={() => { kind = "ingreso"; goalId = null; }}
-        >Ingreso</button>
+          onclick={() => { kind = "ingreso"; goalId = null; saveError = null; }}
+        >💰 Ingreso</button>
         <button
           type="button"
           class="toggle-btn expense"
           class:active={kind === "gasto"}
-          onclick={() => { kind = "gasto"; }}
-        >Gasto</button>
+          onclick={() => { kind = "gasto"; saveError = null; }}
+        >💸 Gasto</button>
+        <button
+          type="button"
+          class="toggle-btn fuel"
+          class:active={kind === "tanqueo"}
+          onclick={() => { kind = "tanqueo"; saveError = null; }}
+        >⛽ Tanqueo</button>
       </div>
 
-      <!-- Categoría -->
-      <div class="field">
-        <span class="field-label">Categoría</span>
-        <CustomSelect
-          bind:value={category}
-          options={displayCategories.map(c => ({ value: c, label: c }))}
-          placeholder="Selecciona categoría…"
-        />
-      </div>
+      {#if kind === "tanqueo"}
 
-      <!-- Gasolina adicional -->
-      {#if routeCosts}
-        <div class="field gas-field">
-          <span class="field-label">Gasolina <span class="optional">(opcional)</span></span>
+        <!-- ── Tanqueo ── -->
+        <div class="field">
+          <span class="field-label">Vehículo</span>
           {#if vehicles.length === 0}
-            <p class="gas-no-vehicles">Configura un vehículo en <a href="/config">Configuración</a> para registrar gasolina.</p>
+            <p class="gas-no-vehicles">Configura un vehículo en <a href="/config">Configuración</a> para registrar tanqueos.</p>
           {:else}
-            <div class="gas-row">
-              {#each customRoutes as route (route.id)}
-                <button
-                  type="button"
-                  class="gas-preset-btn"
-                  class:active={gasKmRaw === route.km_round_trip.toString()}
-                  onclick={() => selectGasPreset(route.km_round_trip)}
-                  title={route.description ?? route.name}
-                >{route.name}</button>
-              {/each}
-              <div class="gas-km-input">
-                <input
-                  type="text"
-                  inputmode="decimal"
-                  bind:value={gasKmRaw}
-                  placeholder="km"
-                />
-                <span class="km-unit">km</span>
-              </div>
-            </div>
-            {#if gasKm > 0}
-              <div class="gas-vehicle-row">
-                <CustomSelect
-                  bind:value={vehicleId}
-                  options={vehicles.map(v => ({ value: v.id, label: `${v.name} · ${v.km_per_gallon} km/gal` }))}
-                  placeholder="Vehículo…"
-                />
-                {#if vehicleId !== null}
-                  <span class="gas-cost-hint">≈ {formatCOP(gasHintCost())}</span>
-                {/if}
-              </div>
-            {/if}
+            <CustomSelect
+              bind:value={fillupVehicleId}
+              options={vehicles.map(v => ({ value: v.id, label: v.tank_liters != null ? `${v.name} · ${v.km_per_gallon} km/gal · ${v.tank_liters}L` : `${v.name} · ${v.km_per_gallon} km/gal` }))}
+              placeholder="Selecciona vehículo…"
+            />
           {/if}
         </div>
-      {/if}
 
-      <!-- Monto -->
-      <div class="field">
-        <label for="amount">Monto</label>
-        <input
-          id="amount"
-          type="text"
-          inputmode="numeric"
-          placeholder="0"
-          value={amountRaw ? new Intl.NumberFormat("es-CO").format(amount) : ""}
-          oninput={handleAmountInput}
-        />
-        {#if amount > 0}
-          <span class="field-hint">{formatCOP(amount)}</span>
-        {/if}
-      </div>
-
-      <!-- Fecha -->
-      <div class="field">
-        <span class="field-label">Fecha</span>
-        <DatePicker bind:value={date} />
-      </div>
-
-      <!-- Nota -->
-      <div class="field">
-        <label for="note">Nota <span class="optional">(opcional)</span></label>
-        <input id="note" type="text" bind:value={note} placeholder="Descripción breve…" maxlength="200" />
-      </div>
-
-      <!-- Extraordinario -->
-      <label class="checkbox-row">
-        <input type="checkbox" bind:checked={extraordinary} />
-        <span>{kind === "gasto" ? "Gasto" : "Ingreso"} extraordinario</span>
-        <span
-          class="tooltip"
-          data-tooltip="Evento único o no recurrente — no forma parte del presupuesto mensual habitual (ej. un regalo, una emergencia)"
-        >?</span>
-      </label>
-
-      <!-- Cuotas (solo en gastos) -->
-      {#if kind === "gasto"}
         <div class="field">
-          <label for="installments">Cuotas estimadas <span class="optional">(opcional)</span></label>
+          <label for="fillup-amount">Monto pagado</label>
           <input
-            id="installments"
+            id="fillup-amount"
             type="text"
             inputmode="numeric"
-            placeholder="Ej: 12"
-            maxlength="3"
-            bind:value={installmentsRaw}
+            placeholder="0"
+            value={fillupAmountRaw ? new Intl.NumberFormat("es-CO").format(fillupAmount) : ""}
+            oninput={handleFillupAmountInput}
           />
-          {#if installments > 0 && amount > 0}
-            <span class="field-hint">≈ {formatCOP(Math.round(amount / installments))}/mes</span>
+          {#if fillupAmount > 0}
+            <span class="field-hint">{formatCOP(fillupAmount)}</span>
           {/if}
         </div>
-      {/if}
 
-      <!-- Objetivo / Deuda (solo en gastos) -->
-      {#if kind === "gasto" && goals.length > 0}
         <div class="field">
-          <span class="field-label">Asociar a <span class="optional">(opcional)</span></span>
+          <span class="field-label">Fecha</span>
+          <DatePicker bind:value={fillupDate} />
+        </div>
+
+        <div class="field">
+          <label for="fillup-note">Nota <span class="optional">(opcional)</span></label>
+          <input id="fillup-note" type="text" bind:value={fillupNote} placeholder="Descripción breve…" maxlength="200" />
+        </div>
+
+        <div class="fillup-cat-badge">
+          Gasto registrado en categoría <strong>Gasolina</strong>
+        </div>
+
+      {:else}
+
+        <!-- ── Ingreso / Gasto ── -->
+        <!-- Categoría -->
+        <div class="field">
+          <span class="field-label">Categoría</span>
           <CustomSelect
-            bind:value={goalId}
-            options={[{ value: null, label: "— Ninguno —" }]}
-            groups={[
-              ...(regularGoals.length > 0 ? [{ label: "Objetivos", options: regularGoals.map(g => ({ value: g.id, label: g.name })) }] : []),
-              ...(debtGoals.length   > 0 ? [{ label: "Deudas",    options: debtGoals.map(g => ({ value: g.id, label: g.name })) }] : []),
-            ]}
+            bind:value={category}
+            options={displayCategories.map(c => ({ value: c, label: c }))}
+            placeholder="Selecciona categoría…"
           />
         </div>
+
+        <!-- Gasolina adicional -->
+        {#if routeCosts}
+          <div class="field gas-field">
+            <span class="field-label">Gasolina <span class="optional">(opcional)</span></span>
+            {#if vehicles.length === 0}
+              <p class="gas-no-vehicles">Configura un vehículo en <a href="/config">Configuración</a> para registrar gasolina.</p>
+            {:else}
+              <div class="gas-row">
+                {#each customRoutes as route (route.id)}
+                  <button
+                    type="button"
+                    class="gas-preset-btn"
+                    class:active={gasKmRaw === route.km_round_trip.toString()}
+                    onclick={() => selectGasPreset(route.km_round_trip)}
+                    title={route.description ?? route.name}
+                  >{route.name}</button>
+                {/each}
+                <div class="gas-km-input">
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    bind:value={gasKmRaw}
+                    placeholder="km"
+                  />
+                  <span class="km-unit">km</span>
+                </div>
+              </div>
+              {#if gasKm > 0}
+                <div class="gas-vehicle-row">
+                  <CustomSelect
+                    bind:value={vehicleId}
+                    options={vehicles.map(v => ({ value: v.id, label: `${v.name} · ${v.km_per_gallon} km/gal` }))}
+                    placeholder="Vehículo…"
+                  />
+                  {#if vehicleId !== null}
+                    <span class="gas-cost-hint">≈ {formatCOP(gasHintCost())}</span>
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Monto -->
+        <div class="field">
+          <label for="amount">Monto</label>
+          <input
+            id="amount"
+            type="text"
+            inputmode="numeric"
+            placeholder="0"
+            value={amountRaw ? new Intl.NumberFormat("es-CO").format(amount) : ""}
+            oninput={handleAmountInput}
+          />
+          {#if amount > 0}
+            <span class="field-hint">{formatCOP(amount)}</span>
+          {/if}
+        </div>
+
+        <!-- Fecha -->
+        <div class="field">
+          <span class="field-label">Fecha</span>
+          <DatePicker bind:value={date} />
+        </div>
+
+        <!-- Nota -->
+        <div class="field">
+          <label for="note">Nota <span class="optional">(opcional)</span></label>
+          <input id="note" type="text" bind:value={note} placeholder="Descripción breve…" maxlength="200" />
+        </div>
+
+        <!-- Extraordinario -->
+        <label class="checkbox-row">
+          <input type="checkbox" bind:checked={extraordinary} />
+          <span>{kind === "gasto" ? "Gasto" : "Ingreso"} extraordinario</span>
+          <span
+            class="tooltip"
+            data-tooltip="Evento único o no recurrente — no forma parte del presupuesto mensual habitual (ej. un regalo, una emergencia)"
+          >?</span>
+        </label>
+
+        <!-- Cuotas (solo en gastos) -->
+        {#if kind === "gasto"}
+          <div class="field">
+            <label for="installments">Cuotas estimadas <span class="optional">(opcional)</span></label>
+            <input
+              id="installments"
+              type="text"
+              inputmode="numeric"
+              placeholder="Ej: 12"
+              maxlength="3"
+              bind:value={installmentsRaw}
+            />
+            {#if installments > 0 && amount > 0}
+              <span class="field-hint">≈ {formatCOP(Math.round(amount / installments))}/mes</span>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Objetivo / Deuda (solo en gastos) -->
+        {#if kind === "gasto" && goals.length > 0}
+          <div class="field">
+            <span class="field-label">Asociar a <span class="optional">(opcional)</span></span>
+            <CustomSelect
+              bind:value={goalId}
+              options={[{ value: null, label: "— Ninguno —" }]}
+              groups={[
+                ...(regularGoals.length > 0 ? [{ label: "Objetivos", options: regularGoals.map(g => ({ value: g.id, label: g.name })) }] : []),
+                ...(debtGoals.length   > 0 ? [{ label: "Deudas",    options: debtGoals.map(g => ({ value: g.id, label: g.name })) }] : []),
+              ]}
+            />
+          </div>
+        {/if}
+
       {/if}
 
     </form>
     </ScrollArea>
-    <button type="submit" form="tx-form" class="submit-btn" disabled={saving || amount <= 0}>
-      {saving ? "Guardando…" : "Guardar"}
+    <button
+      type="submit"
+      form="tx-form"
+      class="submit-btn"
+      disabled={saving || (kind === "tanqueo" ? fillupAmount <= 0 || fillupVehicleId === null : amount <= 0)}
+    >
+      {saving ? "Guardando…" : kind === "tanqueo" ? "Registrar tanqueo" : "Guardar"}
     </button>
   </div>
 
@@ -896,7 +1024,7 @@
   /* ── Toggle tipo ── */
   .type-toggle {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     background: var(--bg-elevated);
     border-radius: var(--radius);
     padding: 4px;
@@ -906,7 +1034,7 @@
   .toggle-btn {
     padding: 0.4rem;
     border-radius: 6px;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     font-weight: 600;
     color: var(--text-secondary);
     transition: background 0.15s, color 0.15s;
@@ -914,7 +1042,19 @@
 
   .toggle-btn.income.active  { background: color-mix(in srgb, var(--success) 20%, var(--bg-surface)); color: var(--success); }
   .toggle-btn.expense.active { background: color-mix(in srgb, var(--danger)  20%, var(--bg-surface)); color: var(--danger); }
+  .toggle-btn.fuel.active    { background: color-mix(in srgb, #f59e0b 18%, var(--bg-surface)); color: #f59e0b; }
   .toggle-btn:not(.active):hover { color: var(--text-primary); }
+
+  /* ── Tanqueo ── */
+  .fillup-cat-badge {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: color-mix(in srgb, #f59e0b 8%, var(--bg-elevated));
+    border: 1px solid color-mix(in srgb, #f59e0b 25%, transparent);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.75rem;
+  }
+  .fillup-cat-badge strong { color: #f59e0b; }
 
   /* ── Campos ── */
   .field {

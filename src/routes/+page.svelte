@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { transactionApi } from "$lib/api";
-  import type { CurrentBalance, PeriodSummary, CategoryProgress, MonthComparison, TransactionPage } from "$lib/types";
+  import { transactionApi, vehicleApi, fillupApi } from "$lib/api";
+  import type { CurrentBalance, PeriodSummary, CategoryProgress, MonthComparison, TransactionPage, VehicleFuelStatus } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE } from "$lib/constants";
@@ -90,6 +90,36 @@
     }
 
     load();
+    return () => { cancelled = true; };
+  });
+
+  // ── Estado del tanque ─────────────────────────────────────────────────────
+  let fuelStatuses          = $state<VehicleFuelStatus[]>([]);
+  let fuelLoading           = $state(true);
+  let hasVehiclesWithoutTank = $state(false);
+
+  $effect(() => {
+    const _v = txState.version;
+    let cancelled = false;
+
+    async function loadFuel() {
+      fuelLoading = true;
+      try {
+        const vehicles = await vehicleApi.list();
+        const withTank = vehicles.filter(v => v.tank_liters != null);
+        hasVehiclesWithoutTank = vehicles.length > 0 && withTank.length === 0;
+        if (withTank.length === 0) { fuelStatuses = []; return; }
+        const statuses = await Promise.all(withTank.map(v => fillupApi.vehicleFuelStatus(v.id)));
+        if (!cancelled) fuelStatuses = statuses;
+      } catch (e) {
+        console.error("[dashboard] fuel status error:", e);
+        if (!cancelled) fuelStatuses = [];
+      } finally {
+        if (!cancelled) fuelLoading = false;
+      }
+    }
+
+    loadFuel();
     return () => { cancelled = true; };
   });
 
@@ -359,6 +389,53 @@
           <a href="/historial" class="ver-todo">Ver todo →</a>
         {/if}
       </section>
+
+      <!-- ── Widget tanque ── -->
+      {#if !fuelLoading && (fuelStatuses.length > 0 || hasVehiclesWithoutTank)}
+        <section class="section">
+          <h2>⛽ Tanque</h2>
+
+          {#if fuelStatuses.length > 0}
+            {#each fuelStatuses as fs}
+              {@const noData = fs.level_gallons < 0}
+              {@const pct    = fs.tank_percentage ?? 0}
+              <div class="fuel-card" class:fuel-card-warn={noData}>
+                <div class="fuel-header">
+                  <span class="fuel-name">{fs.vehicle_name}</span>
+                  {#if noData}
+                    <span class="fuel-badge-warn">sin datos</span>
+                  {:else if fs.tank_percentage != null}
+                    <span class="fuel-pct">{Math.round(pct)}%</span>
+                  {/if}
+                </div>
+
+                <div class="bar-track fuel-track">
+                  <div
+                    class="fuel-bar"
+                    class:fuel-bar-low={!noData && pct < 20}
+                    style="width: {noData ? 0 : pct}%"
+                  ></div>
+                </div>
+
+                {#if noData}
+                  <p class="fuel-no-data-hint">Registra tanqueos para ver el nivel</p>
+                {:else}
+                  <div class="fuel-meta">
+                    <span class="fuel-autonomy">~{Math.round(fs.autonomy_km)} km</span>
+                    <span class="fuel-gallons">{fs.level_gallons.toFixed(1)} gal</span>
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {:else}
+            <p class="fuel-setup-hint">
+              Agrega la capacidad del tanque de tu vehículo en
+              <a href="/config">Configuración</a> para ver la autonomía.
+            </p>
+          {/if}
+        </section>
+      {/if}
+
       </ScrollArea>
     </div>
   </div>
@@ -656,4 +733,96 @@
   }
 
   .ver-todo:hover { color: var(--accent-hover); }
+
+  /* ── Widget tanque ── */
+  .fuel-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .fuel-card-warn {
+    border-color: color-mix(in srgb, #f59e0b 30%, transparent);
+    background: color-mix(in srgb, #f59e0b 4%, var(--bg-surface));
+  }
+
+  .fuel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .fuel-name {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .fuel-pct {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #f59e0b;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .fuel-badge-warn {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #f59e0b;
+    background: color-mix(in srgb, #f59e0b 15%, transparent);
+    border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
+    border-radius: 999px;
+    padding: 0.1rem 0.4rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .fuel-track { margin: 0; }
+
+  .fuel-bar {
+    height: 100%;
+    background: #f59e0b;
+    border-radius: 999px;
+    transition: width 0.4s ease;
+    min-width: 2px;
+  }
+
+  .fuel-bar.fuel-bar-low { background: var(--danger); }
+
+  .fuel-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .fuel-autonomy { color: var(--text-secondary); font-weight: 500; }
+  .fuel-gallons  { color: var(--text-muted); }
+
+  .fuel-no-data-hint {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin: 0;
+  }
+
+  .fuel-setup-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .fuel-setup-hint a { color: var(--accent); text-decoration: none; }
+  .fuel-setup-hint a:hover { text-decoration: underline; }
 </style>

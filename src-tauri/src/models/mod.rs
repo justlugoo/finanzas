@@ -206,12 +206,15 @@ pub struct Vehicle {
     pub id: i64,
     pub name: String,
     pub km_per_gallon: f64,
+    pub tank_liters: Option<f64>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct VehicleInput {
     pub name: String,
     pub km_per_gallon: f64,
+    #[serde(default)]
+    pub tank_liters: Option<f64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -230,8 +233,6 @@ pub struct CustomRouteInput {
     pub description: Option<String>,
 }
 
-// Frente 2 (gasolina): usado por el módulo de tanqueos, pendiente de completar. No eliminar.
-#[allow(dead_code)]
 #[derive(Serialize, Debug)]
 pub struct FuelFillup {
     pub id: i64,
@@ -242,17 +243,27 @@ pub struct FuelFillup {
     pub total_cost: i64,
     pub note: Option<String>,
     pub created_at: String,
+    pub transaction_id: Option<i64>,
 }
 
-// Frente 2 (gasolina): usado por el módulo de tanqueos, pendiente de completar. No eliminar.
-#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct FuelFillupInput {
     pub date: String,
     pub vehicle_id: i64,
-    pub gallons: f64,
-    pub price_per_gallon: i64,
+    pub amount_cop: i64,
+    pub category: String,
     pub note: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct VehicleFuelStatus {
+    pub vehicle_id: i64,
+    pub vehicle_name: String,
+    pub km_per_gallon: f64,
+    pub tank_liters: Option<f64>,
+    pub level_gallons: f64,
+    pub autonomy_km: f64,
+    pub tank_percentage: Option<f64>,
 }
 
 #[derive(Serialize, Debug)]

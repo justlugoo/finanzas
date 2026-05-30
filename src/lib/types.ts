@@ -128,11 +128,43 @@ export interface Vehicle {
   id: number;
   name: string;
   km_per_gallon: number;
+  tank_liters: number | null;
+}
+
+export interface FuelFillup {
+  id: number;
+  date: string;
+  vehicle_id: number;
+  gallons: number;
+  price_per_gallon: number;
+  total_cost: number;
+  note: string | null;
+  created_at: string;
+  transaction_id: number | null;
+}
+
+export interface FuelFillupInput {
+  date: string;
+  vehicle_id: number;
+  amount_cop: number;
+  category: string;
+  note: string | null;
+}
+
+export interface VehicleFuelStatus {
+  vehicle_id: number;
+  vehicle_name: string;
+  km_per_gallon: number;
+  tank_liters: number | null;
+  level_gallons: number;
+  autonomy_km: number;
+  tank_percentage: number | null;
 }
 
 export interface VehicleInput {
   name: string;
   km_per_gallon: number;
+  tank_liters?: number | null;
 }
 
 export interface GasPrice {
