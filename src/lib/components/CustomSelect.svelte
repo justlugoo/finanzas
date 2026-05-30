@@ -1,6 +1,4 @@
 <script lang="ts">
-  import ScrollArea from "$lib/components/ScrollArea.svelte";
-
   interface Option {
     value: any;
     label: string;
@@ -54,7 +52,22 @@
   function openMenu() {
     if (!open && triggerEl) {
       const rect = triggerEl.getBoundingClientRect();
-      menuStyle = `top:${rect.bottom + 4}px;left:${rect.left}px;min-width:${rect.width}px`;
+      const GAP      = 4;
+      const MARGIN   = 8;
+      const MIN_H    = 120;
+
+      const spaceBelow = window.innerHeight - rect.bottom - GAP - MARGIN;
+      const spaceAbove = rect.top            - GAP - MARGIN;
+
+      const base = `left:${rect.left}px;min-width:${rect.width}px;`;
+
+      if (spaceBelow >= MIN_H || spaceBelow >= spaceAbove) {
+        const maxH = Math.max(spaceBelow, MIN_H);
+        menuStyle = base + `top:${rect.bottom + GAP}px;max-height:${maxH}px;`;
+      } else {
+        const maxH = Math.max(spaceAbove, MIN_H);
+        menuStyle = base + `bottom:${window.innerHeight - rect.top + GAP}px;max-height:${maxH}px;`;
+      }
     }
     open = !open;
   }
@@ -97,27 +110,25 @@
   </button>
   {#if open}
     <div class="cs-menu" style={menuStyle}>
-      <ScrollArea maxHeight="260px" scrollbar="none">
-        {#each options as opt (String(opt.value))}
+      {#each options as opt (String(opt.value))}
+        <button
+          type="button"
+          class="cs-opt"
+          class:selected={opt.value === value}
+          onclick={() => select(opt.value)}
+        >{opt.label}</button>
+      {/each}
+      {#each groups as group, gi}
+        <div class="cs-group-label" class:first={gi === 0}>{group.label}</div>
+        {#each group.options as opt (String(opt.value))}
           <button
             type="button"
-            class="cs-opt"
+            class="cs-opt cs-opt-in"
             class:selected={opt.value === value}
             onclick={() => select(opt.value)}
           >{opt.label}</button>
         {/each}
-        {#each groups as group, gi}
-          <div class="cs-group-label" class:first={gi === 0}>{group.label}</div>
-          {#each group.options as opt (String(opt.value))}
-            <button
-              type="button"
-              class="cs-opt cs-opt-in"
-              class:selected={opt.value === value}
-              onclick={() => select(opt.value)}
-            >{opt.label}</button>
-          {/each}
-        {/each}
-      </ScrollArea>
+      {/each}
     </div>
   {/if}
 </div>
@@ -181,6 +192,7 @@
     border-radius: 8px;
     z-index: 1000;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
   }
 
   .cs-opt {
