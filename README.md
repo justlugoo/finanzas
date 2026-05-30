@@ -1,4 +1,4 @@
-# Finanzas
+# FinCapX
 
 App de escritorio para gestión financiera personal. Registra ingresos y gastos, controla presupuestos por categoría, sigue objetivos de ahorro, gestiona préstamos a terceros y calcula costos de gasolina por vehículo y ruta.
 
@@ -14,8 +14,8 @@ App de escritorio para gestión financiera personal. Registra ingresos y gastos,
 
 Descarga el paquete de la sección [Releases](../../releases) del repositorio:
 
-- **Fedora / openSUSE:** `Finanzas-x.x.x-1.x86_64.rpm`
-- **Debian / Ubuntu:** `finanzas_x.x.x_amd64.deb`
+- **Fedora / openSUSE:** `FinCapX-x.x.x-1.x86_64.rpm`
+- **Debian / Ubuntu:** `fincapx_x.x.x_amd64.deb`
 
 > **Versiones mínimas soportadas:**
 > - Fedora 37 o superior (recomendado 40+)
@@ -27,10 +27,10 @@ Descarga el paquete de la sección [Releases](../../releases) del repositorio:
 
 ```bash
 # Fedora
-sudo dnf install ./Finanzas-*.rpm
+sudo dnf install ./FinCapX-*.rpm
 
 # Debian / Ubuntu
-sudo apt install ./finanzas_*.deb
+sudo apt install ./fincapx_*.deb
 ```
 
 ### Opción B — Compilar desde el código fuente
@@ -60,10 +60,10 @@ pnpm tauri build
 
 ```bash
 # Fedora
-sudo dnf install ./src-tauri/target/release/bundle/rpm/Finanzas-*.rpm
+sudo dnf install ./src-tauri/target/release/bundle/rpm/FinCapX-*.rpm
 
 # Debian / Ubuntu
-sudo apt install ./src-tauri/target/release/bundle/deb/finanzas_*.deb
+sudo apt install ./src-tauri/target/release/bundle/deb/fincapx_*.deb
 ```
 
 La app aparece en el menú de aplicaciones y en el system tray al iniciar sesión si el autoarranque está activado desde Configuración.

@@ -67,8 +67,8 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand">
-      <span class="brand-icon">◈</span>
-      <span class="brand-name">Finanzas</span>
+      <img src="/app-icon.png" class="brand-icon" alt="" aria-hidden="true" />
+      <span class="brand-name">FinCapX</span>
     </div>
 
     <nav class="sidebar-nav">
@@ -211,7 +211,7 @@
     margin-bottom: 0.5rem;
   }
 
-  .brand-icon { font-size: 1rem; color: var(--accent); }
+  .brand-icon { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
   .brand-name { font-size: 0.9rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.01em; }
 
   .sidebar-nav {
