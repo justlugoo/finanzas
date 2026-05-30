@@ -97,12 +97,19 @@ pub async fn update(
     if input.target_amount <= 0 {
         return Err(AppError::ValidationError("el monto objetivo debe ser mayor que 0".into()));
     }
-    let status = input.status.as_deref().unwrap_or("activo");
-    if !matches!(status, "activo" | "completado" | "pausado") {
-        return Err(AppError::ValidationError("estado inválido".into()));
-    }
+    // Auto-derive status from actual contribution sum; only honour an explicit
+    // valid value passed from callers that still manage status manually.
+    let current_amount = tx_repo::sum_by_goal(conn, id).await?;
+    let status = match input.status.as_deref() {
+        Some(s) if matches!(s, "activo" | "completado" | "pausado") => s.to_string(),
+        _ => if current_amount >= input.target_amount {
+            "completado".to_string()
+        } else {
+            "activo".to_string()
+        },
+    };
 
-    let affected = repo::update(conn, id, input.name.trim(), input.target_amount, input.target_date.as_deref(), status).await?;
+    let affected = repo::update(conn, id, input.name.trim(), input.target_amount, input.target_date.as_deref(), &status).await?;
     if affected == 0 {
         return Err(AppError::NotFound(format!("objetivo {id} no existe")));
     }

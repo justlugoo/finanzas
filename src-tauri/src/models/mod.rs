@@ -314,4 +314,7 @@ pub struct Meta {
     pub nota: Option<String>,
     pub cuotas: Option<i64>,
     pub abonos: Vec<MetaAbono>,
+    pub on_track: Option<bool>,
+    pub monthly_required: Option<f64>,
+    pub projected_completion_date: Option<String>,
 }

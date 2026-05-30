@@ -32,6 +32,8 @@
     canPay          = true,
     onAddPayment,
     onClose,
+    onEdit          = null,
+    onDelete        = null,
   }: {
     title:          string;
     subtitle?:      string | null;
@@ -48,6 +50,8 @@
     canPay?:        boolean;
     onAddPayment:   (amount: number, date: string) => Promise<void>;
     onClose:        () => void;
+    onEdit?:        (() => void) | null;
+    onDelete?:      (() => void) | null;
   } = $props();
 
   let showPaymentForm = $state(false);
@@ -193,14 +197,20 @@
           </div>
         </form>
       </div>
-    {:else if canPay}
-      <div class="modal-actions">
-        <button class="btn-secondary" onclick={onClose}>Cerrar</button>
-        <button class="btn-primary" onclick={() => { showPaymentForm = true; }}>+ Registrar abono</button>
-      </div>
     {:else}
-      <div class="modal-actions">
+      <div class="modal-actions detail-actions">
         <button class="btn-secondary" onclick={onClose}>Cerrar</button>
+        <div class="action-group">
+          {#if canPay}
+            <button class="btn-primary" onclick={() => { showPaymentForm = true; }}>+ Abonar</button>
+          {/if}
+          {#if onEdit}
+            <button class="btn-secondary" onclick={onEdit}>Editar</button>
+          {/if}
+          {#if onDelete}
+            <button class="btn-danger" onclick={onDelete}>Eliminar</button>
+          {/if}
+        </div>
       </div>
     {/if}
   </ScrollArea>
@@ -265,6 +275,15 @@
 
   .modal-form    { display: flex; flex-direction: column; gap: 0.9rem; }
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+  .detail-actions { justify-content: space-between; align-items: center; }
+  .action-group   { display: flex; gap: 0.5rem; }
+  .btn-danger {
+    padding: 0.45rem 1rem; background: transparent; color: var(--danger);
+    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
+    border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+    transition: all 0.15s;
+  }
+  .btn-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
   label, .field-label { font-size: 0.78rem; font-weight: 500; color: var(--text-secondary); }

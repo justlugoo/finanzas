@@ -194,6 +194,86 @@
     await loadMetas();
     detail = metas.find(m => m.id === metaId) ?? null;
   }
+
+  // ── Editar (solo quiero_juntar) ───────────────────────────────────────────
+  let editOpen    = $state(false);
+  let editTarget  = $state<Meta | null>(null);
+  let editing     = $state(false);
+  let eName       = $state("");
+  let eAmountRaw  = $state("");
+  let eTargetDate = $state("");
+  let eError      = $state<string | null>(null);
+  let eAmount     = $derived(parseInt(eAmountRaw.replace(/\D/g, ""), 10) || 0);
+
+  function openEdit(m: Meta) {
+    detail      = null;
+    eName       = m.nombre;
+    eAmountRaw  = String(m.total);
+    eTargetDate = m.fecha ?? "";
+    eError      = null;
+    editTarget  = m;
+    editOpen    = true;
+  }
+
+  async function handleEdit(ev: Event) {
+    ev.preventDefault();
+    if (!editTarget) return;
+    if (!eName.trim()) { eError = "El nombre no puede estar vacío."; return; }
+    if (eAmount <= 0)  { eError = "El monto debe ser mayor que 0."; return; }
+    editing = true; eError = null;
+    const [, rawId] = editTarget.id.split(":");
+    const numId = parseInt(rawId, 10);
+    try {
+      await goalApi.update(numId, {
+        name: eName.trim(),
+        target_amount: eAmount,
+        target_date: eTargetDate || null,
+      });
+      await loadMetas();
+      editOpen = false;
+      editTarget = null;
+    } catch (e) {
+      console.error("[metas] edit:", e);
+      eError = extractMsg(e);
+    } finally {
+      editing = false;
+    }
+  }
+
+  // ── Eliminar ──────────────────────────────────────────────────────────────
+  let deleteOpen   = $state(false);
+  let deleteTarget = $state<Meta | null>(null);
+  let deleting     = $state(false);
+  let deleteError  = $state<string | null>(null);
+
+  function openDelete(m: Meta) {
+    detail       = null;
+    deleteTarget = m;
+    deleteError  = null;
+    deleteOpen   = true;
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    deleting = true; deleteError = null;
+    const [prefix, rawId] = deleteTarget.id.split(":");
+    const numId = parseInt(rawId, 10);
+    try {
+      if (prefix === "loan") {
+        await loanApi.remove(numId);
+      } else {
+        await goalApi.remove(numId);
+      }
+      await loadMetas();
+      deleteOpen = false;
+      deleteTarget = null;
+    } catch (e) {
+      console.error("[metas] delete:", e);
+      deleteError = extractMsg(e);
+    } finally {
+      deleting = false;
+    }
+  }
 </script>
 
 <main>
@@ -322,6 +402,16 @@
       <div class="cuotas-hint">≈ {formatCOP(Math.ceil(m.total / m.cuotas))}/mes · {m.cuotas} cuotas</div>
     {/if}
 
+    {#if m.tipo === "quiero_juntar" && m.on_track === false && m.estado !== "completado"}
+      <span class="atrasado-badge">Atrasado</span>
+    {/if}
+    {#if m.tipo === "quiero_juntar" && m.monthly_required !== null}
+      <div class="muted-hint">≈ {formatCOP(m.monthly_required)}/mes</div>
+    {/if}
+    {#if m.tipo === "quiero_juntar" && m.on_track === false && m.projected_completion_date}
+      <div class="muted-hint">Estimado: {m.projected_completion_date}</div>
+    {/if}
+
     <div class="card-footer">
       <span class="meta-date">{m.fecha ?? "Sin fecha"}</span>
     </div>
@@ -336,8 +426,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-    <ScrollArea class="modal-scroll" scrollbar="thin">
-      <h2>Nueva meta</h2>
+    <h2>Nueva meta</h2>
 
       {#if cError}
         <div class="banner error small"><pre>{cError}</pre></div>
@@ -425,27 +514,104 @@
         </div>
 
       </form>
-    </ScrollArea>
   </div>
   </div>
 {/if}
 
 {#if detail}
+  {@const dm = detail}
   <PaymentModal
-    title={detail.nombre}
-    subtitle={tipoLabel(detail.tipo)}
-    subtitleClass="tipo-badge tipo-{detail.tipo}"
-    note={detail.nota}
-    stats={buildStats(detail)}
-    paid={detail.abonado}
-    total={detail.total}
-    progressDone={detail.estado === "completado"}
-    items={toPaymentItems(detail)}
+    title={dm.nombre}
+    subtitle={tipoLabel(dm.tipo)}
+    subtitleClass="tipo-badge tipo-{dm.tipo}"
+    note={dm.nota}
+    stats={buildStats(dm)}
+    paid={dm.abonado}
+    total={dm.total}
+    progressDone={dm.estado === "completado"}
+    items={toPaymentItems(dm)}
     itemsLabel="Abonos"
-    canPay={detail.estado === "pendiente"}
+    canPay={dm.estado === "pendiente"}
     onAddPayment={handleAddPayment}
+    onEdit={dm.tipo === "quiero_juntar" ? () => openEdit(dm) : null}
+    onDelete={() => openDelete(dm)}
     onClose={() => { detail = null; }}
   />
+{/if}
+
+{#if editOpen && editTarget}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="overlay" onclick={() => { editOpen = false; editTarget = null; }}>
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+    <h2>Editar ahorro</h2>
+
+    {#if eError}
+      <div class="banner error small"><pre>{eError}</pre></div>
+    {/if}
+
+    <form onsubmit={handleEdit} class="modal-form">
+      <div class="field">
+        <label for="e-nombre">Nombre del objetivo</label>
+        <input id="e-nombre" type="text" bind:value={eName} maxlength="100" />
+      </div>
+      <div class="field">
+        <label for="e-amount">Monto objetivo</label>
+        <input
+          id="e-amount"
+          type="text"
+          inputmode="numeric"
+          placeholder="0"
+          value={eAmountRaw ? new Intl.NumberFormat("es-CO").format(eAmount) : ""}
+          oninput={(e) => handleAmountInput(e, (v) => { eAmountRaw = v; })}
+        />
+      </div>
+      <div class="field">
+        <span class="field-label">Fecha meta <span class="optional">(opcional)</span></span>
+        <DatePicker bind:value={eTargetDate} />
+      </div>
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="btn-secondary"
+          onclick={() => { editOpen = false; editTarget = null; }}
+        >Cancelar</button>
+        <button
+          type="submit"
+          class="btn-primary"
+          disabled={editing || !eName.trim() || eAmount <= 0}
+        >{editing ? "Guardando…" : "Guardar"}</button>
+      </div>
+    </form>
+  </div>
+  </div>
+{/if}
+
+{#if deleteOpen && deleteTarget}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="overlay" onclick={() => { deleteOpen = false; deleteTarget = null; }}>
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+    <h2>Eliminar meta</h2>
+    <p class="delete-msg">¿Eliminar <strong>{deleteTarget.nombre}</strong>? Esta acción no se puede deshacer.</p>
+    {#if deleteError}
+      <div class="banner error small"><pre>{deleteError}</pre></div>
+    {/if}
+    <div class="modal-actions">
+      <button
+        class="btn-secondary"
+        onclick={() => { deleteOpen = false; deleteTarget = null; }}
+      >Cancelar</button>
+      <button class="btn-danger" onclick={handleDelete} disabled={deleting}>
+        {deleting ? "Eliminando…" : "Eliminar"}
+      </button>
+    </div>
+  </div>
+  </div>
 {/if}
 
 <style>
@@ -617,7 +783,7 @@
   }
 
   /* ── Card footer ── */
-  .card-footer { display: flex; align-items: center; justify-content: space-between; }
+  .card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: auto; }
   .meta-date   { font-size: 0.72rem; color: var(--text-muted); }
 
   /* ── Banner ── */
@@ -653,10 +819,10 @@
   .modal {
     background: var(--bg-surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 1.5rem;
-    width: min(440px, 92vw); max-height: 85vh; overflow: hidden;
+    width: min(440px, 92vw); max-height: 85vh; overflow-y: auto;
     display: flex; flex-direction: column;
   }
-  :global(.modal-scroll) { flex: 1; min-height: 0; }
+  .modal-sm { width: min(340px, 92vw); max-height: unset; }
 
   h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.75rem; }
 
@@ -701,4 +867,20 @@
     gap: 0.5rem; padding: 2rem;
     color: var(--text-secondary); font-size: 0.9rem;
   }
+
+  /* ── Progreso de ahorros ── */
+  .atrasado-badge { font-size: 0.65rem; font-weight: 600; color: #f59e0b; }
+  .muted-hint     { font-size: 0.7rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+  /* ── Modal de confirmación ── */
+  .delete-msg { font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.75rem; line-height: 1.5; }
+  .delete-msg strong { color: var(--text-primary); }
+  .btn-danger {
+    padding: 0.45rem 1rem; background: var(--danger); color: #fff;
+    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
+    transition: opacity 0.15s;
+  }
+  .btn-danger:hover:not(:disabled) { opacity: 0.85; }
+  .btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
+  .banner.small { font-size: 0.78rem; }
 </style>

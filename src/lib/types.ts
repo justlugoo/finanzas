@@ -245,4 +245,7 @@ export interface Meta {
   nota: string | null;
   cuotas: number | null;
   abonos: MetaAbono[];
+  on_track: boolean | null;
+  monthly_required: number | null;
+  projected_completion_date: string | null;
 }

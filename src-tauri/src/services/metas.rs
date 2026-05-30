@@ -27,6 +27,9 @@ pub async fn list(conn: &libsql::Connection) -> AppResult<Vec<Meta>> {
             nota: lb.loan.note,
             cuotas: None,
             abonos,
+            on_track: None,
+            monthly_required: None,
+            projected_completion_date: None,
         });
     }
 
@@ -41,8 +44,15 @@ pub async fn list(conn: &libsql::Connection) -> AppResult<Vec<Meta>> {
             .collect();
 
         let tipo = if progress.goal.is_debt_goal { "debo" } else { "quiero_juntar" };
-        let estado = if progress.goal.status == "completado" { "completado" } else { "pendiente" };
+        let estado = if progress.current_amount >= progress.goal.target_amount { "completado" } else { "pendiente" };
         let pendiente = (progress.goal.target_amount - progress.current_amount).max(0);
+
+        let (on_track, monthly_required, projected_completion_date) =
+            if progress.goal.is_debt_goal {
+                (None, None, None)
+            } else {
+                (Some(progress.on_track), progress.monthly_required, progress.projected_completion_date)
+            };
 
         result.push(Meta {
             id: format!("goal:{}", progress.goal.id),
@@ -56,6 +66,9 @@ pub async fn list(conn: &libsql::Connection) -> AppResult<Vec<Meta>> {
             nota: None,
             cuotas: progress.goal.installments,
             abonos,
+            on_track,
+            monthly_required,
+            projected_completion_date,
         });
     }
 
