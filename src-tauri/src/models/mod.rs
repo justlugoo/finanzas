@@ -230,6 +230,8 @@ pub struct CustomRouteInput {
     pub description: Option<String>,
 }
 
+// Frente 2 (gasolina): usado por el módulo de tanqueos, pendiente de completar. No eliminar.
+#[allow(dead_code)]
 #[derive(Serialize, Debug)]
 pub struct FuelFillup {
     pub id: i64,
@@ -242,6 +244,8 @@ pub struct FuelFillup {
     pub created_at: String,
 }
 
+// Frente 2 (gasolina): usado por el módulo de tanqueos, pendiente de completar. No eliminar.
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 pub struct FuelFillupInput {
     pub date: String,
@@ -284,6 +288,12 @@ pub struct LoanPaymentInput {
     pub loan_id: i64,
     pub amount: i64,
     pub date: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LoanUpdateInput {
+    pub person_name: String,
+    pub amount: i64,
 }
 
 #[derive(Serialize, Debug)]

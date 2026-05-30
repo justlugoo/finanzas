@@ -42,14 +42,14 @@ Finanzas/
 │   │   └── components/
 │   │       ├── CustomSelect.svelte
 │   │       ├── DatePicker.svelte
+│   │       ├── PaymentModal.svelte
 │   │       └── ScrollArea.svelte
 │   └── routes/
 │       ├── +layout.svelte      # Layout global: nav + widget sidebar
 │       ├── +page.svelte        # Resumen (dashboard)
 │       ├── registrar/+page.svelte
 │       ├── historial/+page.svelte
-│       ├── objetivos/+page.svelte
-│       ├── prestamos/+page.svelte
+│       ├── metas/+page.svelte
 │       └── config/+page.svelte
 ├── src-tauri/
 │   └── src/
@@ -76,6 +76,7 @@ Finanzas/
 │       │   ├── budgets.rs
 │       │   ├── goals.rs
 │       │   ├── loans.rs
+│       │   ├── metas.rs
 │       │   ├── gas.rs
 │       │   ├── vehicles.rs
 │       │   ├── routes.rs
@@ -86,6 +87,7 @@ Finanzas/
 │           ├── budgets.rs
 │           ├── goals.rs
 │           ├── loans.rs
+│           ├── metas.rs
 │           ├── gas.rs
 │           ├── vehicles.rs
 │           ├── routes.rs
@@ -221,7 +223,7 @@ PRAGMA temp_store   = MEMORY;
 | name | TEXT | Nombre del objetivo |
 | target_amount | INTEGER | Monto objetivo en COP |
 | target_date | TEXT | `YYYY-MM-DD`. Nullable |
-| status | TEXT | `activo` \| `completado` \| `pausado` |
+| status | TEXT | `activo` \| `completado` \| `pausado`. El módulo Metas auto-deriva `completado` cuando `current_amount >= target_amount`; `pausado` es solo a nivel DB |
 | created_at | TEXT | ISO timestamp |
 | is_debt_goal | INTEGER | `0` \| `1` — objetivo de tipo deuda |
 
@@ -391,12 +393,22 @@ Al eliminar un objetivo, las transacciones asociadas pierden el `goal_id` (FK ON
 | `loan_create` | `input: LoanInput` | `LoanWithBalance` |
 | `loan_list` | — | `Vec<LoanWithBalance>` |
 | `loan_get` | `id: i64` | `LoanWithBalance` |
+| `loan_update` | `id: i64, input: LoanUpdateInput` | `LoanWithBalance` |
 | `loan_add_payment` | `input: LoanPaymentInput` | `LoanWithBalance` |
 | `loan_delete` | `id: i64` | `()` |
 | `loans_total_pending` | — | `i64` (suma de `pending` de préstamos con `status = 'pendiente'`) |
 
 `loan_delete` elimina en cascada manual todos los `loan_payments` del préstamo antes de borrar el registro en `loans`.  
-`loan_add_payment` rechaza con `ValidationError` si el abono haría que la suma supere el monto original.
+`loan_add_payment` rechaza con `ValidationError` si el abono haría que la suma supere el monto original.  
+`loan_update` rechaza con `ValidationError` si el nuevo monto es menor que la suma ya abonada.
+
+### Metas
+
+| Comando | Parámetros | Retorna |
+|---------|-----------|---------|
+| `metas_list` | — | `Vec<Meta>` |
+
+Vista unificada que agrega préstamos (`me_deben`), goals de deuda (`debo`) y goals de ahorro (`quiero_juntar`) en un solo tipo normalizado `Meta`. El campo `estado` se auto-deriva del progreso: `completado` si `abonado >= total`, `pendiente` en caso contrario.
 
 ### Gasolina
 
@@ -523,6 +535,30 @@ interface LoanInput {
 
 interface LoanPaymentInput {
   loan_id: number; amount: number; date: string;
+}
+
+interface LoanUpdateInput {
+  person_name: string; amount: number;
+}
+
+// Metas: vista unificada de préstamos, deudas y ahorros
+interface MetaAbono { id: number; date: string; amount: number; }
+
+interface Meta {
+  id: string;           // "loan:{id}" | "goal:{id}"
+  tipo: string;         // "me_deben" | "debo" | "quiero_juntar"
+  nombre: string;
+  total: number;
+  abonado: number;
+  pendiente: number;
+  estado: string;       // "completado" | "pendiente" — auto-derivado
+  fecha: string | null;
+  nota: string | null;
+  cuotas: number | null;
+  abonos: MetaAbono[];
+  on_track: boolean | null;                    // solo quiero_juntar
+  monthly_required: number | null;             // solo quiero_juntar
+  projected_completion_date: string | null;    // solo quiero_juntar
 }
 ```
 

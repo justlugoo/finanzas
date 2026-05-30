@@ -89,8 +89,7 @@ Al abrir la app por primera vez estará completamente vacía. Flujo recomendado:
 | **Resumen** | Dashboard: saldo en mano, patrimonio (cuando hay préstamos pendientes), KPIs del mes, progreso por categoría, comparativa con el mes anterior y últimas transacciones |
 | **Registrar** | Formulario para ingresos y gastos. Soporta categoría, monto, fecha, nota, gasto extraordinario, objetivo asociado y km recorridos con selector de vehículo |
 | **Historial** | Lista filtrable por período, tipo y categoría. Edición y eliminación inline, selección múltiple y exportación a CSV |
-| **Objetivos** | Metas de ahorro y deudas con progreso, monto mensual requerido y fecha estimada de cumplimiento |
-| **Préstamos** | Dinero prestado a terceros: registra deudor, monto y fecha; abonos parciales con transición automática a "pagado"; saldo pendiente por cobrar |
+| **Metas** | Vista unificada de préstamos a terceros, deudas propias y objetivos de ahorro. Abonos parciales, edición de nombre y monto, eliminación, badges de progreso y fecha estimada de cumplimiento |
 | **Configuración** | Categorías, vehículos, rutas, precio de gasolina, autoarranque, backup y restablecimiento de fábrica |
 
 ---

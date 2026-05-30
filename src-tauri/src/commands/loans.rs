@@ -1,6 +1,6 @@
 use tauri::State;
 use crate::error::AppResult;
-use crate::models::{LoanInput, LoanPaymentInput, LoanWithBalance};
+use crate::models::{LoanInput, LoanPaymentInput, LoanUpdateInput, LoanWithBalance};
 use crate::services::loans as svc;
 use crate::state::{DbState, get_conn};
 
@@ -32,6 +32,16 @@ pub async fn loan_add_payment(
 ) -> AppResult<LoanWithBalance> {
     let conn = get_conn(&state).await?;
     svc::add_payment(&conn, input).await
+}
+
+#[tauri::command]
+pub async fn loan_update(
+    state: State<'_, DbState>,
+    id: i64,
+    input: LoanUpdateInput,
+) -> AppResult<LoanWithBalance> {
+    let conn = get_conn(&state).await?;
+    svc::update(&conn, id, input).await
 }
 
 #[tauri::command]

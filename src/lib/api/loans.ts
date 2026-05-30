@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { LoanWithBalance, LoanInput, LoanPaymentInput } from "$lib/types";
+import type { LoanWithBalance, LoanInput, LoanPaymentInput, LoanUpdateInput } from "$lib/types";
 
 export const create = (input: LoanInput) =>
   invoke<LoanWithBalance>("loan_create", { input });
@@ -9,6 +9,9 @@ export const list = () =>
 
 export const get = (id: number) =>
   invoke<LoanWithBalance>("loan_get", { id });
+
+export const update = (id: number, input: LoanUpdateInput) =>
+  invoke<LoanWithBalance>("loan_update", { id, input });
 
 export const addPayment = (input: LoanPaymentInput) =>
   invoke<LoanWithBalance>("loan_add_payment", { input });

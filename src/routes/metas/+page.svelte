@@ -195,7 +195,7 @@
     detail = metas.find(m => m.id === metaId) ?? null;
   }
 
-  // ── Editar (solo quiero_juntar) ───────────────────────────────────────────
+  // ── Editar (todos los tipos) ──────────────────────────────────────────────
   let editOpen    = $state(false);
   let editTarget  = $state<Meta | null>(null);
   let editing     = $state(false);
@@ -204,6 +204,22 @@
   let eTargetDate = $state("");
   let eError      = $state<string | null>(null);
   let eAmount     = $derived(parseInt(eAmountRaw.replace(/\D/g, ""), 10) || 0);
+
+  let editTitle = $derived(
+    editTarget?.tipo === "me_deben"      ? "Editar préstamo" :
+    editTarget?.tipo === "debo"          ? "Editar deuda"    :
+                                           "Editar ahorro"
+  );
+  let editNameLabel = $derived(
+    editTarget?.tipo === "me_deben" ? "Nombre del deudor"  :
+    editTarget?.tipo === "debo"     ? "Nombre de la deuda" :
+                                      "Nombre del objetivo"
+  );
+  let editAmountLabel = $derived(
+    editTarget?.tipo === "me_deben" ? "Monto prestado"  :
+    editTarget?.tipo === "debo"     ? "Monto total"     :
+                                      "Monto objetivo"
+  );
 
   function openEdit(m: Meta) {
     detail      = null;
@@ -221,14 +237,18 @@
     if (!eName.trim()) { eError = "El nombre no puede estar vacío."; return; }
     if (eAmount <= 0)  { eError = "El monto debe ser mayor que 0."; return; }
     editing = true; eError = null;
-    const [, rawId] = editTarget.id.split(":");
+    const [prefix, rawId] = editTarget.id.split(":");
     const numId = parseInt(rawId, 10);
     try {
-      await goalApi.update(numId, {
-        name: eName.trim(),
-        target_amount: eAmount,
-        target_date: eTargetDate || null,
-      });
+      if (prefix === "loan") {
+        await loanApi.update(numId, { person_name: eName.trim(), amount: eAmount });
+      } else {
+        await goalApi.update(numId, {
+          name: eName.trim(),
+          target_amount: eAmount,
+          target_date: editTarget.tipo === "quiero_juntar" ? (eTargetDate || null) : null,
+        });
+      }
       await loadMetas();
       editOpen = false;
       editTarget = null;
@@ -533,7 +553,7 @@
     itemsLabel="Abonos"
     canPay={dm.estado === "pendiente"}
     onAddPayment={handleAddPayment}
-    onEdit={dm.tipo === "quiero_juntar" ? () => openEdit(dm) : null}
+    onEdit={() => openEdit(dm)}
     onDelete={() => openDelete(dm)}
     onClose={() => { detail = null; }}
   />
@@ -546,7 +566,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-    <h2>Editar ahorro</h2>
+    <h2>{editTitle}</h2>
 
     {#if eError}
       <div class="banner error small"><pre>{eError}</pre></div>
@@ -554,11 +574,11 @@
 
     <form onsubmit={handleEdit} class="modal-form">
       <div class="field">
-        <label for="e-nombre">Nombre del objetivo</label>
+        <label for="e-nombre">{editNameLabel}</label>
         <input id="e-nombre" type="text" bind:value={eName} maxlength="100" />
       </div>
       <div class="field">
-        <label for="e-amount">Monto objetivo</label>
+        <label for="e-amount">{editAmountLabel}</label>
         <input
           id="e-amount"
           type="text"
@@ -568,10 +588,12 @@
           oninput={(e) => handleAmountInput(e, (v) => { eAmountRaw = v; })}
         />
       </div>
-      <div class="field">
-        <span class="field-label">Fecha meta <span class="optional">(opcional)</span></span>
-        <DatePicker bind:value={eTargetDate} />
-      </div>
+      {#if editTarget?.tipo === "quiero_juntar"}
+        <div class="field">
+          <span class="field-label">Fecha meta <span class="optional">(opcional)</span></span>
+          <DatePicker bind:value={eTargetDate} />
+        </div>
+      {/if}
       <div class="modal-actions">
         <button
           type="button"

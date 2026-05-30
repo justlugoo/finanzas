@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::models::{LoanInput, LoanPaymentInput, LoanWithBalance};
+use crate::models::{LoanInput, LoanPaymentInput, LoanUpdateInput, LoanWithBalance};
 use crate::repositories::loans as repo;
 
 pub async fn create(conn: &libsql::Connection, input: LoanInput) -> AppResult<LoanWithBalance> {
@@ -44,6 +44,27 @@ pub async fn add_payment(
         )));
     }
     repo::add_payment(conn, &input).await
+}
+
+pub async fn update(
+    conn: &libsql::Connection,
+    id: i64,
+    input: LoanUpdateInput,
+) -> AppResult<LoanWithBalance> {
+    if input.person_name.trim().is_empty() {
+        return Err(AppError::ValidationError("el nombre del deudor no puede estar vacío".into()));
+    }
+    if input.amount <= 0 {
+        return Err(AppError::ValidationError("el monto debe ser mayor que 0".into()));
+    }
+    let current = repo::get(conn, id).await?;
+    if input.amount < current.paid {
+        return Err(AppError::ValidationError(format!(
+            "el nuevo monto ({}) no puede ser menor que lo ya abonado ({})",
+            input.amount, current.paid
+        )));
+    }
+    repo::update(conn, id, input.person_name.trim(), input.amount).await
 }
 
 pub async fn delete(conn: &libsql::Connection, id: i64) -> AppResult<()> {

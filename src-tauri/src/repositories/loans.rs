@@ -75,6 +75,29 @@ pub async fn add_payment(
     get(conn, input.loan_id).await
 }
 
+pub async fn update(
+    conn: &libsql::Connection,
+    id: i64,
+    person_name: &str,
+    amount: i64,
+) -> AppResult<LoanWithBalance> {
+    let affected = conn.execute(
+        "UPDATE loans SET person_name = ?, amount = ? WHERE id = ?",
+        libsql::params![person_name.to_string(), amount, id],
+    ).await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("préstamo {id} no existe")));
+    }
+    // Re-evaluate status: if total paid now covers the new amount, mark paid
+    let lb = get(conn, id).await?;
+    let new_status = if lb.paid >= lb.loan.amount { "pagado" } else { "pendiente" };
+    conn.execute(
+        "UPDATE loans SET status = ? WHERE id = ?",
+        libsql::params![new_status.to_string(), id],
+    ).await?;
+    get(conn, id).await
+}
+
 pub async fn delete(conn: &libsql::Connection, id: i64) -> AppResult<u64> {
     conn.execute(
         "DELETE FROM loan_payments WHERE loan_id = ?",

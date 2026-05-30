@@ -9,13 +9,11 @@
   let { children } = $props();
 
   const navItems = [
-    { href: '/',           label: 'Resumen'   },
-    { href: '/registrar',  label: 'Registrar' },
-    { href: '/historial',  label: 'Historial' },
-    { href: '/objetivos',  label: 'Objetivos' },
-    { href: '/prestamos',  label: 'Préstamos' },
-    { href: '/metas',      label: 'Metas'     },
-    { href: '/config',     label: 'Config'    },
+    { href: '/',          label: 'Resumen'   },
+    { href: '/registrar', label: 'Registrar' },
+    { href: '/historial', label: 'Historial' },
+    { href: '/metas',     label: 'Metas'     },
+    { href: '/config',    label: 'Config'    },
   ];
 
   // ── Estado del widget ──────────────────────────────────────────────────────

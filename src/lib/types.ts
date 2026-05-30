@@ -227,6 +227,11 @@ export interface LoanPaymentInput {
   date: string;
 }
 
+export interface LoanUpdateInput {
+  person_name: string;
+  amount: number;
+}
+
 export interface MetaAbono {
   id: number;
   date: string;

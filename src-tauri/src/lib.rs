@@ -195,6 +195,7 @@ pub fn run() {
             commands::loans::loan_create,
             commands::loans::loan_list,
             commands::loans::loan_get,
+            commands::loans::loan_update,
             commands::loans::loan_add_payment,
             commands::loans::loan_delete,
             commands::loans::loans_total_pending,
