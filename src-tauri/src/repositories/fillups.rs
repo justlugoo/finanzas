@@ -82,6 +82,23 @@ pub async fn sum_gallons_by_vehicle(conn: &libsql::Connection, vehicle_id: i64) 
     Ok(rows.next().await?.and_then(|r| r.get::<f64>(0).ok()).unwrap_or(0.0))
 }
 
+pub async fn delete_by_transaction_id(conn: &libsql::Connection, transaction_id: i64) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM fuel_fillups WHERE transaction_id = ?",
+        libsql::params![transaction_id],
+    ).await?;
+    Ok(())
+}
+
+pub async fn delete_by_transaction_ids(conn: &libsql::Connection, transaction_ids: &[i64]) -> AppResult<()> {
+    if transaction_ids.is_empty() { return Ok(()); }
+    let placeholders = transaction_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("DELETE FROM fuel_fillups WHERE transaction_id IN ({placeholders})");
+    let params: Vec<libsql::Value> = transaction_ids.iter().map(|&id| libsql::Value::Integer(id)).collect();
+    conn.execute(&sql, params).await?;
+    Ok(())
+}
+
 /// Suma de km recorridos por el vehículo en transacciones de viaje.
 /// Dividir por km_per_gallon del vehículo da los galones consumidos.
 pub async fn sum_trip_km_by_vehicle(conn: &libsql::Connection, vehicle_id: i64) -> AppResult<f64> {

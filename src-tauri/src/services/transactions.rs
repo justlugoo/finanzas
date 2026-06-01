@@ -4,7 +4,7 @@ use crate::models::{
     CategoryProgress, CsvExport, CurrentBalance, ImportResult, MonthComparison,
     Period, PeriodSummary, Transaction, TransactionFilter, TransactionInput, TransactionPage,
 };
-use crate::repositories::{budgets as budgets_repo, goals as goals_repo, loans as loans_repo, transactions as tx_repo};
+use crate::repositories::{budgets as budgets_repo, fillups as fillup_repo, goals as goals_repo, loans as loans_repo, transactions as tx_repo};
 use crate::utils::{csv_escape, format_cop_simple, is_valid_date, parse_csv_line, period_to_dates, scale_monthly, send_notification};
 
 pub async fn create(
@@ -142,6 +142,7 @@ pub async fn update(
 }
 
 pub async fn delete(conn: &libsql::Connection, id: i64) -> AppResult<()> {
+    fillup_repo::delete_by_transaction_id(conn, id).await?;
     tx_repo::delete(conn, id).await
 }
 
@@ -327,5 +328,6 @@ pub async fn import_csv(
 }
 
 pub async fn delete_bulk(conn: &libsql::Connection, ids: Vec<i64>) -> AppResult<i64> {
+    fillup_repo::delete_by_transaction_ids(conn, &ids).await?;
     tx_repo::delete_bulk(conn, &ids).await
 }

@@ -20,6 +20,7 @@ pub async fn backup_database() -> AppResult<String> {
 
 pub async fn factory_reset(conn: &libsql::Connection) -> AppResult<()> {
     conn.execute("DELETE FROM transactions",  libsql::params![]).await?;
+    conn.execute("DELETE FROM fuel_fillups",  libsql::params![]).await?;
     conn.execute("DELETE FROM goals",         libsql::params![]).await?;
     conn.execute("DELETE FROM gas_prices",    libsql::params![]).await?;
     conn.execute("DELETE FROM budgets",       libsql::params![]).await?;
