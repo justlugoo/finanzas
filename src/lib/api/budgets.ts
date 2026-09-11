@@ -1,20 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Budget } from "$lib/types";
+import type { BudgetV2, CategoryBudgetRow } from "$lib/types";
 
-export const list = () =>
-  invoke<Budget[]>("list_budgets");
+export const listWithCategories = () =>
+  invoke<CategoryBudgetRow[]>("budget_list_with_categories");
 
-export const create = (category: string, monthlyAmount: number, kind: string, isFixed?: boolean) =>
-  invoke<Budget>("create_budget", { category, monthlyAmount, kind, isFixed });
+export const setMonthly = (categoryId: string, monthlyCop: number) =>
+  invoke<BudgetV2>("budget_set_monthly", { categoryId, monthlyCop });
 
-export const updateAmount = (category: string, monthlyAmount: number) =>
-  invoke<Budget>("update_budget", { category, monthlyAmount });
-
-export const updateRoute = (category: string, routeId: number | null) =>
-  invoke<void>("update_budget_route", { category, routeId });
-
-export const updateFixed = (category: string, isFixed: boolean) =>
-  invoke<Budget>("update_budget_fixed", { category, isFixed });
-
-export const remove = (category: string) =>
-  invoke<void>("delete_budget", { category });
+export const setOverride = (categoryId: string, yearMonth: string, amountCop: number) =>
+  invoke<void>("budget_set_override", { categoryId, yearMonth, amountCop });

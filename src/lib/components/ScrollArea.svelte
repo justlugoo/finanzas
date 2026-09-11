@@ -39,7 +39,7 @@
   }
   .scroll-area::-webkit-scrollbar { width: 2px; height: 2px; }
   .scroll-area::-webkit-scrollbar-track { background: transparent; }
-  .scroll-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .scroll-area::-webkit-scrollbar-thumb { background: var(--border); }
 
   .no-scrollbar::-webkit-scrollbar { display: none; }
 

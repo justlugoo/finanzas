@@ -10,4 +10,4 @@ export const backup = () =>
   invoke<string>("backup_database");
 
 export const factoryReset = () =>
-  invoke<void>("factory_reset");
+  invoke<void>("factory_reset_v2");

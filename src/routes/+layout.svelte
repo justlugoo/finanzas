@@ -1,9 +1,9 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { txState } from "$lib/txState.svelte";
-  import { transactionApi, goalApi } from "$lib/api";
+  import { entryApi, goalApi, categoryApi } from "$lib/api";
   import { MESES_CORTO, WIDGET_RECENT_SIZE } from "$lib/constants";
-  import type { CurrentBalance, PeriodSummary, TransactionPage, GoalWithProgress, Transaction } from "$lib/types";
+  import type { AccountBalances, PeriodSummaryV2, GoalWithProgressV2, Entry } from "$lib/types";
   import '../app.css';
 
   let { children } = $props();
@@ -20,11 +20,11 @@
   let widgetOpen = $state(localStorage.getItem("widget_open") !== "false");
 
   // ── Datos del widget ───────────────────────────────────────────────────────
-  let balance      = $state<number | null>(null);
-  let netWorth     = $state<number | null>(null);
-  let monthSummary = $state<PeriodSummary | null>(null);
-  let lastTx       = $state<Transaction | null>(null);
-  let nextGoal     = $state<GoalWithProgress | null>(null);
+  let balances     = $state<AccountBalances | null>(null);
+  let monthSummary = $state<PeriodSummaryV2 | null>(null);
+  let lastTx       = $state<Entry | null>(null);
+  let lastTxLabel  = $state<string>("");
+  let nextGoal     = $state<GoalWithProgressV2 | null>(null);
 
   // ── Persist widget state ───────────────────────────────────────────────────
   $effect(() => { localStorage.setItem("widget_open", String(widgetOpen)); });
@@ -35,18 +35,22 @@
     const _v    = txState.version;
     let cancelled = false;
 
+    const now = new Date();
     Promise.all([
-      transactionApi.getBalance(),
-      transactionApi.getPeriodSummary({ type: "Monthly" }),
-      transactionApi.list({ page: 1, page_size: WIDGET_RECENT_SIZE }),
-      goalApi.list("activo"),
-    ]).then(([bal, summary, recent, goals]) => {
+      entryApi.getAccountBalances(),
+      entryApi.getPeriodSummary({ type: "Month", value: { year: now.getFullYear(), month: now.getMonth() + 1 } }),
+      entryApi.list({ page: 1, page_size: WIDGET_RECENT_SIZE }),
+      goalApi.list("saving"),
+      categoryApi.list(),
+    ]).then(([bal, summary, recent, goals, cats]) => {
       if (cancelled) return;
-      balance      = bal.cash_on_hand;
-      netWorth     = bal.net_worth;
+      balances     = bal;
       monthSummary = summary;
-      lastTx       = recent.transactions.find(tx => !tx.note?.startsWith('Auto:') && !tx.note?.startsWith('Externo para')) ?? null;
-      nextGoal     = goals.find(g => !g.goal.is_debt_goal) ?? null;
+      const catMap = new Map(cats.map(c => [c.id, c.name]));
+      const tx = recent.entries[0] ?? null;
+      lastTx = tx;
+      lastTxLabel = tx ? (tx.type === "transfer" ? "Transferencia" : (tx.category_id && catMap.get(tx.category_id)) ?? "Sin categoría") : "";
+      nextGoal = goals.find(g => g.pending > 0) ?? goals[0] ?? null;
     }).catch(() => {});
 
     return () => { cancelled = true; };
@@ -89,33 +93,49 @@
         onclick={() => { widgetOpen = !widgetOpen; }}
         aria-expanded={widgetOpen}
       >
-        <span class="widget-label">Saldo</span>
-        <span
-          class="widget-balance"
-          class:pos={balance !== null && balance >= 0}
-          class:neg={balance !== null && balance < 0}
-        >
-          {balance === null ? "…" : formatCOP(balance)}
+        <span class="widget-row">
+          <span class="widget-label">Disponible</span>
+          <span
+            class="widget-balance"
+            class:pos={balances !== null && balances.disponible >= 0}
+            class:neg={balances !== null && balances.disponible < 0}
+          >
+            {balances === null ? "…" : formatCOP(balances.disponible)}
+          </span>
+          <span class="widget-chevron" class:open={widgetOpen}>›</span>
         </span>
-        <span class="widget-chevron" class:open={widgetOpen}>›</span>
+        {#if balances !== null && balances.patrimonio !== balances.disponible}
+          <span class="widget-row widget-row-sub">
+            <span class="widget-label widget-label-sub">Patrimonio</span>
+            <span class="widget-balance widget-balance-sub">{formatCOP(balances.patrimonio)}</span>
+          </span>
+        {/if}
       </button>
 
       <!-- Expanded panel -->
       {#if widgetOpen}
         <div class="widget-panel">
 
-          <!-- Saldo en mano / Patrimonio -->
-          {#if netWorth !== null && netWorth !== balance}
+          <!-- Patrimonio y otras cuentas -->
+          {#if balances !== null}
             <div class="wp-section">
-              <div class="wp-label">Saldo en mano</div>
+              <div class="wp-label">Patrimonio</div>
               <div class="wp-row">
-                <span class="wp-key">Patrimonio</span>
-                <span class="wp-val" class:pos={netWorth >= 0} class:neg={netWorth < 0}>{formatCOP(netWorth)}</span>
+                <span class="wp-key">Total</span>
+                <span class="wp-val" class:pos={balances.patrimonio >= 0} class:neg={balances.patrimonio < 0}>{formatCOP(balances.patrimonio)}</span>
               </div>
-              <div class="wp-row">
-                <span class="wp-key">Préstamos por cobrar</span>
-                <span class="wp-val loan">{formatCOP(netWorth - (balance ?? 0))}</span>
-              </div>
+              {#if balances.savings !== 0}
+                <div class="wp-row"><span class="wp-key">Ahorros</span><span class="wp-val">{formatCOP(balances.savings)}</span></div>
+              {/if}
+              {#if balances.apps !== 0}
+                <div class="wp-row"><span class="wp-key">Cuentas digitales</span><span class="wp-val">{formatCOP(balances.apps)}</span></div>
+              {/if}
+              {#if balances.receivable !== 0}
+                <div class="wp-row"><span class="wp-key">Por cobrar</span><span class="wp-val">{formatCOP(balances.receivable)}</span></div>
+              {/if}
+              {#if balances.payable !== 0}
+                <div class="wp-row"><span class="wp-key">Deuda</span><span class="wp-val expense">{formatCOP(balances.payable)}</span></div>
+              {/if}
             </div>
             <div class="wp-divider"></div>
           {/if}
@@ -130,7 +150,7 @@
               </div>
               <div class="wp-row">
                 <span class="wp-key">Gastos</span>
-                <span class="wp-val expense">−{formatCOP(monthSummary.total_expenses)}</span>
+                <span class="wp-val expense">−{formatCOP(monthSummary.total_expense)}</span>
               </div>
             </div>
           {/if}
@@ -141,16 +161,16 @@
             <div class="wp-section">
               <div class="wp-label">Último registro</div>
               <div class="wp-row">
-                <span class="wp-last-cat">{lastTx.category}</span>
+                <span class="wp-last-cat">{lastTxLabel}</span>
                 <span
                   class="wp-val"
-                  class:income={lastTx.type === "ingreso"}
-                  class:expense={lastTx.type === "gasto"}
+                  class:income={lastTx.type === "income"}
+                  class:expense={lastTx.type === "expense"}
                 >
-                  {lastTx.type === "ingreso" ? "+" : "−"}{formatCOP(lastTx.amount)}
+                  {lastTx.type === "income" ? "+" : lastTx.type === "expense" ? "−" : "→"}{formatCOP(lastTx.amount_cop)}
                 </span>
               </div>
-              <div class="wp-meta">{formatDate(lastTx.date)}{lastTx.note ? ` · ${lastTx.note}` : ""}</div>
+              <div class="wp-meta">{formatDate(lastTx.occurred_on)}{lastTx.note ? ` · ${lastTx.note}` : ""}</div>
             </div>
           {/if}
 
@@ -169,7 +189,7 @@
               <div class="wp-goal-meta">
                 <span>{formatCOP(nextGoal.current_amount)}</span>
                 <span class="wp-goal-pct">{nextGoal.percentage.toFixed(0)}%</span>
-                <span>{formatCOP(nextGoal.goal.target_amount)}</span>
+                <span>{formatCOP(nextGoal.goal.target_cop)}</span>
               </div>
             </div>
           {/if}
@@ -197,8 +217,8 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    background: #08080f;
-    border-right: 1px solid #1a1a2e;
+    background: var(--bg-base);
+    border-right: 1px solid var(--border);
     padding: 1rem 0 0;
   }
 
@@ -207,12 +227,12 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0 1rem 0.875rem;
-    border-bottom: 1px solid #1a1a2e;
+    border-bottom: 1px solid var(--border);
     margin-bottom: 0.5rem;
   }
 
   .brand-icon { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
-  .brand-name { font-size: 0.9rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.01em; }
+  .brand-name { font-size: 0.9rem; font-weight: 700; color: var(--text-primary); letter-spacing: 0.02em; text-transform: uppercase; }
 
   .sidebar-nav {
     flex: 1;
@@ -225,22 +245,28 @@
   .nav-item {
     display: block;
     padding: 0.5rem 0.75rem;
-    border-radius: 6px;
+    border-radius: var(--radius);
+    border-left: 2px solid transparent;
     font-size: 0.85rem;
     font-weight: 500;
     color: var(--text-secondary);
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
     text-decoration: none;
   }
-  .nav-item:hover  { background: #1a1a2e; color: var(--text-primary); }
-  .nav-item.active { background: color-mix(in srgb, var(--accent) 15%, #1a1a2e); color: var(--accent); }
+  .nav-item:hover  { background: var(--bg-elevated); color: var(--text-primary); }
+  .nav-item.active {
+    background: var(--bg-elevated);
+    border-left-color: var(--accent);
+    color: var(--accent);
+  }
+  .nav-item.active::before { content: "› "; }
 
   /* ═══════════════════════════════════════
      WIDGET
   ═══════════════════════════════════════ */
   .widget {
     flex-shrink: 0;
-    border-top: 1px solid #1a1a2e;
+    border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
   }
@@ -248,15 +274,21 @@
   /* Toggle button (always visible) */
   .widget-toggle {
     display: flex;
-    align-items: center;
-    gap: 0.4rem;
+    flex-direction: column;
+    gap: 0.15rem;
     padding: 0.65rem 1rem;
     width: 100%;
     text-align: left;
     transition: background 0.15s;
     cursor: pointer;
   }
-  .widget-toggle:hover { background: #0e0e1a; }
+  .widget-toggle:hover { background: var(--bg-elevated); }
+
+  .widget-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
 
   .widget-label {
     font-size: 0.65rem;
@@ -271,7 +303,7 @@
     flex: 1;
     font-size: 0.88rem;
     font-weight: 700;
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
     color: var(--text-secondary);
     text-align: right;
     overflow: hidden;
@@ -280,6 +312,10 @@
   }
   .widget-balance.pos { color: var(--success); }
   .widget-balance.neg { color: var(--danger); }
+
+  .widget-row-sub { opacity: 0.7; }
+  .widget-label-sub   { font-size: 0.6rem; }
+  .widget-balance-sub { font-size: 0.76rem; font-weight: 600; }
 
   .widget-chevron {
     flex-shrink: 0;
@@ -295,13 +331,13 @@
     display: flex;
     flex-direction: column;
     padding: 0 1rem 0.75rem;
-    animation: slideUp 0.18s ease;
+    animation: fadeIn 0.15s ease;
     overflow: hidden;
   }
 
-  @keyframes slideUp {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
 
   .wp-section { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.35rem 0; }
@@ -315,7 +351,7 @@
     margin-bottom: 0.1rem;
   }
 
-  .wp-divider { height: 1px; background: #1a1a2e; margin: 0.25rem 0; }
+  .wp-divider { height: 1px; background: var(--border); margin: 0.25rem 0; }
 
   .wp-row {
     display: flex;
@@ -333,7 +369,7 @@
   .wp-val {
     font-size: 0.78rem;
     font-weight: 600;
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
     color: var(--text-secondary);
     text-align: right;
     overflow: hidden;
@@ -342,7 +378,6 @@
   }
   .wp-val.income  { color: var(--success); }
   .wp-val.expense { color: var(--danger); }
-  .wp-val.loan    { color: var(--accent); }
   .wp-val.pos     { color: var(--success); }
   .wp-val.neg     { color: var(--danger); }
 
@@ -376,9 +411,8 @@
   }
 
   .wp-progress-track {
-    height: 4px;
-    background: #1a1a2e;
-    border-radius: 999px;
+    height: 3px;
+    background: var(--border);
     overflow: hidden;
     margin: 0.25rem 0;
   }
@@ -386,8 +420,7 @@
   .wp-progress-fill {
     height: 100%;
     background: var(--accent);
-    border-radius: 999px;
-    transition: width 0.3s ease;
+    transition: width 0.2s ease;
   }
 
   .wp-goal-meta {
@@ -395,7 +428,7 @@
     justify-content: space-between;
     font-size: 0.65rem;
     color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
   }
 
   .wp-goal-pct {

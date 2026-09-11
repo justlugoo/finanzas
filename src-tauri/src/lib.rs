@@ -8,13 +8,14 @@ use tauri::{
 };
 use state::DbState;
 
-mod error;
-mod db;
-mod state;
-mod utils;
-mod models;
-mod repositories;
-mod services;
+pub mod error;
+pub mod db;
+pub mod state;
+pub mod utils;
+pub mod models;
+pub mod repositories;
+pub mod services;
+pub mod migrations;
 pub mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -203,6 +204,55 @@ pub fn run() {
             commands::fillups::fillup_create,
             commands::fillups::fillups_list,
             commands::fillups::vehicle_fuel_status,
+            // ---- v2 (docs/schema-v2.md) — operan sobre entries/accounts/categories/
+            // goals/loans/vehicles nuevos. Requieren haber corrido migrate_001_schema_v2. ----
+            commands::meta_payments::meta_add_payment,
+            commands::fuel_v2::vehicle_reset_fuel_level,
+            commands::fuel_v2::fillup_create_v2,
+            commands::fuel_v2::fillup_create_with_expense_v2,
+            commands::fuel_v2::fillups_list_v2,
+            commands::fuel_v2::vehicle_fuel_status_v2,
+            commands::fuel_v2::trip_register_v2,
+            commands::categories::category_list,
+            commands::categories::category_create,
+            commands::categories::category_update,
+            commands::categories::category_delete,
+            commands::budgets_v2::budget_list_with_categories,
+            commands::budgets_v2::budget_set_monthly,
+            commands::budgets_v2::budget_set_override,
+            commands::entries_v2::entry_create,
+            commands::entries_v2::entry_list,
+            commands::entries_v2::entry_get,
+            commands::entries_v2::entry_update,
+            commands::entries_v2::entry_delete,
+            commands::entries_v2::entry_delete_bulk,
+            commands::entries_v2::get_account_balances,
+            commands::entries_v2::get_period_summary_v2,
+            commands::entries_v2::get_category_progress_v2,
+            commands::entries_v2::get_month_comparison_v2,
+            commands::entries_v2::entry_export_csv,
+            commands::goals_v2::goal_list_v2,
+            commands::goals_v2::goal_create_v2,
+            commands::goals_v2::goal_update_v2,
+            commands::goals_v2::goal_delete_v2,
+            commands::goals_v2::goal_get_detail_v2,
+            commands::goals_v2::goal_create_debt_v2,
+            commands::loans_v2::loan_create_v2,
+            commands::loans_v2::loan_list_v2,
+            commands::loans_v2::loan_get_v2,
+            commands::loans_v2::loan_update_v2,
+            commands::loans_v2::loan_delete_v2,
+            commands::loans_v2::loans_total_pending_v2,
+            commands::metas_v2::metas_list_v2,
+            commands::vehicles_v2::vehicle_list_v2,
+            commands::vehicles_v2::vehicle_create_v2,
+            commands::vehicles_v2::vehicle_update_v2,
+            commands::vehicles_v2::vehicle_delete_v2,
+            commands::routes_v2::route_list_v2,
+            commands::routes_v2::route_save_v2,
+            commands::routes_v2::route_delete_v2,
+            commands::system_v2::factory_reset_v2,
+            commands::accounts::account_list,
         ])
         .run(tauri::generate_context!())
         .expect("error running Finanzas");

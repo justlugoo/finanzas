@@ -1,32 +1,90 @@
 <script lang="ts">
-  import { transactionApi, vehicleApi, fillupApi } from "$lib/api";
-  import type { CurrentBalance, PeriodSummary, CategoryProgress, MonthComparison, TransactionPage, VehicleFuelStatus } from "$lib/types";
+  import { entryApi, vehicleApi, fillupApi, categoryApi, metaApi } from "$lib/api";
+  import type { AccountBalances, PeriodSummaryV2, CategoryProgressV2, MonthComparisonV2, PeriodV2, MetaV2 } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
-  import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE } from "$lib/constants";
+  import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE, mlToGallons, metersToKm } from "$lib/constants";
 
-  type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
+  type PeriodKey = "Day" | "Week" | "Month" | "Year" | "All";
 
   const PERIOD_LABELS: Record<PeriodKey, string> = {
-    Daily: "Diario",
-    Weekly: "Semanal",
-    Monthly: "Mensual",
-    Yearly: "Anual",
+    All: "Total", Year: "Anual", Month: "Mensual", Week: "Semanal", Day: "Diario",
   };
 
-  let activePeriod = $state<PeriodKey>("Monthly");
-  let globalBal    = $state<CurrentBalance | null>(null);
-  let summary      = $state<PeriodSummary | null>(null);
-  let categories   = $state<CategoryProgress[]>([]);
-  let recent       = $state<{ id: number; date: string; type: string; category: string; amount: number }[]>([]);
-  let comparison   = $state<MonthComparison | null>(null);
+  function toISODate(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  // Lunes de la semana de `d` — semana de calendario, no "los últimos 7 días"
+  // (mismo criterio que Historial: si hoy es miércoles, arranca el lunes de
+  // ESTA semana, no hace 7 días).
+  function mondayOf(d: Date): Date {
+    const day = d.getDay(); // 0 = domingo … 6 = sábado
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() + diffToMonday);
+    return monday;
+  }
+
+  function periodValue(key: PeriodKey): PeriodV2 {
+    const now = new Date();
+    const end = toISODate(now);
+    switch (key) {
+      case "Day":   return { type: "Custom", value: { start: end, end } };
+      case "Week":  return { type: "Custom", value: { start: toISODate(mondayOf(now)), end } };
+      case "Month": return { type: "Month", value: { year: now.getFullYear(), month: now.getMonth() + 1 } };
+      case "Year":  return { type: "Year", value: { year: now.getFullYear() } };
+      case "All":   return { type: "Custom", value: { start: "1970-01-01", end } };
+    }
+  }
+
+  let activePeriod = $state<PeriodKey>("Month");
+  let globalBal    = $state<AccountBalances | null>(null);
+  let summary      = $state<PeriodSummaryV2 | null>(null);
+  let categories   = $state<CategoryProgressV2[]>([]);
+  let recent       = $state<{ id: string; date: string; type: string; category: string; amount: number }[]>([]);
+  let comparison   = $state<MonthComparisonV2 | null>(null);
   let loading      = $state(true);
   let error        = $state<string | null>(null);
   let budgetView   = $state<"ingresos" | "gastos">("ingresos");
 
-  let incomeFixed    = $derived(categories.filter(c => c.kind === "ingreso" && c.is_fixed));
-  let incomeVariable = $derived(categories.filter(c => c.kind === "ingreso" && !c.is_fixed));
-  let expenseTracked = $derived(categories.filter(c => c.kind === "gasto"));
+  function daysInMonth(year: number, month: number): number {
+    return new Date(year, month, 0).getDate();
+  }
+
+  // El presupuesto guardado siempre es mensual — para Diario/Semanal/Anual
+  // se reescala a la porción correspondiente del mes actual. "Total" queda
+  // afuera a propósito: proyectar una meta mensual a "toda la vida de uso de
+  // la app" no tiene sentido (el usuario no espera acumular ese dinero en
+  // años), así que se muestra tal cual, sin multiplicar.
+  function budgetScaleFactor(period: PeriodKey): number {
+    const now = new Date();
+    const dim = daysInMonth(now.getFullYear(), now.getMonth() + 1);
+    switch (period) {
+      case "Day":   return 1 / dim;
+      case "Week":  return 7 / dim;
+      case "Month": return 1;
+      case "Year":  return 12;
+      case "All":   return 1;
+    }
+  }
+
+  let scaledCategories = $derived.by(() => {
+    const factor = budgetScaleFactor(activePeriod);
+    return categories.map(c => {
+      const target = Math.round(c.monthly_target * factor);
+      return {
+        ...c,
+        monthly_target: target,
+        percentage: target > 0 ? (c.current_amount / target) * 100 : 0,
+        is_over: target > 0 && c.current_amount > target,
+      };
+    });
+  });
+
+  let incomeFixed    = $derived(scaledCategories.filter(c => c.type === "income" && c.is_fixed));
+  let incomeVariable = $derived(scaledCategories.filter(c => c.type === "income" && !c.is_fixed));
+  let expenseTracked = $derived(scaledCategories.filter(c => c.type === "expense"));
 
   let incomeTotals = $derived.by(() => {
     const all = [...incomeFixed, ...incomeVariable];
@@ -60,18 +118,26 @@
 
       while (!cancelled) {
         try {
-          const p = { type: period };
-          const [sum, cats, page, cmp, bal] = await Promise.all([
-            transactionApi.getPeriodSummary(p),
-            transactionApi.getCategoryProgress(p),
-            transactionApi.list({ period: p, page_size: DASHBOARD_RECENT_SIZE }),
-            transactionApi.getMonthComparison(),
-            transactionApi.getBalance(),
+          const p = periodValue(period);
+          const [sum, cats, page, cmp, bal, cats2] = await Promise.all([
+            entryApi.getPeriodSummary(p),
+            entryApi.getCategoryProgress(p),
+            entryApi.list({ page_size: DASHBOARD_RECENT_SIZE }),
+            entryApi.getMonthComparison(),
+            entryApi.getAccountBalances(),
+            categoryApi.list(),
           ]);
           if (!cancelled) {
             summary    = sum;
             categories = cats;
-            recent     = page.transactions;
+            const catMap = new Map(cats2.map(c => [c.id, c.name]));
+            recent = page.entries.map(e => ({
+              id: e.id,
+              date: e.occurred_on,
+              type: e.type,
+              category: e.type === "transfer" ? "Transferencia" : (e.category_id && catMap.get(e.category_id)) ?? "Sin categoría",
+              amount: e.amount_cop,
+            }));
             comparison = cmp;
             globalBal  = bal;
             loading    = false;
@@ -94,8 +160,8 @@
   });
 
   // ── Estado del tanque ─────────────────────────────────────────────────────
-  let fuelStatuses          = $state<VehicleFuelStatus[]>([]);
-  let fuelLoading           = $state(true);
+  let fuelStatuses = $state<{ vehicle_name: string; level_gallons: number; autonomy_km: number; tank_percentage: number | null; overCapacity: boolean }[]>([]);
+  let fuelLoading  = $state(true);
   let hasVehiclesWithoutTank = $state(false);
 
   $effect(() => {
@@ -106,11 +172,23 @@
       fuelLoading = true;
       try {
         const vehicles = await vehicleApi.list();
-        const withTank = vehicles.filter(v => v.tank_liters != null);
+        const withTank = vehicles.filter(v => v.tank_capacity_ml != null);
         hasVehiclesWithoutTank = vehicles.length > 0 && withTank.length === 0;
         if (withTank.length === 0) { fuelStatuses = []; return; }
-        const statuses = await Promise.all(withTank.map(v => fillupApi.vehicleFuelStatus(v.id)));
-        if (!cancelled) fuelStatuses = statuses;
+        const levels = await Promise.all(withTank.map(v => fillupApi.vehicleFuelStatus(v.id)));
+        if (!cancelled) {
+          fuelStatuses = withTank.map((v, i) => ({
+            vehicle_name: v.name,
+            level_gallons: mlToGallons(levels[i].level_ml),
+            autonomy_km: metersToKm(levels[i].autonomy_m),
+            tank_percentage: levels[i].tank_percentage,
+            // `raw_level_ml` > `level_ml` (recortado a la capacidad) solo pasa
+            // cuando el nivel calculado se desbordó — señal persistente de que
+            // el rendimiento (km/gal) del vehículo probablemente está mal, no
+            // solo un aviso que se ve una vez al guardar el tanqueo.
+            overCapacity: levels[i].raw_level_ml > levels[i].level_ml,
+          }));
+        }
       } catch (e) {
         console.error("[dashboard] fuel status error:", e);
         if (!cancelled) fuelStatuses = [];
@@ -122,6 +200,37 @@
     loadFuel();
     return () => { cancelled = true; };
   });
+
+  // ── Objetivos (préstamos/deudas/ahorros pendientes) — sección al lado de
+  // Tanque, con la misma información que se ve en Metas ────────────────────
+  let metas        = $state<MetaV2[]>([]);
+  let metasLoading = $state(true);
+
+  $effect(() => {
+    const _v = txState.version;
+    let cancelled = false;
+
+    metaApi.list().then(ms => {
+      if (!cancelled) { metas = ms; metasLoading = false; }
+    }).catch(e => {
+      console.error("[dashboard] metas error:", e);
+      if (!cancelled) metasLoading = false;
+    });
+
+    return () => { cancelled = true; };
+  });
+
+  let pendingMetas = $derived(metas.filter(m => m.estado === "pendiente").slice(0, 3));
+
+  function metaPct(m: MetaV2): number {
+    return m.total > 0 ? Math.min((m.abonado / m.total) * 100, 100) : 0;
+  }
+
+  function metaPendingLabel(tipo: string): string {
+    if (tipo === "me_deben") return "por cobrar";
+    if (tipo === "debo")     return "por pagar";
+    return "por juntar";
+  }
 
   function formatCOP(n: number): string {
     return new Intl.NumberFormat("es-CO", {
@@ -140,7 +249,7 @@
   <header class="page-header">
     <div class="header-left">
       <h1>Resumen</h1>
-      {#if activePeriod === "Monthly"}
+      {#if activePeriod === "Month"}
         {@const now = new Date()}
         <span class="period-label">{MESES[now.getMonth()]} {now.getFullYear()}</span>
       {/if}
@@ -158,63 +267,67 @@
     <div class="banner error"><strong>Error</strong><pre>{error}</pre></div>
   {/if}
 
+  <!-- Barra de estado: los dos números que más importan, siempre visibles, fuera del scroll -->
+  <section class="status-bar">
+    <div
+      class="status-item"
+      class:balance-pos={!loading && (globalBal?.disponible ?? 0) >= 0}
+      class:balance-neg={!loading && (globalBal?.disponible ?? 0) < 0}
+    >
+      <span class="status-label">Disponible</span>
+      <span class="status-value">{loading ? "…" : formatCOP(globalBal?.disponible ?? 0)}</span>
+    </div>
+    <div class="status-divider"></div>
+    <div class="status-item">
+      <span class="status-label">Patrimonio</span>
+      <span class="status-value status-value-secondary">{loading ? "…" : formatCOP(globalBal?.patrimonio ?? 0)}</span>
+    </div>
+  </section>
+
   <div class="resumen-grid">
-    <!-- Left column: KPIs + comparison + budgets -->
+    <!-- Left column: período + presupuestos -->
     <div class="left-col">
       <ScrollArea class="left-scroll" scrollbar="thin">
-      <!-- Saldo global (cash_on_hand y patrimonio) -->
-      <section class="global-balance">
-        <div
-          class="kpi-card kpi-wide"
-          class:balance-pos={!loading && (globalBal?.cash_on_hand ?? 0) >= 0}
-          class:balance-neg={!loading && (globalBal?.cash_on_hand ?? 0) < 0}
-        >
-          <span class="kpi-label">Saldo en mano</span>
-          <span class="kpi-value">{loading ? "…" : formatCOP(globalBal?.cash_on_hand ?? 0)}</span>
-        </div>
-        {#if !loading && globalBal && globalBal.net_worth !== globalBal.cash_on_hand}
-          <div class="kpi-card kpi-wide">
-            <span class="kpi-label">Patrimonio <span class="kpi-sublabel">incl. préstamos por cobrar</span></span>
-            <span class="kpi-value kpi-secondary">{formatCOP(globalBal.net_worth)}</span>
-          </div>
-        {/if}
-      </section>
 
-      <section class="kpis">
-        <div class="kpi-card income">
-          <span class="kpi-label">Ingresos</span>
-          <span class="kpi-value">{loading ? "…" : formatCOP(summary?.total_income ?? 0)}</span>
-        </div>
-        <div class="kpi-card expenses">
-          <span class="kpi-label">Gastos</span>
-          <span class="kpi-value">{loading ? "…" : formatCOP(summary?.total_expenses ?? 0)}</span>
-        </div>
-        <div
-          class="kpi-card"
-          class:balance-pos={!loading && (summary?.balance ?? 0) >= 0}
-          class:balance-neg={!loading && (summary?.balance ?? 0) < 0}
-        >
-          <span class="kpi-label">Saldo período</span>
-          <span class="kpi-value">{loading ? "…" : formatCOP(summary?.balance ?? 0)}</span>
-        </div>
-      </section>
-
-      {#if !loading && comparison !== null && comparison.previous_month_total > 0}
-        {@const delta = comparison.delta_percentage}
-        {@const up = delta > 0}
-        <div class="comparison-row">
-          <span class="cmp-label">Gastos vs {prevMonthName}</span>
-          <span class="cmp-value" class:cmp-up={up} class:cmp-down={!up && delta < 0}>
-            {up ? "↑" : delta < 0 ? "↓" : "—"}
-            {Math.abs(delta).toFixed(1)}%
-            <span class="cmp-detail">
-              ({formatCOP(comparison.current_month_total)} vs {formatCOP(comparison.previous_month_total)})
+      <section class="period-panel">
+        <div class="section-header">
+          <h2>Este período</h2>
+          {#if !loading && comparison !== null && comparison.previous_month_total > 0}
+            {@const delta = comparison.delta_percentage}
+            {@const up = delta > 0}
+            <span
+              class="period-cmp"
+              class:cmp-up={up}
+              class:cmp-down={!up && delta < 0}
+              title="{formatCOP(comparison.current_month_total)} vs {formatCOP(comparison.previous_month_total)} el mes pasado"
+            >
+              Gastos vs {prevMonthName} {up ? "↑" : delta < 0 ? "↓" : "—"} {Math.abs(delta).toFixed(1)}%
             </span>
-          </span>
+          {:else if loading}
+            <span class="placeholder-inline"></span>
+          {/if}
         </div>
-      {:else if loading}
-        <div class="placeholder-row short"></div>
-      {/if}
+        <div class="period-stats">
+          <div class="period-stat">
+            <span class="period-stat-label">Ingresos</span>
+            <span class="period-stat-value income">{loading ? "…" : formatCOP(summary?.total_income ?? 0)}</span>
+          </div>
+          <div class="period-stat-div"></div>
+          <div class="period-stat" title="Incluye compras a crédito (deudas nuevas) desde el día en que se registran, aunque no hayas pagado nada todavía">
+            <span class="period-stat-label">Gastos</span>
+            <span class="period-stat-value expense">{loading ? "…" : formatCOP(summary?.total_expense ?? 0)}</span>
+          </div>
+          <div class="period-stat-div"></div>
+          <div
+            class="period-stat"
+            class:balance-pos={!loading && (summary?.balance ?? 0) >= 0}
+            class:balance-neg={!loading && (summary?.balance ?? 0) < 0}
+          >
+            <span class="period-stat-label">Saldo período</span>
+            <span class="period-stat-value">{loading ? "…" : formatCOP(summary?.balance ?? 0)}</span>
+          </div>
+        </div>
+      </section>
 
       <section class="section">
         <div class="section-header">
@@ -242,7 +355,7 @@
                   <li class="category-row">
                     <div class="cat-header">
                       <div class="cat-name-col">
-                        <span class="cat-name">{cat.category}</span>
+                        <span class="cat-name">{cat.category_name}</span>
                       </div>
                       <span class="cat-amounts">
                         <span class:income-over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
@@ -268,7 +381,7 @@
                   <li class="category-row">
                     <div class="cat-header">
                       <div class="cat-name-col">
-                        <span class="cat-name">{cat.category}</span>
+                        <span class="cat-name">{cat.category_name}</span>
                       </div>
                       <span class="cat-amounts">{formatCOP(cat.current_amount)}</span>
                     </div>
@@ -318,7 +431,7 @@
                 <li class="category-row">
                   <div class="cat-header">
                     <div class="cat-name-col">
-                      <span class="cat-name">{cat.category}</span>
+                      <span class="cat-name">{cat.category_name}</span>
                     </div>
                     <span class="cat-amounts">
                       <span class:over={cat.is_over}>{formatCOP(cat.current_amount)}</span>
@@ -370,7 +483,7 @@
         <h2>Últimas transacciones</h2>
         {#if loading}
           <div class="placeholder-list">
-            {#each [1,2,3,4,5] as _}<div class="placeholder-row short"></div>{/each}
+            {#each [1,2,3,4,5,6] as _}<div class="placeholder-row short"></div>{/each}
           </div>
         {:else if recent.length === 0}
           <p class="empty">Sin transacciones en este período.</p>
@@ -380,8 +493,8 @@
               <li class="tx-row">
                 <span class="tx-date">{formatDate(tx.date)}</span>
                 <span class="tx-category">{tx.category}</span>
-                <span class="tx-amount" class:income={tx.type === "ingreso"} class:expense={tx.type === "gasto"}>
-                  {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
+                <span class="tx-amount" class:income={tx.type === "income"} class:expense={tx.type === "expense"}>
+                  {tx.type === "income" ? "+" : tx.type === "expense" ? "−" : "→"}{formatCOP(tx.amount)}
                 </span>
               </li>
             {/each}
@@ -393,37 +506,32 @@
       <!-- ── Widget tanque ── -->
       {#if !fuelLoading && (fuelStatuses.length > 0 || hasVehiclesWithoutTank)}
         <section class="section">
-          <h2>⛽ Tanque</h2>
+          <h2>Tanque</h2>
 
           {#if fuelStatuses.length > 0}
             {#each fuelStatuses as fs}
-              {@const noData = fs.level_gallons < 0}
-              {@const pct    = fs.tank_percentage ?? 0}
-              <div class="fuel-card" class:fuel-card-warn={noData}>
+              {@const pct = fs.tank_percentage ?? 0}
+              <div class="fuel-card">
                 <div class="fuel-header">
                   <span class="fuel-name">{fs.vehicle_name}</span>
-                  {#if noData}
-                    <span class="fuel-badge-warn">sin datos</span>
-                  {:else if fs.tank_percentage != null}
+                  {#if fs.tank_percentage != null}
                     <span class="fuel-pct">{Math.round(pct)}%</span>
                   {/if}
                 </div>
 
                 <div class="bar-track fuel-track">
-                  <div
-                    class="fuel-bar"
-                    class:fuel-bar-low={!noData && pct < 20}
-                    style="width: {noData ? 0 : pct}%"
-                  ></div>
+                  <div class="fuel-bar" class:fuel-bar-low={pct < 20} style="width: {pct}%"></div>
                 </div>
 
-                {#if noData}
-                  <p class="fuel-no-data-hint">Registra tanqueos para ver el nivel</p>
-                {:else}
-                  <div class="fuel-meta">
-                    <span class="fuel-autonomy">~{Math.round(fs.autonomy_km)} km</span>
-                    <span class="fuel-gallons">{fs.level_gallons.toFixed(1)} gal</span>
-                  </div>
+                <div class="fuel-meta">
+                  <span class="fuel-autonomy">~{Math.round(fs.autonomy_km)} km</span>
+                  <span class="fuel-gallons">{fs.level_gallons.toFixed(1)} gal</span>
+                </div>
+
+                {#if fs.overCapacity}
+                  <p class="fuel-warning">
+                    ⚠ El nivel calculado superó la capacidad del tanque — revisa el rendimiento (km/gal) de este vehículo en <a href="/config">Configuración</a>.
+                  </p>
                 {/if}
               </div>
             {/each}
@@ -433,6 +541,29 @@
               <a href="/config">Configuración</a> para ver la autonomía.
             </p>
           {/if}
+        </section>
+      {/if}
+
+      <!-- ── Objetivos (préstamos, deudas, ahorros pendientes) ── -->
+      {#if !metasLoading && pendingMetas.length > 0}
+        <section class="section">
+          <h2>Objetivos</h2>
+          {#each pendingMetas as m (m.id)}
+            <div class="meta-mini">
+              <div class="meta-mini-top">
+                <span class="meta-mini-name">{m.nombre}</span>
+                <span class="meta-mini-pct">{metaPct(m).toFixed(0)}%</span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill" style="width: {metaPct(m)}%"></div>
+              </div>
+              <div class="meta-mini-amounts">
+                <span class="meta-mini-pending">{formatCOP(m.pendiente)}</span>
+                <span class="meta-mini-label">{metaPendingLabel(m.tipo)}</span>
+              </div>
+            </div>
+          {/each}
+          <a href="/metas" class="ver-todo">Ver todo →</a>
         </section>
       {/if}
 
@@ -497,7 +628,7 @@
   .resumen-grid {
     flex: 1;
     display: grid;
-    grid-template-columns: 1fr 300px;
+    grid-template-columns: 1fr 320px;
     gap: 0;
     overflow: hidden;
     min-height: 0;
@@ -529,6 +660,9 @@
   :global(.right-scroll) {
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
   }
 
   /* Period selector */
@@ -537,69 +671,122 @@
     gap: 3px;
     background: var(--bg-elevated);
     padding: 3px;
-    border-radius: 7px;
+    border-radius: var(--radius);
   }
 
   .period-selector button {
     padding: 0.28rem 0.65rem;
-    border-radius: 5px;
-    font-size: 0.78rem;
-    font-weight: 500;
+    border-radius: var(--radius);
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
     transition: background 0.15s, color 0.15s;
   }
 
   .period-selector button:hover { color: var(--text-primary); background: var(--bg-surface); }
-  .period-selector button.active { background: var(--accent); color: #fff; }
+  .period-selector button.active { background: var(--accent); color: var(--bg-base); }
 
-  /* KPIs */
-  .global-balance { display: flex; gap: 0.6rem; }
-  .kpi-wide { flex: 1; }
-  .kpi-sublabel { font-size: 0.6rem; font-weight: 400; color: var(--text-muted); text-transform: none; letter-spacing: 0; }
-  .kpi-secondary { color: var(--text-secondary) !important; font-size: 0.95rem; }
-  .global-balance .kpi-card.balance-pos .kpi-value { color: var(--accent); }
-  .global-balance .kpi-card.balance-neg .kpi-value { color: var(--danger); }
-
-  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
-
-  .kpi-card {
+  /* ── Barra de estado (Disponible / Patrimonio) ── */
+  .status-bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+    margin: 0.875rem 1rem 0;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 0.75rem 1rem;
+  }
+
+  .status-item {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.2rem;
+    padding: 0.8rem 1.25rem;
   }
 
-  .kpi-label { font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
-  .kpi-value { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+  .status-divider { width: 1px; background: var(--border); }
 
-  .kpi-card.income .kpi-value       { color: var(--success); }
-  .kpi-card.expenses .kpi-value     { color: var(--danger); }
-  .kpi-card.balance-pos .kpi-value  { color: var(--success); }
-  .kpi-card.balance-neg .kpi-value  { color: var(--danger); }
+  .status-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
 
-  /* Comparativa */
-  .comparison-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  .status-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
+
+  .status-item.balance-pos .status-value { color: var(--accent); }
+  .status-item.balance-neg .status-value { color: var(--danger); }
+  .status-value-secondary { color: var(--text-secondary) !important; }
+
+
+  /* ── Panel del período ── */
+  .period-panel {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 0.5rem 0.875rem;
-    font-size: 0.82rem;
+    padding: 0.875rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
   }
 
-  .cmp-label { color: var(--text-secondary); }
-  .cmp-value { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-muted); }
-  .cmp-value.cmp-up   { color: var(--danger); }
-  .cmp-value.cmp-down { color: var(--success); }
-  .cmp-detail { font-weight: 400; font-size: 0.75rem; color: var(--text-muted); margin-left: 0.35rem; }
+  .period-cmp {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+  .period-cmp.cmp-up   { color: var(--danger); }
+  .period-cmp.cmp-down { color: var(--success); }
+
+  .period-stats { display: flex; align-items: stretch; }
+  .period-stat-div { width: 1px; background: var(--border); margin: 0 0.75rem; }
+
+  .period-stat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  .period-stat-label { font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+  .period-stat-value { font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; font-family: var(--font-mono); color: var(--text-primary); }
+
+  .period-stat-value.income  { color: var(--success); }
+  .period-stat-value.expense { color: var(--danger); }
+  .period-stat.balance-pos .period-stat-value { color: var(--success); }
+  .period-stat.balance-neg .period-stat-value { color: var(--danger); }
+
+  .placeholder-inline {
+    display: inline-block;
+    width: 90px;
+    height: 12px;
+    background: var(--bg-elevated);
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
 
   /* Secciones */
-  .section { display: flex; flex-direction: column; gap: 0.6rem; }
+  .section {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.875rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
 
   h2 { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
 
@@ -627,21 +814,22 @@
     gap: 2px;
     background: var(--bg-elevated);
     padding: 2px;
-    border-radius: 6px;
+    border-radius: var(--radius);
   }
 
   .budget-toggle button {
     padding: 0.18rem 0.55rem;
-    border-radius: 4px;
+    border-radius: var(--radius);
     font-size: 0.68rem;
     font-weight: 600;
+    font-family: var(--font-mono);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--text-secondary);
     transition: background 0.15s, color 0.15s;
   }
 
-  .budget-toggle button.active { background: var(--accent); color: #fff; }
+  .budget-toggle button.active { background: var(--accent); color: var(--bg-base); }
   .budget-toggle button:not(.active):hover { color: var(--text-primary); }
 
   /* Grupo label */
@@ -673,14 +861,14 @@
   .cat-name-col { display: flex; flex-direction: column; gap: 0.12rem; min-width: 0; }
   .cat-name { font-size: 0.82rem; color: var(--text-primary); }
 
-  .cat-amounts { font-size: 0.78rem; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; flex-shrink: 0; color: var(--text-secondary); }
+  .cat-amounts { font-size: 0.78rem; font-variant-numeric: tabular-nums; font-family: var(--font-mono); text-align: right; white-space: nowrap; flex-shrink: 0; color: var(--text-secondary); }
   .cat-amounts .over { color: var(--danger); font-weight: 600; }
   .cat-amounts .income-over { color: var(--success); font-weight: 600; }
   .cat-target { color: var(--text-muted); }
 
   .progress-row { display: flex; align-items: center; gap: 0.4rem; }
-  .bar-track { flex: 1; height: 4px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
-  .bar-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.4s ease; min-width: 2px; }
+  .bar-track { flex: 1; height: 3px; background: var(--bg-elevated); overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); transition: width 0.3s ease; min-width: 2px; }
   .bar-fill.bar-over { background: var(--danger); }
   .bar-fill.bar-income-over { background: var(--success); }
 
@@ -705,7 +893,7 @@
 
   .totals-label { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em; color: var(--text-muted); text-transform: uppercase; }
 
-  .totals-amounts { font-size: 0.8rem; font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; white-space: nowrap; color: var(--text-secondary); }
+  .totals-amounts { font-size: 0.8rem; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-weight: 600; text-align: right; white-space: nowrap; color: var(--text-secondary); }
   .totals-amounts .over        { color: var(--danger); }
   .totals-amounts .income-over { color: var(--success); }
   .totals-target { color: var(--text-muted); font-weight: 400; }
@@ -716,10 +904,10 @@
   .tx-row { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 0.6rem; padding: 0.55rem 0.75rem; background: var(--bg-surface); }
   .tx-row:hover { background: var(--bg-elevated); }
 
-  .tx-date { font-size: 0.72rem; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tx-date { font-size: 0.72rem; color: var(--text-muted); font-variant-numeric: tabular-nums; font-family: var(--font-mono); white-space: nowrap; }
   .tx-category { font-size: 0.82rem; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .tx-amount { font-size: 0.82rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tx-amount { font-size: 0.82rem; font-weight: 600; font-variant-numeric: tabular-nums; font-family: var(--font-mono); white-space: nowrap; }
   .tx-amount.income  { color: var(--success); }
   .tx-amount.expense { color: var(--danger); }
 
@@ -734,8 +922,8 @@
 
   .ver-todo:hover { color: var(--accent-hover); }
 
-  /* ── Widget tanque ── */
-  .fuel-card {
+  /* ── Objetivos ── */
+  .meta-mini {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -745,9 +933,30 @@
     gap: 0.35rem;
   }
 
-  .fuel-card-warn {
-    border-color: color-mix(in srgb, #f59e0b 30%, transparent);
-    background: color-mix(in srgb, #f59e0b 4%, var(--bg-surface));
+  .meta-mini-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .meta-mini-name {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meta-mini-pct { font-size: 0.72rem; font-weight: 600; color: var(--accent); font-family: var(--font-mono); flex-shrink: 0; }
+
+  .meta-mini-amounts { display: flex; align-items: baseline; gap: 0.35rem; font-size: 0.75rem; }
+  .meta-mini-pending { font-weight: 600; color: var(--text-secondary); font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+  .meta-mini-label { color: var(--text-muted); }
+
+  /* ── Widget tanque ── */
+  .fuel-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
   .fuel-header {
@@ -769,19 +978,8 @@
   .fuel-pct {
     font-size: 0.72rem;
     font-weight: 700;
-    color: #f59e0b;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .fuel-badge-warn {
-    font-size: 0.65rem;
-    font-weight: 600;
-    color: #f59e0b;
-    background: color-mix(in srgb, #f59e0b 15%, transparent);
-    border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
-    border-radius: 999px;
-    padding: 0.1rem 0.4rem;
+    font-family: var(--font-mono);
+    color: var(--accent);
     white-space: nowrap;
     flex-shrink: 0;
   }
@@ -790,9 +988,8 @@
 
   .fuel-bar {
     height: 100%;
-    background: #f59e0b;
-    border-radius: 999px;
-    transition: width 0.4s ease;
+    background: var(--accent);
+    transition: width 0.3s ease;
     min-width: 2px;
   }
 
@@ -803,18 +1000,19 @@
     justify-content: space-between;
     align-items: center;
     font-size: 0.72rem;
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
   }
 
   .fuel-autonomy { color: var(--text-secondary); font-weight: 500; }
   .fuel-gallons  { color: var(--text-muted); }
 
-  .fuel-no-data-hint {
+  .fuel-warning {
     font-size: 0.7rem;
-    color: var(--text-muted);
-    font-style: italic;
+    color: var(--accent);
+    line-height: 1.4;
     margin: 0;
   }
+  .fuel-warning a { color: inherit; text-decoration: underline; }
 
   .fuel-setup-hint {
     font-size: 0.78rem;

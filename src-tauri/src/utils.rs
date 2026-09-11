@@ -1,5 +1,42 @@
 use chrono::{Local, Datelike, NaiveDate, Duration};
-use crate::models::Period;
+use crate::models::{Period, PeriodRange, PeriodV2};
+
+/// Conversiones de unidades para el esquema v2 — sección 2, principio 1 de
+/// schema-v2.md: "la conversión a galones y kilómetros ocurre en un único
+/// módulo de presentación". Todo lo demás usa metros/mililitros/COP enteros.
+pub const ML_PER_GALLON: f64 = 3785.411784;
+
+pub fn km_per_gallon_to_m_per_l(km_per_gallon: f64) -> i64 {
+    (km_per_gallon * 1_000_000.0 / ML_PER_GALLON).round() as i64
+}
+
+pub fn m_per_l_to_km_per_gallon(efficiency_m_per_l: i64) -> f64 {
+    efficiency_m_per_l as f64 * ML_PER_GALLON / 1_000_000.0
+}
+
+pub fn liters_to_ml(l: f64) -> i64 {
+    (l * 1000.0).round() as i64
+}
+
+pub fn gallons_to_ml(g: f64) -> i64 {
+    (g * ML_PER_GALLON).round() as i64
+}
+
+pub fn ml_to_liters(ml: i64) -> f64 {
+    ml as f64 / 1000.0
+}
+
+pub fn gallons_cost_to_ml(total_cop: i64, price_cop_per_gallon: i64) -> i64 {
+    (total_cop as f64 / price_cop_per_gallon as f64 * ML_PER_GALLON).round() as i64
+}
+
+pub fn km_to_m(km: f64) -> i64 {
+    (km * 1000.0).round() as i64
+}
+
+pub fn m_to_km(m: i64) -> f64 {
+    m as f64 / 1000.0
+}
 
 pub fn format_cop_simple(n: i64) -> String {
     let s = n.abs().to_string();
@@ -82,6 +119,34 @@ pub fn period_to_dates(period: &Period) -> (String, String) {
     (start.format("%Y-%m-%d").to_string(), end.format("%Y-%m-%d").to_string())
 }
 
+/// `Period` nuevo (sección 8 de schema-v2.md). Reemplaza `period_to_dates`
+/// + `scale_monthly`: siempre resuelve a un rango cerrado, y si el período
+/// pedido todavía no terminó, recorta `end` a hoy y marca `partial = true`
+/// — nunca compara un mes completo contra "lo que va del mes" sin decirlo.
+pub fn resolve_period_range(period: &PeriodV2) -> PeriodRange {
+    let today = Local::now().date_naive();
+    let (start, end) = match period {
+        PeriodV2::Month { year, month } => (
+            NaiveDate::from_ymd_opt(*year, *month, 1).unwrap(),
+            NaiveDate::from_ymd_opt(*year, *month, days_in_month(*year, *month)).unwrap(),
+        ),
+        PeriodV2::Year { year } => (
+            NaiveDate::from_ymd_opt(*year, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(*year, 12, 31).unwrap(),
+        ),
+        PeriodV2::Custom { start, end } => (
+            NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap_or(today),
+            NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap_or(today),
+        ),
+    };
+    let (end, partial) = if end > today { (today, true) } else { (end, false) };
+    PeriodRange {
+        start: start.format("%Y-%m-%d").to_string(),
+        end: end.format("%Y-%m-%d").to_string(),
+        partial,
+    }
+}
+
 pub fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -112,4 +177,55 @@ pub fn parse_csv_line(line: &str) -> Vec<String> {
 
 pub fn is_valid_date(s: &str) -> bool {
     s.len() == 10 && NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+}
+
+#[cfg(test)]
+mod period_v2_tests {
+    use super::*;
+
+    #[test]
+    fn mes_totalmente_pasado_no_es_parcial() {
+        let today = Local::now().date_naive();
+        // Un mes de hace un año siempre está completamente en el pasado.
+        let year = today.year() - 1;
+        let range = resolve_period_range(&PeriodV2::Month { year, month: 6 });
+        assert_eq!(range.start, format!("{year}-06-01"));
+        assert_eq!(range.end, format!("{year}-06-30"));
+        assert!(!range.partial);
+    }
+
+    #[test]
+    fn mes_actual_se_recorta_a_hoy_y_queda_parcial() {
+        let today = Local::now().date_naive();
+        let range = resolve_period_range(&PeriodV2::Month { year: today.year(), month: today.month() });
+        let last_day = NaiveDate::from_ymd_opt(today.year(), today.month(), days_in_month(today.year(), today.month())).unwrap();
+        if last_day > today {
+            assert_eq!(range.end, today.format("%Y-%m-%d").to_string());
+            assert!(range.partial);
+        } else {
+            assert!(!range.partial);
+        }
+    }
+
+    #[test]
+    fn custom_con_fin_futuro_se_recorta_y_queda_parcial() {
+        let today = Local::now().date_naive();
+        let future = today + Duration::days(30);
+        let range = resolve_period_range(&PeriodV2::Custom {
+            start: today.format("%Y-%m-%d").to_string(),
+            end: future.format("%Y-%m-%d").to_string(),
+        });
+        assert_eq!(range.end, today.format("%Y-%m-%d").to_string());
+        assert!(range.partial);
+    }
+
+    #[test]
+    fn año_completamente_pasado_no_es_parcial() {
+        let today = Local::now().date_naive();
+        let year = today.year() - 1;
+        let range = resolve_period_range(&PeriodV2::Year { year });
+        assert_eq!(range.start, format!("{year}-01-01"));
+        assert_eq!(range.end, format!("{year}-12-31"));
+        assert!(!range.partial);
+    }
 }

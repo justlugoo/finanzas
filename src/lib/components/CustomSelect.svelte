@@ -187,11 +187,9 @@
 
   .cs-menu {
     position: fixed;
-    background: #14141f;
+    background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
     z-index: 1000;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55);
     overflow-y: auto;
   }
 

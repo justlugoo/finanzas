@@ -3,7 +3,7 @@
   import ScrollArea from "$lib/components/ScrollArea.svelte";
 
   export interface PaymentItem {
-    id: number;
+    id: string;
     date: string;
     amount: number;
     note?: string | null;
@@ -143,28 +143,17 @@
     {#if items.length === 0}
       <p class="muted">Sin {itemsLabel.toLowerCase()} registrados aún.</p>
     {:else}
-      <ScrollArea orientation="horizontal" scrollbar="thin">
-        <table class="items-table">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              {#if showCategory}<th>Categoría</th>{/if}
-              <th class="right">Monto</th>
-              {#if showNote}<th>Nota</th>{/if}
-            </tr>
-          </thead>
-          <tbody>
-            {#each items as item (item.id)}
-              <tr>
-                <td>{item.date}</td>
-                {#if showCategory}<td>{item.category ?? "—"}</td>{/if}
-                <td class="right amount-cell">{formatCOP(item.amount)}</td>
-                {#if showNote}<td class="note-cell">{item.note ?? "—"}</td>{/if}
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </ScrollArea>
+      <div class="items-list">
+        {#each items as item (item.id)}
+          <div class="items-row">
+            <span class="items-date">{item.date}</span>
+            {#if showCategory}<span class="items-cat">{item.category ?? "—"}</span>{/if}
+            {#if showNote}<span class="items-note">{item.note ?? "—"}</span>{/if}
+            <span class="items-gap"></span>
+            <span class="items-amount">{formatCOP(item.amount)}</span>
+          </div>
+        {/each}
+      </div>
     {/if}
 
     {#if showPaymentForm}
@@ -251,24 +240,60 @@
 
   .detail-progress { margin-bottom: 0.25rem; }
   .progress-wrap { display: flex; align-items: center; gap: 0.5rem; }
-  .progress-bar  { flex: 1; height: 6px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
-  .progress-fill { height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.3s ease; }
+  .progress-bar  { flex: 1; height: 4px; background: var(--bg-elevated); overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
   .progress-fill.fill-done { background: var(--success); }
-  .pct { font-size: 0.72rem; color: var(--text-muted); min-width: 2.5rem; text-align: right; }
+  .pct { font-size: 0.72rem; color: var(--text-muted); min-width: 2.5rem; text-align: right; font-family: var(--font-mono); }
 
   .status-badge {
-    font-size: 0.65rem; font-weight: 600;
-    padding: 0.15rem 0.5rem; border-radius: 999px; white-space: nowrap;
+    font-size: 0.65rem; font-weight: 600; font-family: var(--font-mono);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 0.15rem 0.5rem; border: 1px solid var(--border); color: var(--text-secondary);
+    white-space: nowrap;
   }
+  /* Modificadores de tipo de meta (Metas los pasa vía subtitleClass) — mismo
+     mapeo semántico que tipoAccent() en la página: préstamo=success (vuelve
+     a mí), deuda=danger (pasivo), ahorro=accent (meta positiva). */
+  .status-badge.tipo-me_deben      { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, transparent); }
+  .status-badge.tipo-debo          { color: var(--danger);  border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+  .status-badge.tipo-quiero_juntar { color: var(--accent);  border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 
-  .items-table { width: 100%; font-size: 0.8rem; border-collapse: collapse; }
-  .items-table th,
-  .items-table td { padding: 0.4rem 0.5rem; text-align: left; border-bottom: 1px solid var(--border); }
-  .items-table th { color: var(--text-muted); font-weight: 500; font-size: 0.72rem; }
-  .items-table td { color: var(--text-secondary); }
-  .right       { text-align: right; }
-  .amount-cell { color: var(--text-primary); font-weight: 500; }
-  .note-cell   { color: var(--text-muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .items-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .items-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.65rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8rem;
+    transition: background 0.1s;
+  }
+  .items-list .items-row:last-child { border-bottom: none; }
+  .items-row:hover { background: var(--bg-elevated); }
+  .items-date { font-family: var(--font-mono); color: var(--text-secondary); white-space: nowrap; }
+  .items-cat  { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+  .items-note {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .items-gap { flex: 1; min-width: 0.5rem; }
+  .items-amount {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
 
   .payment-form-wrap { border-top: 1px solid var(--border); padding-top: 0.75rem; margin-top: 0.5rem; }
   .payment-form-wrap h3 { margin-top: 0; }
@@ -279,38 +304,41 @@
   .action-group   { display: flex; gap: 0.5rem; }
   .btn-danger {
     padding: 0.45rem 1rem; background: transparent; color: var(--danger);
-    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
-    border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
-    transition: all 0.15s;
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.78rem; font-weight: 600; border-radius: var(--radius);
+    border: 1px solid var(--danger);
+    transition: background 0.15s, color 0.15s;
   }
-  .btn-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+  .btn-danger:hover { background: var(--danger); color: var(--bg-base); }
 
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
   label, .field-label { font-size: 0.78rem; font-weight: 500; color: var(--text-secondary); }
 
   input[type="text"] {
     -webkit-appearance: none; appearance: none;
-    background-color: #14141f; border: 1px solid #2a2a40;
-    border-radius: var(--radius); color: #e8e8f0; font: inherit;
+    background-color: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono);
     font-size: 0.9rem; padding: 0.5rem 0.75rem; outline: none;
     transition: border-color 0.15s; width: 100%;
   }
   input:focus { border-color: var(--accent); }
 
   .btn-primary {
-    padding: 0.45rem 1rem; background: var(--accent); color: #fff;
-    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
+    padding: 0.45rem 1rem; background: var(--accent); color: var(--bg-base);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.78rem; font-weight: 700; border-radius: var(--radius);
     transition: background 0.15s, opacity 0.15s;
   }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
   .btn-secondary {
-    padding: 0.45rem 1rem; background: var(--bg-elevated); color: var(--text-secondary);
-    font-size: 0.85rem; font-weight: 500; border-radius: var(--radius);
-    border: 1px solid var(--border); transition: background 0.15s;
+    padding: 0.45rem 1rem; background: transparent; color: var(--text-secondary);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.78rem; font-weight: 600; border-radius: var(--radius);
+    border: 1px solid var(--border); transition: border-color 0.15s, color 0.15s;
   }
-  .btn-secondary:hover { background: var(--bg-surface); }
+  .btn-secondary:hover { border-color: var(--text-secondary); color: var(--text-primary); }
 
   .banner { border-radius: var(--radius); padding: 0.65rem 1rem; font-size: 0.85rem; }
   .banner.error {

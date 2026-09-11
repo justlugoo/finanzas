@@ -1,16 +1,17 @@
 <script lang="ts">
-  import { metaApi, loanApi, goalApi } from "$lib/api";
-  import type { Meta } from "$lib/types";
+  import { metaApi, metaPaymentApi, loanApi, goalApi, categoryApi } from "$lib/api";
+  import type { Category, MetaV2 } from "$lib/types";
   import type { StatEntry, PaymentItem } from "$lib/components/PaymentModal.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import PaymentModal from "$lib/components/PaymentModal.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import { MESES_CORTO } from "$lib/constants";
 
-  let metas     = $state<Meta[]>([]);
+  let metas     = $state<MetaV2[]>([]);
   let loading   = $state(true);
   let pageError = $state<string | null>(null);
-  let detail    = $state<Meta | null>(null);
+  let detail    = $state<MetaV2 | null>(null);
 
   let filterTipo   = $state("todas");
   let filterEstado = $state("todos");
@@ -19,13 +20,25 @@
     filterTipo === "todas" ? metas : metas.filter(m => m.tipo === filterTipo)
   );
 
-  // Pendientes por sub-sección (orden fijo: Deudas → Préstamos → Ahorros)
-  let pendingDebts   = $derived(tipoFiltered.filter(m => m.tipo === "debo"          && m.estado === "pendiente"));
-  let pendingLoans   = $derived(tipoFiltered.filter(m => m.tipo === "me_deben"      && m.estado === "pendiente"));
-  let pendingSavings = $derived(tipoFiltered.filter(m => m.tipo === "quiero_juntar" && m.estado === "pendiente"));
+  // Pendientes por sub-sección (orden fijo: Deudas → Préstamos → Ahorros).
+  // Dentro de cada sub-sección, las más avanzadas van primero — ver el
+  // progreso cercano a completarse arriba es, en sí mismo, un empujón para
+  // terminarlas, sin necesidad de copy motivacional de más.
+  let byProgressDesc = (a: MetaV2, b: MetaV2) => pct(b) - pct(a);
+  let pendingDebts   = $derived(tipoFiltered.filter(m => m.tipo === "debo"          && m.estado === "pendiente").sort(byProgressDesc));
+  let pendingLoans   = $derived(tipoFiltered.filter(m => m.tipo === "me_deben"      && m.estado === "pendiente").sort(byProgressDesc));
+  let pendingSavings = $derived(tipoFiltered.filter(m => m.tipo === "quiero_juntar" && m.estado === "pendiente").sort(byProgressDesc));
   let doneMetas      = $derived(tipoFiltered.filter(m => m.estado === "completado"));
 
   let allPendingCount = $derived(pendingDebts.length + pendingLoans.length + pendingSavings.length);
+
+  // ── Abonado este mes — único dato "de ánimo" del header, y solo aparece
+  // cuando hay algo real que mostrar (silencio es mejor que un "$0" deprimente). ──
+  let thisMonthPaid = $derived.by(() => {
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return metas.reduce((sum, m) => sum + m.abonos.filter(a => a.date.startsWith(ym)).reduce((s, a) => s + a.amount, 0), 0);
+  });
 
   // Visibilidad de secciones principales según filtro de estado
   let showPending = $derived(filterEstado !== "completado");
@@ -42,7 +55,7 @@
     }).format(n);
   }
 
-  function pct(m: Meta): number {
+  function pct(m: MetaV2): number {
     return m.total > 0 ? Math.min((m.abonado / m.total) * 100, 100) : 0;
   }
 
@@ -59,14 +72,16 @@
     return "por juntar";
   }
 
+  // Reutiliza solo la paleta funcional del sistema (éxito/peligro/acento) —
+  // nada de colores decorativos extra por tipo de meta.
   function tipoAccent(tipo: string): string {
-    if (tipo === "me_deben")      return "#8e8abd";   /* lavanda apagada  */
-    if (tipo === "debo")          return "#a99060";   /* ámbar cálido     */
-    if (tipo === "quiero_juntar") return "#5fa386";   /* salvia/teal suave */
-    return "#8e8abd";
+    if (tipo === "me_deben")      return "var(--success)"; /* por cobrar, vuelve a mí */
+    if (tipo === "debo")          return "var(--danger)";  /* pasivo, lo debo */
+    if (tipo === "quiero_juntar") return "var(--accent)";  /* meta positiva */
+    return "var(--text-secondary)";
   }
 
-  function buildStats(m: Meta): StatEntry[] {
+  function buildStats(m: MetaV2): StatEntry[] {
     const done  = m.estado === "completado";
     const stats: StatEntry[] = [];
     if (m.tipo === "me_deben") {
@@ -82,15 +97,56 @@
       stats.push({ label: "Ahorrado", value: formatCOP(m.abonado),   colorClass: "success" });
       stats.push({ label: "Restante", value: formatCOP(m.pendiente), colorClass: done ? undefined : "accent" });
     }
-    if (m.fecha) stats.push({ label: "Fecha", value: m.fecha });
+    if (m.fecha) stats.push({ label: "Fecha", value: formatDateShort(m.fecha) });
     if (m.cuotas !== null && m.cuotas > 0 && m.tipo === "debo") {
       stats.push({ label: "Cuotas", value: `${m.cuotas} cuotas` });
+    }
+    const streak = monthStreak(m);
+    if (!done && streak >= 2) {
+      stats.push({ label: "Constancia", value: `${streak} meses seguidos`, colorClass: "accent" });
     }
     return stats;
   }
 
-  function toPaymentItems(m: Meta): PaymentItem[] {
+  function toPaymentItems(m: MetaV2): PaymentItem[] {
     return m.abonos.map(a => ({ id: a.id, date: a.date, amount: a.amount }));
+  }
+
+  function formatDateShort(iso: string): string {
+    const [, m, d] = iso.split("-");
+    return `${parseInt(d)} ${MESES_CORTO[parseInt(m) - 1]}`;
+  }
+
+  // Días hasta una fecha meta (solo aplica a "quiero_juntar" — para deudas
+  // y préstamos `fecha` es el origen, no un objetivo a futuro).
+  function daysUntil(iso: string): number {
+    const target = new Date(iso + "T00:00:00");
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    return Math.round((target.getTime() - now.getTime()) / 86_400_000);
+  }
+
+  // Meses consecutivos con al menos un abono, contando hacia atrás desde el
+  // mes actual (o desde el último mes con abono, si este mes aún no tiene
+  // uno — así un día 1 de mes sin abonar todavía no rompe la racha visible).
+  function monthStreak(m: MetaV2): number {
+    if (m.abonos.length === 0) return 0;
+    const months = new Set(m.abonos.map(a => a.date.slice(0, 7)));
+    const now = new Date();
+    let y = now.getFullYear();
+    let mo = now.getMonth() + 1;
+    const key = () => `${y}-${String(mo).padStart(2, "0")}`;
+    if (!months.has(key())) {
+      mo -= 1;
+      if (mo === 0) { mo = 12; y -= 1; }
+    }
+    let streak = 0;
+    while (months.has(key())) {
+      streak++;
+      mo -= 1;
+      if (mo === 0) { mo = 12; y -= 1; }
+    }
+    return streak;
   }
 
   // ── Crear ─────────────────────────────────────────────────────────────────
@@ -100,16 +156,33 @@
     { value: "quiero_juntar", label: "Ahorros"   },
   ];
 
-  let createOpen  = $state(false);
-  let creating    = $state(false);
-  let cTipo       = $state("");
-  let cNombre     = $state("");
-  let cAmountRaw  = $state("");
-  let cDate       = $state("");
-  let cTargetDate = $state("");
-  let cNota       = $state("");
-  let cError      = $state<string | null>(null);
-  let cAmount     = $derived(parseInt(cAmountRaw.replace(/\D/g, ""), 10) || 0);
+  let createOpen   = $state(false);
+  let creating     = $state(false);
+  let cTipo        = $state("");
+  let cNombre      = $state("");
+  let cAmountRaw   = $state("");
+  let cDate        = $state("");
+  let cTargetDate  = $state("");
+  let cNota        = $state("");
+  let cCategoryId  = $state("");
+  let cCuotasRaw   = $state("");
+  let cError       = $state<string | null>(null);
+  let cAmount      = $derived(parseInt(cAmountRaw.replace(/\D/g, ""), 10) || 0);
+  let cCuotas      = $derived(parseInt(cCuotasRaw.replace(/\D/g, ""), 10) || 0);
+
+  // Categorías de gasto — una deuda ("comprar a crédito") necesita una
+  // categoría real, igual que cualquier otro gasto (sección 4 de schema-v2.md).
+  let expenseCategories = $state<Category[]>([]);
+  let _catsLoaded = false;
+  async function loadExpenseCategories() {
+    if (_catsLoaded) return;
+    _catsLoaded = true;
+    try {
+      expenseCategories = await categoryApi.list("expense");
+    } catch (e) {
+      console.error("[metas] load categories:", e);
+    }
+  }
 
   function handleAmountInput(
     e: Event & { currentTarget: HTMLInputElement },
@@ -128,7 +201,8 @@
   }
 
   function resetCreate() {
-    cTipo = ""; cNombre = ""; cAmountRaw = ""; cDate = ""; cTargetDate = ""; cNota = ""; cError = null;
+    cTipo = ""; cNombre = ""; cAmountRaw = ""; cDate = ""; cTargetDate = ""; cNota = "";
+    cCategoryId = ""; cCuotasRaw = ""; cError = null;
   }
 
   async function handleCreate(ev: Event) {
@@ -137,21 +211,34 @@
     if (!cNombre.trim()) { cError = "El nombre no puede estar vacío."; return; }
     if (cAmount <= 0)    { cError = "El monto debe ser mayor que 0."; return; }
     if (cTipo === "me_deben" && !cDate) { cError = "La fecha del préstamo es requerida."; return; }
+    if (cTipo === "debo") {
+      if (!cDate)        { cError = "La fecha de la deuda es requerida."; return; }
+      if (!cCategoryId)  { cError = "Selecciona una categoría."; return; }
+    }
     creating = true; cError = null;
     try {
       if (cTipo === "me_deben") {
         await loanApi.create({
           person_name: cNombre.trim(),
-          amount: cAmount,
-          date: cDate,
+          principal_cop: cAmount,
+          lent_on: cDate,
+          note: cNota.trim() || null,
+        });
+      } else if (cTipo === "debo") {
+        await goalApi.createDebt({
+          name: cNombre.trim(),
+          target_cop: cAmount,
+          occurred_on: cDate,
+          category_id: cCategoryId,
+          installments: cCuotas > 0 ? cCuotas : null,
           note: cNota.trim() || null,
         });
       } else {
         await goalApi.create({
           name: cNombre.trim(),
-          target_amount: cAmount,
+          target_cop: cAmount,
           target_date: cTargetDate || null,
-          status: "activo",
+          type: "saving",
         });
       }
       await loadMetas();
@@ -181,23 +268,19 @@
   $effect(() => { loadMetas(); });
 
   // ── Abono ─────────────────────────────────────────────────────────────────
+  // Un solo camino para las tres clases de meta — el frontend ya no decide
+  // si eso es un ingreso o un gasto (paso 6, sección 12 de schema-v2.md).
   async function handleAddPayment(amount: number, date: string) {
     if (!detail) return;
     const metaId = detail.id;
-    const [prefix, rawId] = metaId.split(":");
-    const numId = parseInt(rawId, 10);
-    if (prefix === "loan") {
-      await loanApi.addPayment({ loan_id: numId, amount, date });
-    } else {
-      await goalApi.addContribution(numId, amount, date);
-    }
+    await metaPaymentApi.addPayment({ meta_id: metaId, amount_cop: amount, occurred_on: date });
     await loadMetas();
     detail = metas.find(m => m.id === metaId) ?? null;
   }
 
   // ── Editar (todos los tipos) ──────────────────────────────────────────────
   let editOpen    = $state(false);
-  let editTarget  = $state<Meta | null>(null);
+  let editTarget  = $state<MetaV2 | null>(null);
   let editing     = $state(false);
   let eName       = $state("");
   let eAmountRaw  = $state("");
@@ -221,7 +304,7 @@
                                       "Monto objetivo"
   );
 
-  function openEdit(m: Meta) {
+  function openEdit(m: MetaV2) {
     detail      = null;
     eName       = m.nombre;
     eAmountRaw  = String(m.total);
@@ -238,15 +321,16 @@
     if (eAmount <= 0)  { eError = "El monto debe ser mayor que 0."; return; }
     editing = true; eError = null;
     const [prefix, rawId] = editTarget.id.split(":");
-    const numId = parseInt(rawId, 10);
     try {
       if (prefix === "loan") {
-        await loanApi.update(numId, { person_name: eName.trim(), amount: eAmount });
+        await loanApi.update(rawId, eName.trim(), eAmount);
       } else {
-        await goalApi.update(numId, {
+        await goalApi.update(rawId, {
           name: eName.trim(),
-          target_amount: eAmount,
+          target_cop: eAmount,
           target_date: editTarget.tipo === "quiero_juntar" ? (eTargetDate || null) : null,
+          type: editTarget.tipo === "debo" ? "debt" : "saving",
+          installments: editTarget.cuotas,
         });
       }
       await loadMetas();
@@ -262,11 +346,11 @@
 
   // ── Eliminar ──────────────────────────────────────────────────────────────
   let deleteOpen   = $state(false);
-  let deleteTarget = $state<Meta | null>(null);
+  let deleteTarget = $state<MetaV2 | null>(null);
   let deleting     = $state(false);
   let deleteError  = $state<string | null>(null);
 
-  function openDelete(m: Meta) {
+  function openDelete(m: MetaV2) {
     detail       = null;
     deleteTarget = m;
     deleteError  = null;
@@ -277,12 +361,11 @@
     if (!deleteTarget) return;
     deleting = true; deleteError = null;
     const [prefix, rawId] = deleteTarget.id.split(":");
-    const numId = parseInt(rawId, 10);
     try {
       if (prefix === "loan") {
-        await loanApi.remove(numId);
+        await loanApi.remove(rawId);
       } else {
-        await goalApi.remove(numId);
+        await goalApi.remove(rawId);
       }
       await loadMetas();
       deleteOpen = false;
@@ -298,8 +381,13 @@
 
 <main>
   <div class="header">
-    <h1>Metas</h1>
-    <button class="btn-primary" onclick={() => { createOpen = true; }}>+ Nueva</button>
+    <div class="header-title">
+      <h1>Metas</h1>
+      {#if thisMonthPaid > 0}
+        <span class="header-hint">{formatCOP(thisMonthPaid)} abonados este mes</span>
+      {/if}
+    </div>
+    <button class="btn-primary" onclick={() => { createOpen = true; loadExpenseCategories(); }}>+ Nueva</button>
   </div>
 
   {#if pageError}
@@ -344,7 +432,7 @@
           <div class="subsection-label subsection-debo">Deudas</div>
           <div class="meta-grid">
             {#each pendingDebts as m (m.id)}
-              {@render metaCard(m, false, false)}
+              {@render metaCard(m)}
             {/each}
           </div>
         {/if}
@@ -353,7 +441,7 @@
           <div class="subsection-label subsection-me_deben">Préstamos</div>
           <div class="meta-grid">
             {#each pendingLoans as m (m.id)}
-              {@render metaCard(m, false, false)}
+              {@render metaCard(m)}
             {/each}
           </div>
         {/if}
@@ -362,21 +450,21 @@
           <div class="subsection-label subsection-quiero_juntar">Ahorros</div>
           <div class="meta-grid">
             {#each pendingSavings as m (m.id)}
-              {@render metaCard(m, false, false)}
+              {@render metaCard(m)}
             {/each}
           </div>
         {/if}
       {/if}
 
-      <!-- ── Sección COMPLETADAS ── -->
+      <!-- ── Sección LOGROS ── -->
       {#if showDone && doneMetas.length > 0}
         {#if showPending && allPendingCount > 0}
           <div class="section-divider"></div>
         {/if}
-        <div class="section-label secondary">Completadas</div>
-        <div class="meta-grid dimmed">
+        <div class="section-label secondary">Logros</div>
+        <div class="meta-grid">
           {#each doneMetas as m (m.id)}
-            {@render metaCard(m, true, true)}
+            {@render metaCard(m)}
           {/each}
         </div>
       {/if}
@@ -385,56 +473,62 @@
   {/if}
 </main>
 
-{#snippet metaCard(m: Meta, dimmed: boolean, showBadge: boolean)}
+{#snippet metaCard(m: MetaV2)}
+  {@const done = m.estado === "completado"}
+  {@const streak = done ? 0 : monthStreak(m)}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="meta-card" class:dimmed onclick={() => { detail = m; }}>
+  <div class="meta-card" class:done onclick={() => { detail = m; }}>
     <div class="card-top">
       <span class="meta-name">{m.nombre}</span>
-      {#if showBadge}
-        <span class="tipo-badge tipo-{m.tipo}">{tipoLabel(m.tipo)}</span>
+      {#if done}
+        <span class="done-check" title="Completado">✓</span>
       {/if}
     </div>
 
-    <div class="pending-amount">
-      <span class="pending-value" style="color: {tipoAccent(m.tipo)}">{formatCOP(m.pendiente)}</span>
-      <span class="pending-label">{pendingLabel(m.tipo)}</span>
-    </div>
-
-    <div class="progress-wrap">
-      <div class="progress-bar">
-        <div
-          class="progress-fill"
-          style="width: {pct(m)}%; background: {m.estado === 'completado' ? 'var(--success)' : tipoAccent(m.tipo)}"
-        ></div>
+    {#if done}
+      <div class="done-summary">
+        <span class="done-total">{formatCOP(m.total)}</span>
+        <span class="done-label">{tipoLabel(m.tipo)}{m.fecha ? ` · ${formatDateShort(m.fecha)}` : ""}</span>
       </div>
-      <span class="pct-text">{pct(m).toFixed(0)}%</span>
-    </div>
+    {:else}
+      <div class="pending-amount">
+        <span class="pending-value" style="color: {tipoAccent(m.tipo)}">{formatCOP(m.pendiente)}</span>
+        <span class="pending-label">{pendingLabel(m.tipo)}</span>
+      </div>
 
-    <div class="amounts">
-      <span class="paid-label">Abonado</span>
-      <span class="paid-value">{formatCOP(m.abonado)}</span>
-      <span class="sep">/</span>
-      <span class="total-value">{formatCOP(m.total)}</span>
-    </div>
+      <div class="progress-wrap">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: {pct(m)}%; background: {tipoAccent(m.tipo)}"></div>
+        </div>
+        <span class="pct-text">{pct(m).toFixed(0)}%</span>
+      </div>
 
-    {#if m.cuotas !== null && m.cuotas > 0 && m.tipo === "debo"}
-      <div class="cuotas-hint">≈ {formatCOP(Math.ceil(m.total / m.cuotas))}/mes · {m.cuotas} cuotas</div>
-    {/if}
+      <div class="amounts">
+        <span class="paid-label">Abonado</span>
+        <span class="paid-value">{formatCOP(m.abonado)}</span>
+        <span class="sep">/</span>
+        <span class="total-value">{formatCOP(m.total)}</span>
+        {#if streak >= 2}
+          <span class="streak-badge">{streak} meses seguidos</span>
+        {/if}
+      </div>
 
-    {#if m.tipo === "quiero_juntar" && m.on_track === false && m.estado !== "completado"}
-      <span class="atrasado-badge">Atrasado</span>
-    {/if}
-    {#if m.tipo === "quiero_juntar" && m.monthly_required !== null}
-      <div class="muted-hint">≈ {formatCOP(m.monthly_required)}/mes</div>
-    {/if}
-    {#if m.tipo === "quiero_juntar" && m.on_track === false && m.projected_completion_date}
-      <div class="muted-hint">Estimado: {m.projected_completion_date}</div>
-    {/if}
+      {#if m.cuotas !== null && m.cuotas > 0 && m.tipo === "debo"}
+        <div class="cuotas-hint">≈ {formatCOP(Math.ceil(m.total / m.cuotas))}/mes · {m.cuotas} cuotas</div>
+      {/if}
 
-    <div class="card-footer">
-      <span class="meta-date">{m.fecha ?? "Sin fecha"}</span>
-    </div>
+      <div class="card-footer">
+        {#if m.tipo === "quiero_juntar" && m.fecha}
+          {@const d = daysUntil(m.fecha)}
+          <span class="meta-date" class:overdue={d < 0}>
+            {d > 0 ? `Faltan ${d} día${d !== 1 ? "s" : ""}` : d === 0 ? "Es hoy" : `Vencía hace ${-d} día${-d !== 1 ? "s" : ""}`}
+          </span>
+        {:else}
+          <span class="meta-date">{m.fecha ? formatDateShort(m.fecha) : "Sin fecha"}</span>
+        {/if}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -464,20 +558,16 @@
           />
         </div>
 
-        {#if cTipo === "debo"}
-          <div class="deuda-info">
-            <p>Las deudas se registran automáticamente al agregar un gasto en la pestaña <strong>Registrar</strong>. Activa la opción "¿Es deuda?" en el formulario de gasto.</p>
-          </div>
-        {:else if cTipo}
+        {#if cTipo}
           <div class="field">
             <label for="c-nombre">
-              {cTipo === "me_deben" ? "A quién prestaste" : "Nombre del objetivo"}
+              {cTipo === "me_deben" ? "A quién prestaste" : cTipo === "debo" ? "Nombre de la deuda" : "Nombre del objetivo"}
             </label>
             <input
               id="c-nombre"
               type="text"
               bind:value={cNombre}
-              placeholder={cTipo === "me_deben" ? "Ej: Juan, María…" : "Ej: Viaje, Laptop…"}
+              placeholder={cTipo === "me_deben" ? "Ej: Juan, María…" : cTipo === "debo" ? "Ej: Compra a crédito…" : "Ej: Viaje, Laptop…"}
               maxlength="100"
             />
           </div>
@@ -494,10 +584,40 @@
             />
           </div>
 
+          {#if cTipo === "debo"}
+            <div class="field">
+              <span class="field-label">Categoría</span>
+              <CustomSelect
+                bind:value={cCategoryId}
+                options={expenseCategories.map(c => ({ value: c.id, label: c.name }))}
+                placeholder="Selecciona categoría…"
+              />
+            </div>
+          {/if}
+
           {#if cTipo === "me_deben"}
             <div class="field">
               <span class="field-label">Fecha del préstamo</span>
               <DatePicker bind:value={cDate} />
+            </div>
+          {:else if cTipo === "debo"}
+            <div class="field">
+              <span class="field-label">Fecha de la deuda</span>
+              <DatePicker bind:value={cDate} />
+            </div>
+            <div class="field">
+              <label for="c-cuotas">Cuotas <span class="optional">(opcional)</span></label>
+              <input
+                id="c-cuotas"
+                type="text"
+                inputmode="numeric"
+                placeholder="Ej: 12"
+                maxlength="3"
+                bind:value={cCuotasRaw}
+              />
+              {#if cCuotas > 0 && cAmount > 0}
+                <span class="hint">≈ {formatCOP(Math.ceil(cAmount / cCuotas))}/mes</span>
+              {/if}
             </div>
           {:else}
             <div class="field">
@@ -527,7 +647,7 @@
           <button
             type="submit"
             class="btn-primary"
-            disabled={creating || !cTipo || cTipo === "debo" || !cNombre.trim() || cAmount <= 0 || (cTipo === "me_deben" && !cDate)}
+            disabled={creating || !cTipo || !cNombre.trim() || cAmount <= 0 || (cTipo === "me_deben" && !cDate) || (cTipo === "debo" && (!cDate || !cCategoryId))}
           >
             {creating ? "Creando…" : "Crear"}
           </button>
@@ -543,7 +663,7 @@
   <PaymentModal
     title={dm.nombre}
     subtitle={tipoLabel(dm.tipo)}
-    subtitleClass="tipo-badge tipo-{dm.tipo}"
+    subtitleClass="tipo-{dm.tipo}"
     note={dm.nota}
     stats={buildStats(dm)}
     paid={dm.abonado}
@@ -653,9 +773,20 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 1rem;
   }
 
+  .header-title { display: flex; align-items: baseline; gap: 0.65rem; min-width: 0; }
+
   h1 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
+
+  .header-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* ── Filtros ── */
   .filter-row {
@@ -675,16 +806,19 @@
 
   .filter-btn {
     padding: 0.3rem 0.75rem;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 500;
+    border-radius: var(--radius);
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     background: var(--bg-elevated);
     color: var(--text-secondary);
     border: 1px solid transparent;
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
   .filter-btn.secondary {
-    font-size: 0.73rem;
+    font-size: 0.66rem;
     padding: 0.25rem 0.65rem;
   }
   .filter-btn.active {
@@ -732,7 +866,6 @@
     align-content: start;
     padding: 0.25rem;
   }
-  .meta-grid.dimmed { opacity: 0.55; }
 
   /* ── Card ── */
   .meta-card {
@@ -747,7 +880,12 @@
     transition: border-color 0.15s;
   }
   .meta-card:hover { border-color: var(--accent); }
-  .meta-card.dimmed:hover { border-color: var(--border); }
+
+  /* Logros — misma tarjeta a plena opacidad (nada de gris "olvidado"), solo
+     un check discreto y un resumen en vez de la barra de progreso ya vacía
+     de sentido al 100%. */
+  .meta-card.done { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+  .meta-card.done:hover { border-color: var(--success); }
 
   .card-top {
     display: flex;
@@ -766,28 +904,48 @@
     flex: 1;
   }
 
-  /* ── Tipo badge (solo en tarjetas de Completadas) ── */
-  .tipo-badge {
-    font-size: 0.65rem;
-    font-weight: 600;
-    padding: 0.15rem 0.5rem;
-    border-radius: 999px;
-    white-space: nowrap;
+  /* ── Check de Logro — reemplaza el tipo-badge en tarjetas completadas ── */
+  .done-check {
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 16%, var(--bg-elevated));
+    border-radius: var(--radius);
   }
-  .tipo-me_deben      { background: rgba(142, 138, 189, 0.12); color: #8e8abd; }
-  .tipo-debo          { background: rgba(169, 144,  96, 0.12); color: #a99060; }
-  .tipo-quiero_juntar { background: rgba( 95, 163, 134, 0.12); color: #5fa386; }
+
+  .done-summary { display: flex; flex-direction: column; gap: 0.15rem; }
+  .done-total { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; font-family: var(--font-mono); color: var(--text-primary); }
+  .done-label { font-size: 0.75rem; color: var(--text-muted); }
+
+  /* ── Racha de constancia — solo aparece con 2+ meses seguidos abonando;
+     dato real, no decoración, por eso vive junto al monto abonado. ── */
+  .streak-badge {
+    font-size: 0.62rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    border-radius: var(--radius);
+    padding: 0.05rem 0.4rem;
+    margin-left: auto;
+    white-space: nowrap;
+  }
 
   /* ── Pending amount ── */
   .pending-amount { display: flex; align-items: baseline; gap: 0.4rem; }
-  .pending-value  { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pending-value  { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
   .pending-label  { font-size: 0.72rem; color: var(--text-muted); }
 
   /* ── Progress ── */
   .progress-wrap { display: flex; align-items: center; gap: 0.5rem; }
-  .progress-bar  { flex: 1; height: 6px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
-  .progress-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease; }
+  .progress-bar  { flex: 1; height: 4px; background: var(--bg-elevated); overflow: hidden; }
+  .progress-fill { height: 100%; transition: width 0.2s ease; }
   .pct-text      { font-size: 0.72rem; color: var(--text-muted); min-width: 2.5rem; text-align: right; }
 
   /* ── Amounts row ── */
@@ -801,12 +959,13 @@
   .cuotas-hint {
     font-size: 0.7rem;
     color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
   }
 
   /* ── Card footer ── */
   .card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: auto; }
   .meta-date   { font-size: 0.72rem; color: var(--text-muted); }
+  .meta-date.overdue { color: var(--text-secondary); }
 
   /* ── Banner ── */
   .banner { border-radius: var(--radius); padding: 0.65rem 1rem; font-size: 0.85rem; }
@@ -819,19 +978,21 @@
 
   /* ── Botones ── */
   .btn-primary {
-    padding: 0.45rem 1rem; background: var(--accent); color: #fff;
-    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
+    padding: 0.45rem 1rem; background: var(--accent); color: var(--bg-base);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.78rem; font-weight: 700; border-radius: var(--radius);
     transition: background 0.15s, opacity 0.15s;
   }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
   .btn-secondary {
-    padding: 0.45rem 1rem; background: var(--bg-elevated); color: var(--text-secondary);
-    font-size: 0.85rem; font-weight: 500; border-radius: var(--radius);
-    border: 1px solid var(--border); transition: background 0.15s;
+    padding: 0.45rem 1rem; background: transparent; color: var(--text-secondary);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.78rem; font-weight: 600; border-radius: var(--radius);
+    border: 1px solid var(--border); transition: border-color 0.15s, color 0.15s;
   }
-  .btn-secondary:hover { background: var(--bg-surface); }
+  .btn-secondary:hover { border-color: var(--text-secondary); color: var(--text-primary); }
 
   /* ── Overlay / Modal ── */
   .overlay {
@@ -858,28 +1019,19 @@
 
   input[type="text"] {
     -webkit-appearance: none; appearance: none;
-    background-color: #14141f; border: 1px solid #2a2a40;
-    border-radius: var(--radius); color: #e8e8f0; font: inherit;
+    background-color: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text-primary); font: inherit;
     font-size: 0.9rem; padding: 0.5rem 0.75rem; outline: none;
     transition: border-color 0.15s; width: 100%;
   }
   input:focus { border-color: var(--accent); }
 
+  input[inputmode="numeric"] { font-family: var(--font-mono); }
+
   .hint {
     font-size: 0.72rem; color: var(--text-muted);
     line-height: 1.4; margin-top: 0.1rem;
   }
-
-  .deuda-info {
-    background: color-mix(in srgb, var(--bg-elevated) 80%, var(--warning) 20%);
-    border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
-    border-radius: var(--radius);
-    padding: 0.75rem 1rem;
-  }
-  .deuda-info p {
-    font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin: 0;
-  }
-  .deuda-info strong { color: var(--text-primary); font-weight: 600; }
 
   /* ── Misc ── */
   .muted { color: var(--text-muted); font-size: 0.85rem; }
@@ -891,15 +1043,16 @@
   }
 
   /* ── Progreso de ahorros ── */
-  .atrasado-badge { font-size: 0.65rem; font-weight: 600; color: #f59e0b; }
-  .muted-hint     { font-size: 0.7rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .atrasado-badge { font-size: 0.65rem; font-weight: 600; color: var(--accent); }
+  .muted-hint     { font-size: 0.7rem; color: var(--text-muted); font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
 
   /* ── Modal de confirmación ── */
   .delete-msg { font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.75rem; line-height: 1.5; }
   .delete-msg strong { color: var(--text-primary); }
   .btn-danger {
-    padding: 0.45rem 1rem; background: var(--danger); color: #fff;
-    font-size: 0.85rem; font-weight: 600; border-radius: var(--radius);
+    padding: 0.45rem 1rem; background: var(--danger); color: var(--bg-base);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.78rem; font-weight: 700; border-radius: var(--radius);
     transition: opacity 0.15s;
   }
   .btn-danger:hover:not(:disabled) { opacity: 0.85; }

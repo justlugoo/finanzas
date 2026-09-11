@@ -1,32 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { GoalDetail, GoalInput, GoalWithProgress } from "$lib/types";
-import { create as createTransaction } from "./transactions";
+import type { DebtGoalInput, DebtGoalResult, GoalDetailV2, GoalInputV2, GoalWithProgressV2 } from "$lib/types";
 
-export const list = (status?: string) =>
-  invoke<GoalWithProgress[]>("list_goals", { status });
+export const list = (kind?: "saving" | "debt") =>
+  invoke<GoalWithProgressV2[]>("goal_list_v2", { kind });
 
-export const create = (input: GoalInput) =>
-  invoke<GoalWithProgress>("create_goal", { input });
+export const create = (input: GoalInputV2) =>
+  invoke<GoalWithProgressV2>("goal_create_v2", { input });
 
-export const update = (id: number, input: GoalInput) =>
-  invoke<GoalWithProgress>("update_goal", { id, input });
+export const createDebt = (input: DebtGoalInput) =>
+  invoke<DebtGoalResult>("goal_create_debt_v2", { input });
 
-export const remove = (id: number) =>
-  invoke<void>("delete_goal", { id });
+export const update = (id: string, input: GoalInputV2) =>
+  invoke<GoalWithProgressV2>("goal_update_v2", { id, input });
 
-export const getDetail = (id: number) =>
-  invoke<GoalDetail>("get_goal_detail", { id });
+export const remove = (id: string) =>
+  invoke<void>("goal_delete_v2", { id });
 
-export const addContribution = (goalId: number, amount: number, date: string) =>
-  createTransaction({
-    date,
-    type: "ingreso",
-    category: "Abono",
-    amount,
-    note: null,
-    is_extraordinary: false,
-    goal_id: goalId,
-    gas_km: null,
-    is_debt: false,
-    vehicle_id: null,
-  });
+export const getDetail = (id: string) =>
+  invoke<GoalDetailV2>("goal_get_detail_v2", { id });

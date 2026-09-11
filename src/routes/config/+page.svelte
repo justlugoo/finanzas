@@ -1,20 +1,27 @@
 <script lang="ts">
-  import { gasApi, budgetApi, vehicleApi, routeApi, systemApi } from "$lib/api";
-  import type { GasPrice, WeeklyGasPoint, Budget, RoutesCost, CustomRoute, Vehicle } from "$lib/types";
+  import { gasApi, budgetApi, categoryApi, vehicleApi, routeApi, systemApi, fillupApi } from "$lib/api";
+  import type { GasPrice, WeeklyGasPoint, CategoryBudgetRow, RoutesCost, RouteV2, VehicleV2 } from "$lib/types";
+  import { mPerLToKmPerGallon, mlToGallons, metersToKm, ML_PER_GALLON } from "$lib/constants";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
   let weeklyData     = $state<WeeklyGasPoint[]>([]);
-  let budgets        = $state<Budget[]>([]);
+  let budgets        = $state<CategoryBudgetRow[]>([]);
   let routeCosts     = $state<RoutesCost | null>(null);
-  let customRoutes   = $state<CustomRoute[]>([]);
-  let vehicles       = $state<Vehicle[]>([]);
-  let selectedVehicleId = $state<number | null>(null);
+  let customRoutes   = $state<RouteV2[]>([]);
+  let vehicles       = $state<VehicleV2[]>([]);
+  let selectedVehicleId = $state<string | null>(null);
   let selectedVehicle   = $derived(vehicles.find(v => v.id === selectedVehicleId) ?? null);
+  let selectedVehicleKmPerGallon = $derived(selectedVehicle ? mPerLToKmPerGallon(selectedVehicle.efficiency_m_per_l) : 0);
   let loading        = $state(true);
   let pageError      = $state<string | null>(null);
+
+  // ── Pestañas — una sección a la vez, no las cinco de golpe ───────────────
+  type Tab = "gasolina" | "vehiculos" | "presupuestos" | "sistema" | "datos";
+  let activeTab = $state<Tab>("gasolina");
+  let showPriceTables = $state(false);
 
   // ── Vehículos ─────────────────────────────────────────────────────────────
   let newVehicleName      = $state("");
@@ -22,8 +29,8 @@
   let newVehicleTankRaw   = $state("");
   let addingVehicle       = $state(false);
   let vehicleFormError    = $state<string | null>(null);
-  let deletingVehicleId   = $state<number | null>(null);
-  let editingVehicleId    = $state<number | null>(null);
+  let deletingVehicleId   = $state<string | null>(null);
+  let editingVehicleId    = $state<string | null>(null);
   let editVehicleName     = $state("");
   let editVehicleKmRaw    = $state("");
   let editVehicleTankRaw  = $state("");
@@ -35,7 +42,16 @@
   let newRouteDesc  = $state("");
   let addingRoute   = $state(false);
   let routeError    = $state<string | null>(null);
-  let deletingRouteId = $state<number | null>(null);
+  let deletingRouteId = $state<string | null>(null);
+
+  // ── Reset de nivel de tanque — no borra tanqueos ni viajes, solo ancla el
+  // conteo desde hoy (útil tras corregir el rendimiento de un vehículo). ──
+  let resetLevelRaw   = $state("");
+  let resetLevelNote  = $state("");
+  let resettingLevel  = $state(false);
+  let resetLevelMsg   = $state<string | null>(null);
+  let resetLevelError = $state<string | null>(null);
+  let resetLevelGallons = $derived(parseFloat(resetLevelRaw.replace(",", ".")) || 0);
 
   // ── Actualizar precio ─────────────────────────────────────────────────────
   let newPriceRaw = $state("");
@@ -53,7 +69,7 @@
 
   // ── Presupuestos — crear / eliminar ──────────────────────────────────────
   let newBudgetName    = $state("");
-  let newBudgetType    = $state<"ingreso" | "gasto">("gasto");
+  let newBudgetType    = $state<"income" | "expense">("expense");
   let newBudgetIsFixed = $state(false);
   let addingBudget     = $state(false);
   let budgetFormError  = $state<string | null>(null);
@@ -82,7 +98,7 @@
           gasApi.getCurrent(),
           gasApi.list(20),
           gasApi.getWeeklyComparison(),
-          budgetApi.list(),
+          budgetApi.listWithCategories(),
           routeApi.list(),
           vehicleApi.list(),
         ]);
@@ -128,8 +144,8 @@
   }
 
   // ── Edición de presupuesto ────────────────────────────────────────────────
-  function startEditBudget(category: string, amount: number) {
-    editingBudget = category;
+  function startEditBudget(categoryId: string, amount: number) {
+    editingBudget = categoryId;
     editBudgetRaw = amount > 0 ? amount.toString() : "";
   }
 
@@ -139,19 +155,18 @@
     e.currentTarget.value = digits ? new Intl.NumberFormat("es-CO").format(parseInt(digits, 10)) : "";
   }
 
-  async function saveEditBudget(category: string) {
+  async function saveEditBudget(categoryId: string) {
     const amount = parseInt(editBudgetRaw, 10);
     if (isNaN(amount) || amount < 0) { editingBudget = null; return; }
     savingBudget = true;
 
     const prevBudgets = budgets;
-    budgets = budgets.map(b => b.category === category ? { ...b, monthly_amount: amount } : b);
+    budgets = budgets.map(b => b.category.id === categoryId ? { ...b, monthly_cop: amount } : b);
     editingBudget = null;
 
     try {
-      const updated = await budgetApi.updateAmount(category, amount);
-      budgets = budgets.map(b => b.category === category ? updated : b);
-      savedBudgetCategory = category;
+      await budgetApi.setMonthly(categoryId, amount);
+      savedBudgetCategory = categoryId;
       setTimeout(() => { savedBudgetCategory = null; }, 1000);
     } catch (e) {
       budgets = prevBudgets;
@@ -162,15 +177,15 @@
     }
   }
 
-  function handleBudgetKeydown(e: KeyboardEvent, category: string) {
-    if (e.key === "Enter")  saveEditBudget(category);
+  function handleBudgetKeydown(e: KeyboardEvent, categoryId: string) {
+    if (e.key === "Enter")  saveEditBudget(categoryId);
     if (e.key === "Escape") { editingBudget = null; }
   }
 
-  async function saveRouteAssoc(category: string, routeId: number | null) {
+  async function saveRouteAssoc(row: CategoryBudgetRow, routeId: string | null) {
     try {
-      await budgetApi.updateRoute(category, routeId);
-      budgets = budgets.map(b => b.category === category ? { ...b, route_id: routeId } : b);
+      const updated = await categoryApi.update(row.category.id, row.category.is_fixed, routeId);
+      budgets = budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b);
     } catch (e) {
       console.error("[config] save route assoc error:", e);
       pageError = "No se pudo guardar la asociación de ruta.";
@@ -263,14 +278,13 @@
     ev.preventDefault();
     const name = newVehicleName.trim();
     const km = parseFloat(newVehicleKmRaw.replace(",", "."));
-    const tankRaw = newVehicleTankRaw.trim().replace(",", ".");
-    const tank = tankRaw ? parseFloat(tankRaw) : null;
+    const tank = parseFloat(newVehicleTankRaw.trim().replace(",", "."));
     if (!name) { vehicleFormError = "El nombre es obligatorio."; return; }
     if (!km || km <= 0) { vehicleFormError = "El rendimiento debe ser mayor que 0."; return; }
-    if (tank !== null && tank <= 0) { vehicleFormError = "La capacidad del tanque debe ser mayor que 0."; return; }
+    if (!tank || tank <= 0) { vehicleFormError = "La capacidad del tanque debe ser mayor que 0."; return; }
     addingVehicle = true; vehicleFormError = null;
     try {
-      const created = await vehicleApi.create({ name, km_per_gallon: km, tank_liters: tank });
+      const created = await vehicleApi.create({ name, km_per_gallon: km, tank_gallons: tank });
       vehicles = [...vehicles, created].sort((a, b) => a.name.localeCompare(b.name));
       if (selectedVehicleId === null) selectedVehicleId = created.id;
       newVehicleName = ""; newVehicleKmRaw = ""; newVehicleTankRaw = "";
@@ -281,23 +295,24 @@
     }
   }
 
-  function startEditVehicle(v: Vehicle) {
+  function startEditVehicle(v: VehicleV2) {
     editingVehicleId   = v.id;
     editVehicleName    = v.name;
-    editVehicleKmRaw   = v.km_per_gallon.toString();
-    editVehicleTankRaw = v.tank_liters != null ? v.tank_liters.toString() : "";
+    editVehicleKmRaw   = mPerLToKmPerGallon(v.efficiency_m_per_l).toFixed(1);
+    // Vehículos creados antes de que la capacidad fuera obligatoria pueden no
+    // tenerla — se deja en blanco y hay que completarla para poder guardar.
+    editVehicleTankRaw = v.tank_capacity_ml != null ? mlToGallons(v.tank_capacity_ml).toFixed(1) : "";
   }
 
-  async function saveEditVehicle(id: number) {
+  async function saveEditVehicle(id: string) {
     const name = editVehicleName.trim();
     const km = parseFloat(editVehicleKmRaw.replace(",", "."));
-    const tankRaw = editVehicleTankRaw.trim().replace(",", ".");
-    const tank = tankRaw ? parseFloat(tankRaw) : null;
+    const tank = parseFloat(editVehicleTankRaw.trim().replace(",", "."));
     if (!name || !km || km <= 0) { editingVehicleId = null; return; }
-    if (tank !== null && tank <= 0) { editingVehicleId = null; return; }
+    if (!tank || tank <= 0) { editingVehicleId = null; return; }
     savingVehicle = true;
     try {
-      const updated = await vehicleApi.update(id, { name, km_per_gallon: km, tank_liters: tank });
+      const updated = await vehicleApi.update(id, { name, km_per_gallon: km, tank_gallons: tank });
       vehicles = vehicles.map(v => v.id === id ? updated : v);
       editingVehicleId = null;
     } catch (e) {
@@ -308,7 +323,7 @@
     }
   }
 
-  async function deleteVehicle(id: number) {
+  async function deleteVehicle(id: string) {
     deletingVehicleId = id;
     try {
       await vehicleApi.remove(id);
@@ -323,11 +338,11 @@
     }
   }
 
-  async function toggleFixed(category: string, currentFixed: boolean) {
-    togglingFixed = category;
+  async function toggleFixed(row: CategoryBudgetRow) {
+    togglingFixed = row.category.id;
     try {
-      const updated = await budgetApi.updateFixed(category, !currentFixed);
-      budgets = budgets.map(b => b.category === category ? updated : b);
+      const updated = await categoryApi.update(row.category.id, !row.category.is_fixed, row.category.route_id);
+      budgets = budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b);
     } catch (e) {
       console.error("[config] toggle fixed error:", e);
       pageError = "No se pudo cambiar el tipo de ingreso.";
@@ -342,8 +357,10 @@
     if (!name) { budgetFormError = "El nombre es obligatorio."; return; }
     addingBudget = true; budgetFormError = null;
     try {
-      const created = await budgetApi.create(name, 0, newBudgetType, newBudgetType === "ingreso" ? newBudgetIsFixed : false);
-      budgets = [...budgets, created].sort((a, b) => a.category.localeCompare(b.category));
+      const created = await categoryApi.create({
+        name, kind: newBudgetType, is_fixed: newBudgetType === "income" ? newBudgetIsFixed : false, route_id: null,
+      });
+      budgets = [...budgets, { category: created, monthly_cop: 0 }].sort((a, b) => a.category.name.localeCompare(b.category.name));
       newBudgetName = "";
       newBudgetIsFixed = false;
     } catch (e: any) {
@@ -353,15 +370,15 @@
     }
   }
 
-  async function deleteBudget(category: string) {
-    deletingBudget = category;
+  async function deleteBudget(categoryId: string) {
+    deletingBudget = categoryId;
     try {
-      await budgetApi.remove(category);
-      budgets = budgets.filter(b => b.category !== category);
-      if (editingBudget === category) editingBudget = null;
-    } catch (e) {
+      await categoryApi.remove(categoryId);
+      budgets = budgets.filter(b => b.category.id !== categoryId);
+      if (editingBudget === categoryId) editingBudget = null;
+    } catch (e: any) {
       console.error("[config] delete budget error:", e);
-      pageError = "No se pudo eliminar la categoría.";
+      pageError = e?.message ?? "No se pudo eliminar la categoría.";
     } finally {
       deletingBudget = null;
     }
@@ -385,7 +402,7 @@
     }
   }
 
-  async function removeCustomRoute(id: number) {
+  async function removeCustomRoute(id: string) {
     deletingRouteId = id;
     try {
       await routeApi.remove(id);
@@ -397,474 +414,447 @@
       deletingRouteId = null;
     }
   }
+
+  async function handleResetFuelLevel(ev: Event) {
+    ev.preventDefault();
+    if (!selectedVehicleId) { resetLevelError = "Selecciona un vehículo."; return; }
+    if (resetLevelRaw === "" || resetLevelGallons < 0) { resetLevelError = "Ingresa un nivel válido."; return; }
+    resettingLevel = true; resetLevelError = null; resetLevelMsg = null;
+    try {
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      await fillupApi.resetFuelLevel({
+        vehicle_id: selectedVehicleId,
+        level_ml: Math.round(resetLevelGallons * ML_PER_GALLON),
+        occurred_on: today,
+        note: resetLevelNote.trim() || null,
+      });
+      resetLevelMsg = `Nivel reseteado a ${resetLevelGallons.toFixed(1)} gal. Los tanqueos y viajes anteriores siguen intactos.`;
+      resetLevelRaw = ""; resetLevelNote = "";
+      setTimeout(() => { resetLevelMsg = null; }, 4000);
+    } catch (e) {
+      console.error("[config] reset fuel level error:", e);
+      resetLevelError = "No se pudo resetear el nivel. Intenta de nuevo.";
+    } finally {
+      resettingLevel = false;
+    }
+  }
 </script>
 
 <div class="config-shell">
-  <div class="config-header">
+  <header class="config-header">
     <h1>Configuración</h1>
-  </div>
+  </header>
 
   {#if pageError}
     <div class="banner error"><strong>Error</strong> {pageError}</div>
   {/if}
 
-  <div class="config-grid">
-    <div class="config-left">
-      <ScrollArea class="config-left-scroll" scrollbar="thin">
-      {#if loading}
-        <p class="muted">Cargando…</p>
-      {:else}
+  <nav class="tabs">
+    <button type="button" class="tab" class:active={activeTab === "gasolina"} onclick={() => { activeTab = "gasolina"; }}>Gasolina</button>
+    <button type="button" class="tab" class:active={activeTab === "vehiculos"} onclick={() => { activeTab = "vehiculos"; }}>Vehículos</button>
+    <button type="button" class="tab" class:active={activeTab === "presupuestos"} onclick={() => { activeTab = "presupuestos"; }}>Presupuestos</button>
+    <button type="button" class="tab" class:active={activeTab === "sistema"} onclick={() => { activeTab = "sistema"; }}>Sistema</button>
+    <button type="button" class="tab tab-danger" class:active={activeTab === "datos"} onclick={() => { activeTab = "datos"; }}>Datos</button>
+  </nav>
 
-    <!-- ══ Gasolina ══════════════════════════════════════════════════════════ -->
-    <section class="section">
-      <h2>Gasolina</h2>
+  <div class="tab-body">
+    <ScrollArea class="tab-scroll" scrollbar="thin">
+    {#if loading}
+      <p class="muted">Cargando…</p>
+    {:else}
 
-      <!-- Precio actual -->
-      <div class="gas-card">
-        {#if currentPrice}
-          <div class="gas-price-big">
-            {formatCOP(currentPrice.price_per_gallon)}<span class="unit">/galón</span>
+      <!-- ══════════════════════ GASOLINA ══════════════════════ -->
+      {#if activeTab === "gasolina"}
+
+        <div class="panel">
+          <div class="price-hero">
+            {#if currentPrice}
+              <span class="price-value">{formatCOP(currentPrice.price_per_gallon)}</span>
+              <span class="price-unit">/galón</span>
+            {:else}
+              <span class="price-value muted">Sin precio registrado</span>
+            {/if}
           </div>
-          <div class="gas-meta">
-            <span>{currentPrice.date}</span>
-            <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
-          </div>
-        {:else}
-          <p class="muted">Sin precio registrado.</p>
-        {/if}
-      </div>
-
-      <!-- Costos por ruta -->
-      {#if routeCosts}
-        <div class="subsection">
-          <h3>Costos por ruta <span class="hint-inline">· {formatCOP(routeCosts.precio_galon)}/gal{#if selectedVehicle} · {selectedVehicle.km_per_gallon} km/gal{/if}</span></h3>
-          {#if vehicles.length > 1}
-            <div class="vehicle-select-row">
-              <span class="muted small">Vehículo:</span>
-              <div style="--cs-padding: 0.18rem 0.4rem; font-size: 0.75rem;">
-                <CustomSelect
-                  bind:value={selectedVehicleId}
-                  options={vehicles.map(v => ({ value: v.id, label: `${v.name} (${v.km_per_gallon} km/gal)` }))}
-                />
-              </div>
+          {#if currentPrice}
+            <div class="price-meta">
+              <span>{currentPrice.date}</span>
+              <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
             </div>
           {/if}
+
+          {#if saveMsg}<div class="banner success small">{saveMsg}</div>{/if}
+          {#if saveError}<div class="banner error small">{saveError}</div>{/if}
+          <form onsubmit={handleSavePrice} class="inline-form">
+            <input
+              type="text"
+              inputmode="numeric"
+              placeholder="Nuevo precio por galón"
+              value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
+              oninput={handlePriceInput}
+            />
+            <button type="submit" class="btn-primary" disabled={saving || newPrice <= 0}>
+              {saving ? "Guardando…" : "Guardar"}
+            </button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Costos por ruta</span>
+            {#if routeCosts}
+              <span class="panel-title-hint">{formatCOP(routeCosts.precio_galon)}/gal{#if selectedVehicle} · {selectedVehicleKmPerGallon.toFixed(1)} km/gal{/if}</span>
+            {/if}
+          </div>
+
+          {#if vehicles.length > 1}
+            <div class="chip-grid chip-grid-sm">
+              {#each vehicles as v (v.id)}
+                <button
+                  type="button"
+                  class="chip chip-sm"
+                  class:active={selectedVehicleId === v.id}
+                  onclick={() => { selectedVehicleId = v.id; }}
+                >{v.name}</button>
+              {/each}
+            </div>
+          {/if}
+
           {#if customRoutes.length > 0 && selectedVehicle}
-            <div class="route-costs">
+            <div class="item-list">
               {#each customRoutes as route (route.id)}
-                {@const cost = Math.round(route.km_round_trip / selectedVehicle.km_per_gallon * routeCosts.precio_galon)}
-                <div class="route-row">
-                  <span class="route-name">{route.name}</span>
-                  <span class="route-km">{route.km_round_trip} km</span>
-                  <span class="route-cost">{formatCOP(cost)}</span>
-                  <button
-                    class="cr-del"
-                    onclick={() => removeCustomRoute(route.id)}
-                    disabled={deletingRouteId === route.id}
-                    aria-label="Eliminar ruta"
-                  >{deletingRouteId === route.id ? "…" : "✕"}</button>
+                {@const routeKm = metersToKm(route.distance_m)}
+                {@const cost = Math.round(routeKm / selectedVehicleKmPerGallon * routeCosts!.precio_galon)}
+                <div class="item-row">
+                  <span class="item-name">{route.name}</span>
+                  <span class="item-meta">{routeKm} km</span>
+                  <span class="item-value">{formatCOP(cost)}</span>
+                  <div class="item-actions">
+                    <button
+                      class="item-act danger"
+                      onclick={() => removeCustomRoute(route.id)}
+                      disabled={deletingRouteId === route.id}
+                    >{deletingRouteId === route.id ? "…" : "Eliminar"}</button>
+                  </div>
                 </div>
               {/each}
             </div>
           {:else if customRoutes.length === 0}
-            <p class="muted small">Sin rutas. Agrégalas abajo.</p>
+            <p class="muted small">Sin rutas todavía.</p>
           {:else}
             <p class="muted small">Agrega un vehículo para ver los costos.</p>
           {/if}
-          {#if routeError}
-            <div class="banner error small">{routeError}</div>
-          {/if}
-          <form class="route-add-form" onsubmit={addCustomRoute}>
-            <input
-              type="text"
-              placeholder="Nombre"
-              bind:value={newRouteName}
-              class="route-input"
-              disabled={addingRoute}
-            />
-            <input
-              type="text"
-              inputmode="decimal"
-              placeholder="km redondo"
-              bind:value={newRouteKmRaw}
-              class="route-input route-input-km"
-              disabled={addingRoute}
-            />
-            <button type="submit" class="btn-primary small" disabled={addingRoute || !newRouteName.trim() || !newRouteKmRaw}>
-              {addingRoute ? "…" : "Agregar"}
+
+          {#if routeError}<div class="banner error small">{routeError}</div>{/if}
+          <form class="inline-form-3" onsubmit={addCustomRoute}>
+            <input type="text" placeholder="Nombre de la ruta" bind:value={newRouteName} disabled={addingRoute} />
+            <input type="text" inputmode="decimal" placeholder="km redondo" bind:value={newRouteKmRaw} class="input-narrow" disabled={addingRoute} />
+            <button type="submit" class="btn-secondary" disabled={addingRoute || !newRouteName.trim() || !newRouteKmRaw}>
+              {addingRoute ? "…" : "+ Agregar"}
             </button>
           </form>
         </div>
-      {/if}
 
-      <!-- Actualizar precio -->
-      <div class="subsection">
-        <h3>Actualizar precio hoy</h3>
-        {#if saveMsg}
-          <div class="banner success small">{saveMsg}</div>
-        {/if}
-        {#if saveError}
-          <div class="banner error small">{saveError}</div>
-        {/if}
-        <form onsubmit={handleSavePrice} class="inline-form">
-          <input
-            type="text"
-            inputmode="numeric"
-            placeholder="Precio por galón"
-            value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
-            oninput={handlePriceInput}
-          />
-          <button type="submit" class="btn-primary" disabled={saving || newPrice <= 0}>
-            {saving ? "Guardando…" : "Guardar"}
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Nivel de tanque</span></div>
+          <p class="panel-hint">
+            Resetea el nivel de un vehículo sin borrar tanqueos ni viajes anteriores — útil si corriges su rendimiento (km/gal) y quieres que la autonomía se calcule de nuevo desde hoy.
+          </p>
+
+          {#if vehicles.length === 0}
+            <p class="muted small">Agrega un vehículo primero.</p>
+          {:else}
+            {#if vehicles.length > 1}
+              <div class="chip-grid chip-grid-sm">
+                {#each vehicles as v (v.id)}
+                  <button
+                    type="button"
+                    class="chip chip-sm"
+                    class:active={selectedVehicleId === v.id}
+                    onclick={() => { selectedVehicleId = v.id; }}
+                  >{v.name}</button>
+                {/each}
+              </div>
+            {/if}
+
+            {#if resetLevelMsg}<div class="banner success small">{resetLevelMsg}</div>{/if}
+            {#if resetLevelError}<div class="banner error small">{resetLevelError}</div>{/if}
+
+            <form class="inline-form-3" onsubmit={handleResetFuelLevel}>
+              <input type="text" inputmode="decimal" class="input-narrow" placeholder="Nivel actual (gal)" bind:value={resetLevelRaw} disabled={resettingLevel} />
+              <input type="text" placeholder="Nota (opcional)" bind:value={resetLevelNote} disabled={resettingLevel} />
+              <button type="submit" class="btn-secondary" disabled={resettingLevel || !selectedVehicleId || resetLevelRaw === ""}>
+                {resettingLevel ? "…" : "Resetear nivel"}
+              </button>
+            </form>
+          {/if}
+        </div>
+
+        <div class="panel">
+          <button type="button" class="disclosure-toggle" onclick={() => { showPriceTables = !showPriceTables; }}>
+            <span class="panel-title">Historial y comparación semanal</span>
+            <span class="switch" class:on={showPriceTables}></span>
           </button>
-        </form>
-      </div>
 
-      <!-- Historial -->
-      {#if priceHistory.length > 0}
-        <div class="subsection">
-          <h3>Historial de precios</h3>
-          <ScrollArea orientation="horizontal" scrollbar="thin">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Fecha</th>
-                  <th class="right">Precio/galón</th>
-                  <th>Fuente</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each priceHistory as p (p.id)}
-                  <tr>
-                    <td>{p.date}</td>
-                    <td class="right">{formatCOP(p.price_per_gallon)}</td>
-                    <td><span class="source-badge source-{p.source}">{p.source}</span></td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </ScrollArea>
-        </div>
-      {/if}
-
-      <!-- Comparación semanal -->
-      {#if weeklyData.length > 0}
-        <div class="subsection">
-          <h3>Comparación semanal</h3>
-          <ScrollArea orientation="horizontal" scrollbar="thin">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Semana (lunes)</th>
-                  <th class="right">Precio promedio</th>
-                  <th class="right">Registros</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each weeklyData as w, i}
-                  {@const prev = weeklyData[i + 1]}
-                  <tr>
-                    <td>{w.week_start}</td>
-                    <td class="right">
-                      {formatCOP(w.avg_price)}
-                      {#if prev}
-                        {@const delta = w.avg_price - prev.avg_price}
-                        <span class="delta" class:up={delta > 0} class:down={delta < 0}>
-                          {delta > 0 ? "↑" : delta < 0 ? "↓" : "—"}
-                        </span>
-                      {/if}
-                    </td>
-                    <td class="right muted">{w.entry_count}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </ScrollArea>
-        </div>
-      {/if}
-    </section>
-
-    <!-- ══ Vehículos ══════════════════════════════════════════════════════════ -->
-    <section class="section">
-      <h2>Vehículos</h2>
-
-      {#if vehicles.length === 0}
-        <p class="muted">Sin vehículos. Agrega uno abajo.</p>
-      {:else}
-        <div class="vehicle-list">
-          {#each vehicles as v (v.id)}
-            <div class="vehicle-row">
-              {#if editingVehicleId === v.id}
-                <div class="vehicle-edit-form">
-                  <input
-                    type="text"
-                    class="route-input"
-                    bind:value={editVehicleName}
-                    disabled={savingVehicle}
-                    placeholder="Nombre"
-                  />
-                  <input
-                    type="text"
-                    inputmode="decimal"
-                    class="route-input route-input-km"
-                    bind:value={editVehicleKmRaw}
-                    disabled={savingVehicle}
-                    placeholder="km/gal"
-                  />
-                  <input
-                    type="text"
-                    inputmode="decimal"
-                    class="route-input route-input-km"
-                    bind:value={editVehicleTankRaw}
-                    disabled={savingVehicle}
-                    placeholder="litros (opcional)"
-                  />
-                  <button
-                    class="budget-icon-btn budget-save"
-                    onclick={() => saveEditVehicle(v.id)}
-                    disabled={savingVehicle}
-                    title="Guardar"
-                  >✓</button>
-                  <button
-                    class="budget-icon-btn budget-cancel"
-                    onclick={() => { editingVehicleId = null; }}
-                    disabled={savingVehicle}
-                    title="Cancelar"
-                  >✕</button>
+          {#if showPriceTables}
+            <div class="disclosure-body">
+              {#if priceHistory.length > 0}
+                <div class="subpanel">
+                  <span class="subpanel-title">Historial de precios</span>
+                  <div class="record-list">
+                    {#each priceHistory as p (p.id)}
+                      <div class="record-row">
+                        <span class="record-date">{p.date}</span>
+                        <span class="source-badge source-{p.source}">{p.source}</span>
+                        <span class="record-gap"></span>
+                        <span class="record-value">{formatCOP(p.price_per_gallon)}</span>
+                      </div>
+                    {/each}
+                  </div>
                 </div>
-              {:else}
-                <span class="vehicle-name">{v.name}</span>
-                <span class="vehicle-km">{v.km_per_gallon} km/gal{#if v.tank_liters != null} · {v.tank_liters} L{/if}</span>
-                <button class="cr-edit" onclick={() => startEditVehicle(v)} title="Editar">✎</button>
-                <button
-                  class="cr-del"
-                  onclick={() => deleteVehicle(v.id)}
-                  disabled={deletingVehicleId === v.id}
-                  title="Eliminar"
-                >{deletingVehicleId === v.id ? "…" : "✕"}</button>
+              {/if}
+
+              {#if weeklyData.length > 0}
+                <div class="subpanel">
+                  <span class="subpanel-title">Comparación semanal</span>
+                  <div class="record-list">
+                    {#each weeklyData as w, i}
+                      {@const prev = weeklyData[i + 1]}
+                      <div class="record-row">
+                        <span class="record-date">{w.week_start}</span>
+                        <span class="record-count">{w.entry_count} registro{w.entry_count !== 1 ? "s" : ""}</span>
+                        <span class="record-gap"></span>
+                        <span class="record-value">
+                          {formatCOP(w.avg_price)}
+                          {#if prev}
+                            {@const delta = w.avg_price - prev.avg_price}
+                            <span class="delta" class:up={delta > 0} class:down={delta < 0}>
+                              {delta > 0 ? "↑" : delta < 0 ? "↓" : "—"}
+                            </span>
+                          {/if}
+                        </span>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+
+              {#if priceHistory.length === 0 && weeklyData.length === 0}
+                <p class="muted small">Todavía no hay suficientes datos.</p>
               {/if}
             </div>
-          {/each}
+          {/if}
         </div>
-      {/if}
-
-      <!-- Agregar vehículo -->
-      <div class="subsection">
-        <h3>Agregar vehículo</h3>
-        {#if vehicleFormError}
-          <div class="banner error small">{vehicleFormError}</div>
-        {/if}
-        <form class="route-add-form" onsubmit={addVehicle}>
-          <input
-            type="text"
-            placeholder="Nombre (ej. Moto, Carro)"
-            bind:value={newVehicleName}
-            class="route-input"
-            disabled={addingVehicle}
-          />
-          <input
-            type="text"
-            inputmode="decimal"
-            placeholder="km/gal"
-            bind:value={newVehicleKmRaw}
-            class="route-input route-input-km"
-            disabled={addingVehicle}
-          />
-          <input
-            type="text"
-            inputmode="decimal"
-            placeholder="litros (opcional)"
-            bind:value={newVehicleTankRaw}
-            class="route-input route-input-km"
-            disabled={addingVehicle}
-          />
-          <button
-            type="submit"
-            class="btn-primary small"
-            disabled={addingVehicle || !newVehicleName.trim() || !newVehicleKmRaw}
-          >{addingVehicle ? "…" : "Agregar"}</button>
-        </form>
-      </div>
-    </section>
 
       {/if}
-      </ScrollArea>
-    </div>
 
-    <div class="config-right">
-      <ScrollArea class="config-right-scroll" scrollbar="thin">
-      {#if !loading}
-    <!-- ══ Presupuestos ══════════════════════════════════════════════════════ -->
-    <section class="section">
-      <h2>Presupuestos mensuales</h2>
+      <!-- ══════════════════════ VEHÍCULOS ══════════════════════ -->
+      {#if activeTab === "vehiculos"}
 
-      {#if budgets.length === 0}
-        <p class="muted">Sin categorías. Agrega una abajo.</p>
-      {:else}
-        <div class="budget-list">
-          {#each budgets as b (b.category)}
-            <div class="budget-row" class:row-saved={savedBudgetCategory === b.category}>
-              <div class="budget-cat">
-                <span class="budget-name">{b.category}</span>
-                {#if b.type === "ingreso"}
-                  <button
-                    class="fixed-pill"
-                    class:fixed-pill-on={b.is_fixed}
-                    onclick={() => toggleFixed(b.category, b.is_fixed)}
-                    disabled={togglingFixed === b.category}
-                    title={b.is_fixed ? "Ingreso fijo — clic para marcar como variable" : "Ingreso variable — clic para marcar como fijo"}
-                  >{b.is_fixed ? "Fijo" : "Variable"}</button>
-                {:else}
-                  <span class="type-pill type-gasto">Gasto</span>
-                {/if}
-              </div>
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Vehículos</span></div>
 
-              <div style="--cs-padding: 0.18rem 0.4rem; font-size: 0.75rem;">
-                <CustomSelect
-                  value={b.route_id}
-                  options={[
-                    { value: null, label: "Sin ruta" },
-                    ...customRoutes.map(r => ({ value: r.id, label: r.name })),
-                  ]}
-                  onchange={(v) => saveRouteAssoc(b.category, v)}
-                />
-              </div>
-
-              <div class="budget-amount-cell">
-                {#if editingBudget === b.category}
-                  <div class="budget-edit-row">
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input type="text" inputmode="numeric" class="inline-input"
-                      value={editBudgetRaw ? new Intl.NumberFormat("es-CO").format(parseInt(editBudgetRaw, 10)) : ""}
-                      oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category)}
-                      disabled={savingBudget} autofocus />
-                    <button class="budget-icon-btn budget-save" onclick={() => saveEditBudget(b.category)} disabled={savingBudget} title="Guardar">✓</button>
-                    <button class="budget-icon-btn budget-cancel" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
+          {#if vehicles.length === 0}
+            <p class="muted">Sin vehículos todavía.</p>
+          {:else}
+            <div class="item-list">
+              {#each vehicles as v (v.id)}
+                {#if editingVehicleId === v.id}
+                  <div class="edit-row">
+                    <input type="text" bind:value={editVehicleName} disabled={savingVehicle} placeholder="Nombre" />
+                    <input type="text" inputmode="decimal" class="input-narrow" bind:value={editVehicleKmRaw} disabled={savingVehicle} placeholder="km/gal" />
+                    <input type="text" inputmode="decimal" class="input-narrow" bind:value={editVehicleTankRaw} disabled={savingVehicle} placeholder="galones" />
+                    <button class="icon-btn confirm" onclick={() => saveEditVehicle(v.id)} disabled={savingVehicle} title="Guardar">✓</button>
+                    <button class="icon-btn" onclick={() => { editingVehicleId = null; }} disabled={savingVehicle} title="Cancelar">✕</button>
                   </div>
                 {:else}
-                  <button class="amount-btn" onclick={() => startEditBudget(b.category, b.monthly_amount)}>
-                    {b.monthly_amount > 0 ? formatCOP(b.monthly_amount) : "—"}
-                  </button>
+                  <div class="item-row">
+                    <span class="item-name">{v.name}</span>
+                    <span class="item-meta">{mPerLToKmPerGallon(v.efficiency_m_per_l).toFixed(1)} km/gal{#if v.tank_capacity_ml != null} · {mlToGallons(v.tank_capacity_ml).toFixed(1)} gal{/if}</span>
+                    <div class="item-actions">
+                      <button class="item-act" onclick={() => startEditVehicle(v)}>Editar</button>
+                      <button
+                        class="item-act danger"
+                        onclick={() => deleteVehicle(v.id)}
+                        disabled={deletingVehicleId === v.id}
+                      >{deletingVehicleId === v.id ? "…" : "Eliminar"}</button>
+                    </div>
+                  </div>
                 {/if}
-              </div>
-
-              <button
-                class="cr-del"
-                onclick={() => deleteBudget(b.category)}
-                disabled={deletingBudget === b.category}
-                title="Eliminar categoría"
-              >{deletingBudget === b.category ? "…" : "✕"}</button>
+              {/each}
             </div>
-          {/each}
-        </div>
-      {/if}
-
-      <!-- Agregar categoría -->
-      <div class="subsection">
-        <h3>Agregar categoría</h3>
-        {#if budgetFormError}
-          <div class="banner error small">{budgetFormError}</div>
-        {/if}
-        <form class="budget-add-form" onsubmit={addBudget}>
-          <input
-            type="text"
-            placeholder="Nombre"
-            bind:value={newBudgetName}
-            class="route-input"
-            disabled={addingBudget}
-          />
-          <div class="budget-type-select">
-            <CustomSelect
-              bind:value={newBudgetType}
-              options={[
-                { value: "gasto",   label: "Gasto" },
-                { value: "ingreso", label: "Ingreso" },
-              ]}
-              disabled={addingBudget}
-            />
-          </div>
-          {#if newBudgetType === "ingreso"}
-            <button
-              type="button"
-              class="fixed-pill"
-              class:fixed-pill-on={newBudgetIsFixed}
-              onclick={() => newBudgetIsFixed = !newBudgetIsFixed}
-              disabled={addingBudget}
-              title={newBudgetIsFixed ? "Ingreso fijo — clic para marcar como variable" : "Ingreso variable — clic para marcar como fijo"}
-            >{newBudgetIsFixed ? "Fijo" : "Variable"}</button>
           {/if}
-          <button type="submit" class="btn-primary small" disabled={addingBudget || !newBudgetName.trim()}>
-            {addingBudget ? "…" : "Agregar"}
-          </button>
-        </form>
-      </div>
-    </section>
-      {/if}
 
-  <!-- ══ Sistema ═════════════════════════════════════════════════════════ -->
-  <section class="section">
-    <h2>Sistema</h2>
+          <div class="form-section">
+            <span class="form-section-label">Agregar vehículo</span>
 
-
-    <!-- Autoarranque -->
-    <div class="subsection">
-      <div class="row-between">
-        <div>
-          <span class="row-label">Iniciar con el sistema</span>
-          <span class="row-hint">Abrir Finanzas automáticamente al iniciar sesión</span>
+            {#if vehicleFormError}<div class="banner error small">{vehicleFormError}</div>{/if}
+            <form class="inline-form-3" onsubmit={addVehicle}>
+              <input type="text" placeholder="Nombre (ej. Moto, Carro)" bind:value={newVehicleName} disabled={addingVehicle} />
+              <input type="text" inputmode="decimal" class="input-narrow" placeholder="km/gal" bind:value={newVehicleKmRaw} disabled={addingVehicle} />
+              <input type="text" inputmode="decimal" class="input-narrow" placeholder="galones" bind:value={newVehicleTankRaw} disabled={addingVehicle} />
+              <button type="submit" class="btn-secondary" disabled={addingVehicle || !newVehicleName.trim() || !newVehicleKmRaw || !newVehicleTankRaw}>
+                {addingVehicle ? "…" : "+ Agregar"}
+              </button>
+            </form>
+            <p class="panel-hint">
+              La capacidad del tanque (en galones, igual que el resto de la app) es obligatoria: además de mostrar el % de nivel y la autonomía en el Dashboard, es lo que permite detectar un rendimiento (km/gal) mal configurado — si un tanqueo deja el nivel calculado por encima de la capacidad real, la app te avisa.
+            </p>
+          </div>
         </div>
-        {#if autostartLoading}
-          <span class="muted">…</span>
-        {:else}
-          <button
-            type="button"
-            class="toggle"
-            class:on={autostartEnabled}
-            onclick={toggleAutostart}
-            aria-label="Autoarranque"
-          ></button>
-        {/if}
-      </div>
-      {#if autostartError}
-        <div class="banner error small">{autostartError}</div>
-      {/if}
-    </div>
 
-    <!-- Backup -->
-    <div class="subsection">
-      <h3>Base de datos local</h3>
-      {#if backupPath}
-        <div class="banner success small">Backup guardado en: {backupPath}</div>
       {/if}
-      {#if backupError}
-        <div class="banner error small">{backupError}</div>
-      {/if}
-      <button
-        type="button"
-        class="btn-secondary"
-        onclick={handleBackup}
-        disabled={backupBusy}
-      >
-        {backupBusy ? "Exportando…" : "💾 Exportar backup"}
-      </button>
-    </div>
-  </section>
 
-  <!-- ══ Datos ════════════════════════════════════════════════════════════ -->
-  <section class="section danger-zone">
-    <h2>Datos</h2>
-    {#if resetSuccess}
-      <div class="banner success small">Datos eliminados. La app está lista para usar.</div>
+      <!-- ══════════════════════ PRESUPUESTOS ══════════════════════ -->
+      {#if activeTab === "presupuestos"}
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Presupuestos mensuales</span></div>
+
+          {#if budgets.length === 0}
+            <p class="muted">Sin categorías todavía.</p>
+          {:else}
+            <div class="item-list">
+              {#each budgets as b (b.category.id)}
+                <div class="budget-row" class:row-saved={savedBudgetCategory === b.category.id}>
+                  <div class="budget-cat">
+                    <span class="item-name">{b.category.name}</span>
+                    {#if b.category.kind === "income"}
+                      <button
+                        class="pill-toggle"
+                        class:on={b.category.is_fixed}
+                        onclick={() => toggleFixed(b)}
+                        disabled={togglingFixed === b.category.id}
+                        title={b.category.is_fixed ? "Ingreso fijo — clic para marcar como variable" : "Ingreso variable — clic para marcar como fijo"}
+                      >{b.category.is_fixed ? "Fijo" : "Variable"}</button>
+                    {:else}
+                      <span class="type-pill expense">Gasto</span>
+                    {/if}
+                  </div>
+
+                  <div class="budget-route" style="--cs-padding: 0.2rem 0.5rem; font-size: 0.75rem;">
+                    <CustomSelect
+                      value={b.category.route_id}
+                      options={[
+                        { value: null, label: "Sin ruta" },
+                        ...customRoutes.map(r => ({ value: r.id, label: r.name })),
+                      ]}
+                      onchange={(v) => saveRouteAssoc(b, v)}
+                    />
+                  </div>
+
+                  <div class="budget-amount">
+                    {#if editingBudget === b.category.id}
+                      <div class="edit-row edit-row-inline">
+                        <!-- svelte-ignore a11y_autofocus -->
+                        <input type="text" inputmode="numeric" class="input-narrow"
+                          value={editBudgetRaw ? new Intl.NumberFormat("es-CO").format(parseInt(editBudgetRaw, 10)) : ""}
+                          oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category.id)}
+                          disabled={savingBudget} autofocus />
+                        <button class="icon-btn confirm" onclick={() => saveEditBudget(b.category.id)} disabled={savingBudget} title="Guardar">✓</button>
+                        <button class="icon-btn" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
+                      </div>
+                    {:else}
+                      <button class="amount-btn" onclick={() => startEditBudget(b.category.id, b.monthly_cop)}>
+                        {b.monthly_cop > 0 ? formatCOP(b.monthly_cop) : "—"}
+                      </button>
+                    {/if}
+                  </div>
+
+                  <div class="budget-row-actions">
+                    <button
+                      class="item-act danger"
+                      onclick={() => deleteBudget(b.category.id)}
+                      disabled={deletingBudget === b.category.id}
+                    >{deletingBudget === b.category.id ? "…" : "Eliminar"}</button>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          {#if budgetFormError}<div class="banner error small">{budgetFormError}</div>{/if}
+          <form class="inline-form-3" onsubmit={addBudget}>
+            <input type="text" placeholder="Nombre de la categoría" bind:value={newBudgetName} disabled={addingBudget} />
+            <div class="input-narrow" style="--cs-padding: 0.4rem 0.6rem;">
+              <CustomSelect
+                bind:value={newBudgetType}
+                options={[
+                  { value: "expense", label: "Gasto" },
+                  { value: "income",  label: "Ingreso" },
+                ]}
+                disabled={addingBudget}
+              />
+            </div>
+            {#if newBudgetType === "income"}
+              <button
+                type="button"
+                class="pill-toggle"
+                class:on={newBudgetIsFixed}
+                onclick={() => newBudgetIsFixed = !newBudgetIsFixed}
+                disabled={addingBudget}
+              >{newBudgetIsFixed ? "Fijo" : "Variable"}</button>
+            {/if}
+            <button type="submit" class="btn-secondary" disabled={addingBudget || !newBudgetName.trim()}>
+              {addingBudget ? "…" : "+ Agregar"}
+            </button>
+          </form>
+        </div>
+
+      {/if}
+
+      <!-- ══════════════════════ SISTEMA ══════════════════════ -->
+      {#if activeTab === "sistema"}
+
+        <div class="panel">
+          <div class="row-between">
+            <div>
+              <span class="row-label">Iniciar con el sistema</span>
+              <span class="row-hint">Abrir FinCapX automáticamente al iniciar sesión</span>
+            </div>
+            {#if autostartLoading}
+              <span class="muted">…</span>
+            {:else}
+              <button
+                type="button"
+                class="switch"
+                class:on={autostartEnabled}
+                onclick={toggleAutostart}
+                aria-label="Autoarranque"
+              ></button>
+            {/if}
+          </div>
+          {#if autostartError}<div class="banner error small">{autostartError}</div>{/if}
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Base de datos local</span></div>
+          {#if backupPath}<div class="banner success small">Backup guardado en: {backupPath}</div>{/if}
+          {#if backupError}<div class="banner error small">{backupError}</div>{/if}
+          <button type="button" class="btn-secondary" onclick={handleBackup} disabled={backupBusy}>
+            {backupBusy ? "Exportando…" : "Exportar backup"}
+          </button>
+        </div>
+
+      {/if}
+
+      <!-- ══════════════════════ DATOS (peligro) ══════════════════════ -->
+      {#if activeTab === "datos"}
+
+        <div class="panel panel-danger">
+          <div class="panel-header"><span class="panel-title danger-title">Restablecer datos de fábrica</span></div>
+          {#if resetSuccess}<div class="banner success small">Datos eliminados. La app está lista para usar.</div>{/if}
+          <p class="danger-hint">
+            Elimina permanentemente todas las transacciones, objetivos, historial de gasolina, categorías, rutas y vehículos.
+            La app quedará vacía, lista para configurar desde cero. Esta acción no se puede deshacer.
+          </p>
+          <button type="button" class="btn-danger" onclick={openReset}>Restablecer datos de fábrica</button>
+        </div>
+
+      {/if}
+
     {/if}
-    <div class="subsection">
-      <p class="danger-hint">Elimina permanentemente todas las transacciones, objetivos, historial de gasolina, categorías, rutas y vehículos. La app quedará vacía lista para configurar desde cero.</p>
-      <button type="button" class="btn-danger" onclick={openReset}>
-        🗑 Restablecer datos de fábrica
-      </button>
-    </div>
-  </section>
-      </ScrollArea>
-    </div>
+    </ScrollArea>
   </div>
 </div>
 
@@ -917,418 +907,498 @@
     height: 100%;
     overflow: hidden;
     padding: 0.875rem 1rem;
-    gap: 0.5rem;
+    gap: 0.75rem;
     box-sizing: border-box;
   }
 
   .config-header { flex-shrink: 0; }
 
-  .config-grid {
+  h1 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
+
+  /* ── Pestañas ── */
+  .tabs {
+    flex-shrink: 0;
+    display: flex;
+    gap: 1.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tab {
+    padding: 0.5rem 0.1rem 0.65rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--text-secondary); }
+  .tab.active { color: var(--accent); border-color: var(--accent); }
+  .tab-danger.active { color: var(--danger); border-color: var(--danger); }
+
+  /* ── Cuerpo de la pestaña — .tab-body debe ser flex para que su hijo
+     (el ScrollArea) reciba una altura acotada real; si no, el ScrollArea
+     crece a su contenido y overflow:hidden del padre recorta el exceso
+     en vez de mostrar scrollbar. ── */
+  .tab-body {
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
     overflow: hidden;
-  }
-
-  .config-left,
-  .config-right {
     display: flex;
-    flex-direction: column;
-    min-width: 0;
-    overflow: hidden;
   }
 
-  :global(.config-left-scroll),
-  :global(.config-right-scroll) {
+  :global(.tab-scroll) {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    padding-bottom: 1rem;
-    overscroll-behavior: contain;
+    gap: 0.75rem;
   }
 
-  h1 {
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
-  }
+  .muted { color: var(--text-muted); font-size: 0.85rem; }
+  .muted.small, p.muted.small { font-size: 0.78rem; }
 
-  h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
-  h3 { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.5rem; }
-
-  .hint-inline { font-weight: 400; color: var(--text-muted); }
-
-  .section {
+  /* ── Panel base ── */
+  .panel {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 1.25rem;
+    padding: 1.1rem;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 0.85rem;
   }
 
-  .subsection { display: flex; flex-direction: column; gap: 0.5rem; }
+  .panel-danger { border-color: var(--danger); }
 
-  /* ── Precio actual ── */
-  .gas-card {
-    background: var(--bg-elevated);
-    border-radius: var(--radius);
-    padding: 1rem 1.25rem;
+  .panel-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
   }
 
-  .gas-price-big {
-    font-size: 1.75rem;
+  .panel-title {
+    font-size: 0.7rem;
     font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: -0.03em;
-    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
   }
 
-  .unit { font-size: 0.85rem; font-weight: 400; color: var(--text-muted); margin-left: 0.25rem; }
+  .danger-title { color: var(--danger); }
 
-  .gas-meta {
+  .panel-title-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  .panel-hint { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; margin: 0; }
+
+  /* Separa visualmente un formulario de "agregar" de la lista de arriba —
+     sin esto, filas de datos e inputs de un formulario quedan pegados y se
+     confunden a simple vista. */
+  .form-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.85rem;
+  }
+
+  .form-section-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  /* ── Precio hero ── */
+  .price-hero { display: flex; align-items: baseline; gap: 0.4rem; }
+  .price-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+  }
+  .price-value.muted { font-size: 1.05rem; font-weight: 500; }
+  .price-unit { font-size: 0.85rem; color: var(--text-muted); }
+
+  .price-meta {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    margin-top: 0.35rem;
     font-size: 0.78rem;
     color: var(--text-muted);
   }
 
   .source-badge {
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     padding: 0.1rem 0.4rem;
-    border-radius: 999px;
-  }
-  .source-manual   { background: color-mix(in srgb, var(--accent)  20%, transparent); color: var(--accent);  }
-  .source-scraping { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
-
-  /* ── Costos por ruta ── */
-  .route-costs {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    border: 1px solid var(--border);
     border-radius: var(--radius);
-    overflow: hidden;
+    background: transparent;
   }
+  .source-manual   { border: 1px solid var(--accent);  color: var(--accent);  }
+  .source-scraping { border: 1px solid var(--success); color: var(--success); }
 
-  .route-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.6rem 0.875rem;
-    border-bottom: 1px solid var(--border);
-    font-size: 0.85rem;
-  }
-
-  .route-row:last-child { border-bottom: none; }
-
-  .route-name { flex: 1; color: var(--text-primary); font-weight: 500; }
-  .route-km   { color: var(--text-muted); font-size: 0.78rem; min-width: 45px; }
-  .route-cost { color: var(--accent); font-weight: 700; font-size: 0.9rem; min-width: 80px; text-align: right; }
-
-  /* ── Rutas personalizadas ── */
-  .route-list {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
-
-  .custom-route-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    font-size: 0.82rem;
-  }
-  .custom-route-row:last-child { border-bottom: none; }
-
-  .cr-name { font-weight: 500; color: var(--text-primary); flex-shrink: 0; }
-  .cr-km   { font-size: 0.75rem; color: var(--text-muted); flex-shrink: 0; min-width: 50px; }
-  .cr-desc { font-size: 0.75rem; color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .cr-del {
-    margin-left: auto;
-    flex-shrink: 0;
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    padding: 0.1rem 0.3rem;
-    border-radius: 3px;
-    transition: color 0.15s, background 0.15s;
-  }
-  .cr-del:hover:not(:disabled) { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
-  .cr-del:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .route-add-form {
-    display: flex;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  .route-input {
-    -webkit-appearance: none;
-    appearance: none;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: 0.78rem;
-    padding: 0.32rem 0.6rem;
-    outline: none;
-    flex: 1;
-    min-width: 120px;
-    transition: border-color 0.15s;
-  }
-  .route-input:focus { border-color: var(--accent); }
-  .route-input::placeholder { color: var(--text-muted); }
-  .route-input-km { max-width: 100px; flex: none; }
-
-  .small { font-size: 0.78rem; }
-  .btn-primary.small { padding: 0.32rem 0.7rem; font-size: 0.78rem; }
-
-  /* ── Formulario inline ── */
-  .inline-form { display: flex; gap: 0.5rem; }
-
-  /* ── Tablas ── */
-  .data-table {
-    width: 100%;
-    font-size: 0.82rem;
-    border-collapse: collapse;
-  }
-
-  .data-table th,
-  .data-table td {
-    padding: 0.4rem 0.5rem;
-    text-align: left;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .data-table th { color: var(--text-muted); font-weight: 500; font-size: 0.72rem; }
-  .data-table td { color: var(--text-secondary); }
-
-  .right { text-align: right; }
-
-  .delta { font-size: 0.7rem; margin-left: 0.2rem; }
-  .delta.up   { color: var(--danger);  }
-  .delta.down { color: var(--success); }
-
-  /* ── Presupuestos CRUD ── */
-  .budget-list {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-
-  .budget-row {
+  /* ── Chips (selección de vehículo) — mismo patrón que Registrar: grid
+     reparte 1fr por columna, todas las celdas quedan del mismo ancho sin
+     importar el largo del texto. ── */
+  .chip-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 110px 148px 28px;
-    align-items: center;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
     gap: 0.5rem;
-    padding: 0.45rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-    transition: background 0.3s;
   }
-  .budget-row:first-child {
-    border-top-left-radius: calc(var(--radius) - 1px);
-    border-top-right-radius: calc(var(--radius) - 1px);
-  }
-  .budget-row:last-child {
-    border-bottom: none;
-    border-bottom-left-radius: calc(var(--radius) - 1px);
-    border-bottom-right-radius: calc(var(--radius) - 1px);
-  }
-  .budget-row.row-saved { background: color-mix(in srgb, var(--success) 12%, transparent); }
+  .chip-grid-sm { grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 0.4rem; }
 
-  .budget-cat {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    min-width: 0;
-  }
-  .budget-name {
-    font-size: 0.82rem;
-    color: var(--text-primary);
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .type-pill {
-    font-size: 0.62rem;
-    font-weight: 600;
-    padding: 0.1rem 0.35rem;
-    border-radius: 999px;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  .type-pill.type-ingreso {
-    background: color-mix(in srgb, var(--success) 18%, transparent);
-    color: var(--success);
-  }
-  .type-pill.type-gasto {
-    background: color-mix(in srgb, var(--danger) 15%, transparent);
-    color: var(--danger);
-  }
-
-  .fixed-pill {
-    font-size: 0.62rem;
-    font-weight: 600;
-    padding: 0.1rem 0.35rem;
-    border-radius: 999px;
-    white-space: nowrap;
-    flex-shrink: 0;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
-    color: var(--text-muted);
-    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
-  }
-  .fixed-pill.fixed-pill-on {
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    color: var(--accent);
-    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  }
-  .fixed-pill:hover:not(:disabled) { opacity: 0.75; }
-  .fixed-pill:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .budget-type-select {
-    --cs-padding: 0.32rem 0.6rem;
-    font-size: 0.78rem;
-    flex-shrink: 0;
-    min-width: 90px;
-  }
-
-
-  .route-placeholder { font-size: 0.78rem; color: var(--text-muted); width: 110px; text-align: center; }
-
-  .budget-amount-cell { display: flex; justify-content: flex-end; width: 148px; overflow: hidden; }
-
-  .budget-add-form {
-    display: flex;
-    gap: 0.4rem;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-
-  .amount-btn {
-    font-size: 0.82rem;
-    color: var(--text-secondary);
-    padding: 0.15rem 0.4rem;
-    border-radius: 4px;
-    transition: background 0.15s, color 0.15s;
-    cursor: pointer;
-  }
-  .amount-btn:hover { background: var(--bg-elevated); color: var(--accent); }
-
-  .budget-edit-row {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    justify-content: flex-end;
-  }
-
-  .inline-input {
-    -webkit-appearance: none;
-    appearance: none;
-    background-color: #14141f;
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    color: #e8e8f0;
-    font: inherit;
-    font-size: 0.82rem;
-    padding: 0.2rem 0.4rem;
-    outline: none;
-    text-align: right;
-  }
-
-  .budget-icon-btn {
-    width: 24px;
-    height: 24px;
-    border-radius: 5px;
-    font-size: 0.78rem;
-    font-weight: 700;
+  .chip {
+    width: 100%;
+    min-height: 2.3rem;
+    padding: 0.5rem 0.6rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
-    transition: background 0.15s, color 0.15s;
-  }
-  .budget-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .budget-save {
-    background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated));
-    color: var(--success);
-    border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
-  }
-  .budget-save:hover:not(:disabled) { background: color-mix(in srgb, var(--success) 30%, var(--bg-elevated)); }
-
-  .budget-cancel {
+    font-size: 0.82rem;
+    font-weight: 500;
+    text-align: center;
+    line-height: 1.25;
+    color: var(--text-secondary);
     background: var(--bg-elevated);
-    color: var(--text-muted);
     border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    white-space: normal;
+    overflow-wrap: break-word;
   }
-  .budget-cancel:hover:not(:disabled) { color: var(--danger); }
+  .chip-sm { min-height: 2rem; padding: 0.4rem 0.5rem; font-size: 0.74rem; }
+  .chip:hover:not(.active) { color: var(--text-primary); border-color: var(--text-secondary); }
+  .chip.active { background: var(--accent); color: var(--bg-base); border-color: var(--accent); font-weight: 700; }
 
-  /* ── Inputs ── */
+  /* ── Listas de ítems (rutas, vehículos) ── */
+  .item-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .item-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.82rem;
+    min-height: 38px;
+    transition: background 0.1s;
+  }
+  .item-list .item-row:last-child { border-bottom: none; }
+  .item-row:hover { background: var(--bg-elevated); }
+
+  .item-name { flex: 1; min-width: 0; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item-meta { font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; }
+  .item-value { color: var(--accent); font-weight: 700; font-family: var(--font-mono); font-size: 0.85rem; white-space: nowrap; }
+
+  /* Acciones de fila — ocultas hasta hover, igual que .tx-actions en
+     Historial: reducen ruido visual cuando no se están usando. */
+  .item-actions {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    opacity: 0;
+    transition: opacity 0.15s;
+    min-width: 70px;
+    justify-content: flex-end;
+  }
+  .item-row:hover .item-actions,
+  .budget-row:hover .budget-row-actions { opacity: 1; }
+
+  .item-act {
+    font-size: 0.66rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius);
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+  }
+  .item-act:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
+  .item-act.danger:hover:not(:disabled) { color: var(--danger); }
+  .item-act:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .edit-row {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .edit-row-inline { padding: 0; border-bottom: none; }
+
+  /* ── Botones de icono — solo para confirmar/cancelar edición inline
+     (estado activo, deben verse siempre, a diferencia de las acciones
+     de fila normales que se revelan al hover). ── */
+  .icon-btn {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .icon-btn:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-secondary); }
+  .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .icon-btn.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+  .icon-btn.confirm { color: var(--success); }
+  .icon-btn.confirm:hover:not(:disabled) { border-color: var(--success); }
+
+  /* ── Formularios inline ── */
+  .inline-form { display: flex; gap: 0.5rem; }
+  .inline-form-3 { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
   input[type="text"] {
     -webkit-appearance: none;
     appearance: none;
-    background-color: #14141f;
-    border: 1px solid #2a2a40;
+    background-color: var(--bg-elevated);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    color: #e8e8f0;
+    color: var(--text-primary);
     font: inherit;
-    font-size: 0.9rem;
-    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+    padding: 0.5rem 0.65rem;
     outline: none;
     transition: border-color 0.15s;
-    width: 100%;
+    flex: 1;
+    min-width: 140px;
   }
+  input[inputmode="numeric"],
+  input[inputmode="decimal"] { font-family: var(--font-mono); }
   input:focus { border-color: var(--accent); }
 
-  /* inline-input needs to come after input[type="text"] to win the cascade */
-  .budget-edit-row input {
-    width: 80px;
-    flex-shrink: 0;
-    box-sizing: border-box;
-  }
+  .input-narrow { flex: 0 0 auto; width: 110px; min-width: 0; }
 
   /* ── Botones ── */
   .btn-primary {
-    padding: 0.5rem 1rem;
+    padding: 0.5rem 1.1rem;
     background: var(--accent);
-    color: #fff;
-    font-size: 0.85rem;
-    font-weight: 600;
+    color: var(--bg-base);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.78rem;
+    font-weight: 700;
     border-radius: var(--radius);
     white-space: nowrap;
-    flex-shrink: 0;
     transition: background 0.15s, opacity 0.15s;
   }
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  /* ── Banners ── */
-  .banner {
+  .btn-secondary {
+    padding: 0.5rem 1.1rem;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 0.55rem 0.9rem;
-    font-size: 0.82rem;
+    white-space: nowrap;
+    transition: border-color 0.15s, color 0.15s;
   }
+  .btn-secondary:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-secondary); }
+  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-danger {
+    align-self: flex-start;
+    padding: 0.5rem 1.1rem;
+    background: transparent;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.78rem;
+    font-weight: 700;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius);
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn-danger:hover { background: var(--danger); color: var(--bg-base); }
+
+  /* ── Interruptor (switch) — mismas medidas que Registrar. ── */
+  .switch {
+    width: 32px;
+    height: 17px;
+    flex-shrink: 0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    position: relative;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 11px; height: 11px;
+    background: var(--text-muted);
+    transition: transform 0.15s, background 0.15s;
+  }
+  .switch.on { background: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated)); border-color: var(--accent); }
+  .switch.on::after { transform: translateX(13px); background: var(--accent); }
+
+  /* ── Disclosure (historial/semanal) ── */
+  .disclosure-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    text-align: left;
+  }
+
+  .disclosure-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  .subpanel { display: flex; flex-direction: column; gap: 0.4rem; }
+  .subpanel-title { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+
+  /* ── Listas de registros (historial de precios, comparación semanal) —
+     filas planas en vez de tabla HTML, mismo idioma que .tx-row/.ctx-tx-item. ── */
+  .record-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .record-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8rem;
+    transition: background 0.1s;
+  }
+  .record-list .record-row:last-child { border-bottom: none; }
+  .record-row:hover { background: var(--bg-elevated); }
+  .record-date { font-family: var(--font-mono); color: var(--text-secondary); white-space: nowrap; }
+  .record-count { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; }
+  .record-gap { flex: 1; min-width: 0.5rem; }
+  .record-value {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .delta { font-size: 0.7rem; margin-left: 0.2rem; }
+  .delta.up   { color: var(--danger); }
+  .delta.down { color: var(--success); }
+
+  /* ── Presupuestos — mismo idioma de fila que .item-row: acciones de
+     borrar ocultas hasta hover. ── */
+  .budget-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    min-height: 38px;
+    transition: background 0.1s;
+  }
+  .item-list .budget-row:last-child { border-bottom: none; }
+  .budget-row:hover { background: var(--bg-elevated); }
+  .budget-row.row-saved { background: color-mix(in srgb, var(--success) 12%, transparent); }
+
+  .budget-cat { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.4rem; }
+  .budget-route { flex: 0 0 130px; min-width: 0; }
+  .budget-amount { flex: 0 0 auto; min-width: 90px; display: flex; justify-content: flex-end; }
+  .budget-row-actions {
+    flex: 0 0 auto;
+    min-width: 64px;
+    display: flex;
+    justify-content: flex-end;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .amount-btn {
+    font-size: 0.82rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius);
+    transition: background 0.15s, color 0.15s;
+  }
+  .amount-btn:hover { background: var(--bg-elevated); color: var(--accent); }
+
+  .type-pill {
+    font-size: 0.6rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .type-pill.expense { border: 1px solid var(--danger); color: var(--danger); }
+
+  .pill-toggle {
+    font-size: 0.6rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius);
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .pill-toggle.on { color: var(--accent); border-color: var(--accent); }
+  .pill-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Sistema ── */
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  .row-label { display: block; font-size: 0.875rem; font-weight: 500; color: var(--text-primary); }
+  .row-hint  { display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 0.1rem; }
+
+  /* ── Datos (peligro) ── */
+  .danger-hint { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+
+  /* ── Banners ── */
+  .banner { border-radius: var(--radius); padding: 0.55rem 0.9rem; font-size: 0.82rem; }
   .banner.error {
     background: color-mix(in srgb, var(--danger) 15%, var(--bg-surface));
     border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
@@ -1340,134 +1410,7 @@
     color: var(--success);
     font-weight: 500;
   }
-  .banner.small { padding: 0.35rem 0.75rem; }
-
-  .hint { font-size: 0.75rem; color: var(--text-muted); }
-  .muted { color: var(--text-muted); font-size: 0.82rem; }
-
-  /* ── Vehículos ── */
-  .vehicle-list {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
-
-  .vehicle-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    font-size: 0.82rem;
-  }
-  .vehicle-row:last-child { border-bottom: none; }
-
-  .vehicle-name { flex: 1; font-weight: 500; color: var(--text-primary); }
-  .vehicle-km   { font-size: 0.75rem; color: var(--text-muted); flex-shrink: 0; min-width: 70px; }
-
-  .vehicle-edit-form {
-    display: flex;
-    gap: 0.35rem;
-    align-items: center;
-    flex: 1;
-  }
-
-  .cr-edit {
-    flex-shrink: 0;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    padding: 0.1rem 0.3rem;
-    border-radius: 3px;
-    transition: color 0.15s, background 0.15s;
-  }
-  .cr-edit:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-
-  .vehicle-select-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  /* ── Sistema ── */
-  .row-between {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  .row-label { font-size: 0.875rem; font-weight: 500; color: var(--text-primary); }
-  .row-hint  { font-size: 0.75rem; color: var(--text-muted); display: block; margin-top: 0.1rem; }
-
-  .toggle {
-    width: 40px;
-    height: 22px;
-    border-radius: 999px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    position: relative;
-    flex-shrink: 0;
-    cursor: pointer;
-    transition: background 0.2s, border-color 0.2s;
-  }
-  .toggle::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    transition: transform 0.2s, background 0.2s;
-  }
-  .toggle.on {
-    background: color-mix(in srgb, var(--accent) 25%, var(--bg-elevated));
-    border-color: var(--accent);
-  }
-  .toggle.on::after {
-    transform: translateX(18px);
-    background: var(--accent);
-  }
-
-  .btn-secondary {
-    padding: 0.5rem 1rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text-secondary);
-    font-size: 0.85rem;
-    font-weight: 500;
-    align-self: flex-start;
-    transition: color 0.15s, background 0.15s;
-  }
-  .btn-secondary:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-surface); }
-  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  /* ── Datos ── */
-  .danger-zone {
-    border-color: color-mix(in srgb, var(--danger) 35%, transparent);
-  }
-  .danger-zone h2 { color: var(--danger); }
-  .danger-hint {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    margin: 0;
-  }
-  .btn-danger {
-    padding: 0.5rem 1rem;
-    background: color-mix(in srgb, var(--danger) 15%, var(--bg-elevated));
-    border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-    border-radius: var(--radius);
-    color: var(--danger);
-    font-size: 0.85rem;
-    font-weight: 600;
-    align-self: flex-start;
-    transition: background 0.15s;
-  }
-  .btn-danger:hover { background: color-mix(in srgb, var(--danger) 25%, var(--bg-elevated)); }
+  .banner.small { font-size: 0.78rem; padding: 0.4rem 0.75rem; }
 
   /* ── Modal ── */
   .modal-overlay {
@@ -1490,31 +1433,40 @@
     gap: 1rem;
   }
   .modal h2 { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
-  .modal-body { font-size: 0.875rem; color: var(--text-secondary); margin: 0; line-height: 1.5; }
+  .modal-body { font-size: 0.875rem; color: var(--text-secondary); line-height: 1.5; }
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+
   .btn-cancel {
     padding: 0.45rem 1rem;
-    background: var(--bg-elevated);
+    background: transparent;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     color: var(--text-secondary);
-    font-size: 0.85rem;
-    font-weight: 500;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.78rem;
+    font-weight: 600;
   }
-  .btn-cancel:hover:not(:disabled) { color: var(--text-primary); }
+  .btn-cancel:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-secondary); }
   .btn-cancel:disabled { opacity: 0.45; cursor: not-allowed; }
+
   .btn-danger-confirm {
     padding: 0.45rem 1rem;
     background: var(--danger);
     border: 1px solid var(--danger);
     border-radius: var(--radius);
-    color: #fff;
-    font-size: 0.85rem;
-    font-weight: 600;
+    color: var(--bg-base);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.78rem;
+    font-weight: 700;
     transition: opacity 0.15s;
   }
   .btn-danger-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-danger-confirm:hover:not(:disabled) { opacity: 0.85; }
+
   .reset-input {
     -webkit-appearance: none;
     appearance: none;
@@ -1527,8 +1479,8 @@
     padding: 0.5rem 0.75rem;
     outline: none;
     width: 100%;
-    transition: border-color 0.15s;
     box-sizing: border-box;
+    transition: border-color 0.15s;
   }
   .reset-input:focus { border-color: var(--danger); }
 </style>

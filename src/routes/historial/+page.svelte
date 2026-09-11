@@ -1,26 +1,52 @@
 <script lang="ts">
-  import { transactionApi } from "$lib/api";
+  import { entryApi, categoryApi, accountApi } from "$lib/api";
   import { HISTORY_PAGE_SIZE } from "$lib/constants";
-  import type { Transaction, TransactionInput, TransactionPage, CsvExport, ImportResult, PeriodSummary } from "$lib/types";
+  import type { Entry, EntryFilter, Category } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import { txState, bumpTxVersion } from "$lib/txState.svelte";
   import { MESES_CORTO, DIAS_SEMANA } from "$lib/constants";
 
-  type PeriodKey = "Daily" | "Weekly" | "Monthly" | "Yearly";
+  type PeriodKey = "Day" | "Week" | "Month" | "Year" | "All";
 
   const PERIOD_LABELS: Record<PeriodKey, string> = {
-    Daily: "Diario", Weekly: "Semanal", Monthly: "Mensual", Yearly: "Anual",
+    All: "Total", Year: "Anual", Month: "Mensual", Week: "Semanal", Day: "Diario",
   };
+
+  function toISODate(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  // Lunes de la semana de `d` — semana de calendario, no "los últimos 7 días":
+  // si hoy es miércoles, arranca en el lunes de ESTA semana, no hace 7 días.
+  function mondayOf(d: Date): Date {
+    const day = d.getDay(); // 0 = domingo … 6 = sábado
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() + diffToMonday);
+    return monday;
+  }
+
+  function periodRangeDates(key: PeriodKey): { start: string; end: string } {
+    const now = new Date();
+    const end = toISODate(now);
+    const y = now.getFullYear();
+    switch (key) {
+      case "Day":   return { start: end, end };
+      case "Week":  return { start: toISODate(mondayOf(now)), end };
+      case "Month": return { start: `${y}-${String(now.getMonth() + 1).padStart(2, "0")}-01`, end };
+      case "Year":  return { start: `${y}-01-01`, end };
+      case "All":   return { start: "1970-01-01", end };
+    }
+  }
 
   const PAGE_SIZE = HISTORY_PAGE_SIZE;
 
   // ── Filtros ────────────────────────────────────────────────────────────────
-  let activePeriod  = $state<PeriodKey>("Monthly");
-  let filterKind    = $state<"" | "ingreso" | "gasto">("");
+  let activePeriod  = $state<PeriodKey>("Month");
+  let filterKind    = $state<"" | "income" | "expense" | "transfer">("");
   let filterCat     = $state("");
-  let filterDebt    = $state(false);
   let filterSearch  = $state("");
 
   // ── Paginación ────────────────────────────────────────────────────────────
@@ -36,13 +62,27 @@
   });
 
   // ── Datos ─────────────────────────────────────────────────────────────────
-  let txs              = $state<Transaction[]>([]);
-  let categories       = $state<string[]>([]);
-  let periodSummary    = $state<PeriodSummary | null>(null);
+  let txs              = $state<Entry[]>([]);
+  let categories       = $state<Category[]>([]);
+  let categoryMap      = $derived(new Map(categories.map(c => [c.id, c.name])));
   let filteredIncome   = $state(0);
   let filteredExpenses = $state(0);
   let loading          = $state(true);
   let error            = $state<string | null>(null);
+  let payableAccountId = $state<string | null>(null);
+
+  function categoryName(e: Entry): string {
+    if (e.type === "transfer") return "Transferencia";
+    return (e.category_id && categoryMap.get(e.category_id)) ?? "Sin categoría";
+  }
+
+  // Un gasto cuya cuenta de origen es "payable" es una compra a crédito
+  // (deuda) — cuenta como gasto real desde el día uno (sección 4 de
+  // schema-v2.md) pero no sale de disponible hasta que se abona. Se marca
+  // para que no se confunda con un gasto pagado en efectivo.
+  function isCreditExpense(e: Entry): boolean {
+    return e.type === "expense" && e.account_from !== null && e.account_from === payableAccountId;
+  }
 
   // ── Sumatoria filtrada (todas las páginas, viene del backend) ─────────────
   let filteredTotals = $derived({
@@ -51,12 +91,16 @@
     net:      filteredIncome - filteredExpenses,
   });
 
+  // Sin filtro activo, "filtrado" y "el período completo" son lo mismo —
+  // una sola barra de totales cubre ambos casos, solo cambia la etiqueta.
+  let filterActive = $derived(filterKind !== "" || filterCat !== "" || filterSearch !== "");
+
   // ── Agrupamiento por fecha ─────────────────────────────────────────────────
   let grouped = $derived.by(() => {
-    const map = new Map<string, Transaction[]>();
+    const map = new Map<string, Entry[]>();
     for (const tx of txs) {
-      if (!map.has(tx.date)) map.set(tx.date, []);
-      map.get(tx.date)!.push(tx);
+      if (!map.has(tx.occurred_on)) map.set(tx.occurred_on, []);
+      map.get(tx.occurred_on)!.push(tx);
     }
     return [...map.entries()].map(([date, items]) => ({ date, items }));
   });
@@ -73,23 +117,24 @@
   let menuOpen = $state(false);
 
   // ── Edición ───────────────────────────────────────────────────────────────
-  let editingTx          = $state<Transaction | null>(null);
+  // Solo se pueden editar fecha, monto, nota y extraordinario — cambiar tipo,
+  // cuentas o categoría de un movimiento ya creado equivale a otro
+  // movimiento distinto (services::entries::update, backend v2).
+  let editingTx          = $state<Entry | null>(null);
   let editAmount         = $state("");
-  let editCategory       = $state("");
   let editDate           = $state("");
   let editNote           = $state("");
-  let editKind           = $state<"ingreso" | "gasto">("gasto");
   let editExtraord       = $state(false);
   let editSaving         = $state(false);
   let editError          = $state<string | null>(null);
 
   // ── Confirmación eliminar ─────────────────────────────────────────────────
-  let deletingId         = $state<number | null>(null);
-  let deletingInProgress = $state<number | null>(null);
+  let deletingId         = $state<string | null>(null);
+  let deletingInProgress = $state<string | null>(null);
 
   // ── Selección múltiple ────────────────────────────────────────────────────
   let selectMode     = $state(false);
-  let selectedIds    = $state<Set<number>>(new Set());
+  let selectedIds    = $state<Set<string>>(new Set());
   let bulkConfirming = $state(false);
   let bulkDeleting   = $state(false);
   let bulkSuccessMsg = $state<string | null>(null);
@@ -99,7 +144,7 @@
   function enterSelectMode()  { selectMode = true; selectedIds = new Set(); bulkConfirming = false; }
   function exitSelectMode()   { selectMode = false; selectedIds = new Set(); bulkConfirming = false; }
 
-  function toggleSelect(id: number) {
+  function toggleSelect(id: string) {
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id); else next.add(id);
     selectedIds = next;
@@ -118,26 +163,23 @@
     txs = txs.filter(t => !selectedIds.has(t.id));
     exitSelectMode();
     try {
-      const deleted = await transactionApi.removeBulk(ids);
+      const deleted = await entryApi.removeBulk(ids);
       bumpTxVersion();
-      bulkSuccessMsg = `${deleted} transacción${deleted !== 1 ? "es" : ""} eliminada${deleted !== 1 ? "s" : ""}.`;
+      bulkSuccessMsg = `${deleted} movimiento${deleted !== 1 ? "s" : ""} eliminado${deleted !== 1 ? "s" : ""}.`;
       setTimeout(() => { bulkSuccessMsg = null; }, 3000);
       totalCount = Math.max(0, totalCount - ids.length);
     } catch (e) {
       txs = prev;
       console.error("[historial] bulk delete error:", e);
-      error = "No se pudieron eliminar las transacciones. Intenta de nuevo.";
+      error = "No se pudieron eliminar los movimientos. Intenta de nuevo.";
     } finally {
       bulkDeleting = false;
     }
   }
 
-  // ── Exportar / Importar ───────────────────────────────────────────────────
+  // ── Exportar ──────────────────────────────────────────────────────────────
   let exporting    = $state(false);
-  let importing    = $state(false);
-  let importResult = $state<ImportResult | null>(null);
   let reloadKey    = $state(0);
-  let fileInputEl: HTMLInputElement | undefined = $state();
 
   // ── Utilidades ─────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
@@ -154,16 +196,16 @@
   function formatDateLong(iso: string): string {
     const [y, m, d] = iso.split("-").map(Number);
     const dt = new Date(y, m - 1, d);
-    return `${d} ${MESES_CORTO[m - 1]}, ${DIAS_SEMANA[dt.getDay()]}`;
+    return `${d} ${MESES_CORTO[m - 1]} ${y}, ${DIAS_SEMANA[dt.getDay()]}`;
   }
 
-  function buildFilter() {
+  function buildFilter(): EntryFilter {
+    const { start, end } = periodRangeDates(activePeriod);
     return {
-      period:      { type: activePeriod },
-      kind:        filterKind   || null,
-      category:    filterCat    || null,
+      start, end,
+      type:        filterKind   || null,
+      category_id: filterCat    || null,
       search_note: filterSearch || null,
-      only_debt:   filterDebt   || null,
       page:        currentPage,
       page_size:   PAGE_SIZE,
     };
@@ -180,10 +222,15 @@
   });
 
   $effect(() => {
+    accountApi.list().then(accs => {
+      payableAccountId = accs.find(a => a.code === "payable")?.id ?? null;
+    }).catch(() => {});
+  });
+
+  $effect(() => {
     const _period = activePeriod;
     const _kind   = filterKind;
     const _cat    = filterCat;
-    const _debt   = filterDebt;
     const _search = filterSearch;
     const _reload = reloadKey;
     const _v      = txState.version;
@@ -194,24 +241,22 @@
       loading = true;
       error   = null;
       try {
-        const [result, cats, pSummary] = await Promise.all([
-          transactionApi.list(buildFilter()),
-          transactionApi.listCategories(),
-          transactionApi.getPeriodSummary({ type: activePeriod }),
+        const [result, cats] = await Promise.all([
+          entryApi.list(buildFilter()),
+          categoryApi.list(),
         ]);
         if (!cancelled) {
-          txs              = result.transactions;
+          txs              = result.entries;
           totalCount       = result.total_count;
           filteredIncome   = result.filtered_income;
-          filteredExpenses = result.filtered_expenses;
+          filteredExpenses = result.filtered_expense;
           categories       = cats;
-          periodSummary    = pSummary;
           loading          = false;
         }
       } catch (e) {
         if (!cancelled) {
           console.error("[historial] load error:", e);
-          error   = "No se pudieron cargar las transacciones.";
+          error   = "No se pudieron cargar los movimientos.";
           loading = false;
         }
       }
@@ -223,16 +268,13 @@
 
   // ── Edición ────────────────────────────────────────────────────────────────
 
-  function startEdit(tx: Transaction) {
+  function startEdit(tx: Entry) {
     editingTx    = tx;
-    editKind     = tx.type as "ingreso" | "gasto";
-    editDate     = tx.date;
+    editDate     = tx.occurred_on;
     editNote     = tx.note ?? "";
     editExtraord = tx.is_extraordinary;
-    editAmount   = tx.amount.toString();
+    editAmount   = tx.amount_cop.toString();
     editError    = null;
-
-    editCategory = tx.category;
   }
 
   function cancelEdit() { editingTx = null; }
@@ -245,13 +287,7 @@
     editError  = null;
 
     try {
-      const input: TransactionInput = {
-        date: editDate, type: editKind, category: editCategory,
-        amount: amt, note: editNote.trim() || null,
-        is_extraordinary: editExtraord, goal_id: editingTx.goal_id,
-        gas_km: null, is_debt: editingTx.is_debt,
-      };
-      const updated = await transactionApi.update(editingTx.id, input);
+      const updated = await entryApi.update(editingTx.id, editDate, amt, editNote.trim() || null, editExtraord);
       txs = txs.map(t => t.id === updated.id ? updated : t);
       editingTx = null;
       bumpTxVersion();
@@ -263,56 +299,32 @@
     }
   }
 
-  async function confirmDelete(id: number) {
+  async function confirmDelete(id: string) {
     deletingInProgress = id;
     deletingId = null;
     const prev = txs;
     txs = txs.filter(t => t.id !== id);
     totalCount = Math.max(0, totalCount - 1);
     try {
-      await transactionApi.remove(id);
+      await entryApi.remove(id);
       bumpTxVersion();
     } catch (e) {
       txs = prev;
       totalCount += 1;
-      error = "No se pudo eliminar la transacción. Intenta de nuevo.";
+      error = "No se pudo eliminar el movimiento. Intenta de nuevo.";
     } finally {
       deletingInProgress = null;
     }
   }
 
-  function triggerImport() { importResult = null; fileInputEl?.click(); }
-
-  function handleImportFile(e: Event & { currentTarget: HTMLInputElement }) {
-    const file = e.currentTarget.files?.[0];
-    if (!file) return;
-    importing    = true;
-    importResult = null;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const content = ev.target?.result as string;
-      try {
-        const result = await transactionApi.importCsv(content);
-        importResult = result;
-        if (result.imported > 0) { bumpTxVersion(); reloadKey += 1; currentPage = 1; }
-      } catch (err) {
-        error = typeof err === "string" ? err : "Error al importar el archivo.";
-      } finally {
-        importing = false;
-        if (fileInputEl) fileInputEl.value = "";
-      }
-    };
-    reader.readAsText(file);
-  }
-
   async function exportCSV() {
     exporting = true;
     try {
-      const result = await transactionApi.exportCsv({
-        period: { type: activePeriod },
-        kind: filterKind || null,
-        category: filterCat || null,
-        only_debt: filterDebt || null,
+      const { start, end } = periodRangeDates(activePeriod);
+      const result = await entryApi.exportCsv({
+        start, end,
+        type: filterKind || null,
+        category_id: filterCat || null,
       });
       const blob = new Blob([result.content], { type: "text/csv;charset=utf-8;" });
       const url  = URL.createObjectURL(blob);
@@ -335,45 +347,7 @@
   <!-- Toolbar -->
   <div class="toolbar">
     <h1>Historial</h1>
-    <div class="toolbar-right">
-      <div class="menu-wrap">
-        <button
-          class="action-btn icon-btn"
-          onclick={() => { menuOpen = !menuOpen; }}
-          aria-label="Menú acciones"
-        >⋯</button>
-        {#if menuOpen}
-          <div
-            class="menu-overlay"
-            role="button"
-            tabindex="-1"
-            onclick={() => { menuOpen = false; }}
-            onkeydown={() => {}}
-          ></div>
-          <div class="menu-dropdown">
-            <button
-              class="menu-item"
-              onclick={() => { menuOpen = false; triggerImport(); }}
-              disabled={importing}
-            >{importing ? "Importando…" : "Importar CSV"}</button>
-            <button
-              class="menu-item"
-              onclick={() => { menuOpen = false; exportCSV(); }}
-              disabled={exporting || txs.length === 0}
-            >{exporting ? "Exportando…" : "Exportar CSV"}</button>
-          </div>
-        {/if}
-      </div>
-    </div>
   </div>
-
-  <input
-    type="file"
-    accept=".csv,text/csv"
-    bind:this={fileInputEl}
-    onchange={handleImportFile}
-    style="display:none"
-  />
 
   <!-- Filtros -->
   {#if !selectMode}
@@ -390,12 +364,12 @@
 
     <!-- Tipo: pills -->
     <div class="kind-pills">
-      {#each [["", "Todos"], ["ingreso", "Ingresos"], ["gasto", "Gastos"]] as [val, label]}
+      {#each [["", "Todos"], ["income", "Ingresos"], ["expense", "Gastos"], ["transfer", "Transferencias"]] as [val, label]}
         <button
           class="kind-pill"
           class:active={filterKind === val}
-          class:income={val === "ingreso" && filterKind === val}
-          class:expense={val === "gasto" && filterKind === val}
+          class:income={val === "income" && filterKind === val}
+          class:expense={val === "expense" && filterKind === val}
           onclick={() => { filterKind = val as typeof filterKind; currentPage = 1; }}
         >{label}</button>
       {/each}
@@ -407,19 +381,11 @@
         value={filterCat}
         options={[
           { value: "", label: "Categorías" },
-          ...categories.map(c => ({ value: c, label: c })),
+          ...categories.map(c => ({ value: c.id, label: c.name })),
         ]}
         onchange={(v) => { filterCat = v; currentPage = 1; }}
       />
     </div>
-
-    <!-- Deudas -->
-    <button
-      type="button"
-      class="filter-pill"
-      class:active={filterDebt}
-      onclick={() => { filterDebt = !filterDebt; currentPage = 1; }}
-    >Solo deudas</button>
 
     <!-- Búsqueda -->
     <div class="search-wrap">
@@ -434,30 +400,59 @@
         <button class="search-clear" onclick={() => { filterSearch = ""; currentPage = 1; }}>×</button>
       {/if}
     </div>
+
+    <!-- Menú acciones — misma fila y altura que los demás controles -->
+    <div class="menu-wrap">
+      <button
+        class="action-btn icon-btn"
+        onclick={() => { menuOpen = !menuOpen; }}
+        aria-label="Menú acciones"
+      >⋯</button>
+      {#if menuOpen}
+        <div
+          class="menu-overlay"
+          role="button"
+          tabindex="-1"
+          onclick={() => { menuOpen = false; }}
+          onkeydown={() => {}}
+        ></div>
+        <div class="menu-dropdown">
+          <button
+            class="menu-item"
+            onclick={() => { menuOpen = false; exportCSV(); }}
+            disabled={exporting || txs.length === 0}
+          >{exporting ? "Exportando…" : "Exportar CSV"}</button>
+        </div>
+      {/if}
+    </div>
   </div>
   {/if}
 
-  <!-- Stats bar -->
-  {#if !loading && periodSummary}
+  <!-- Totales — una sola barra: sin filtro es el total del período, con
+       filtro es el total de lo que se ve (antes había dos barras casi
+       idénticas, una arriba sin filtrar y otra abajo filtrada). -->
+  {#if !loading && txs.length > 0}
     <div class="stats-bar">
+      <span class="ft-prefix">{filterActive ? "Filtrado" : "Este período"}</span>
+      <span class="stat-div">|</span>
       <span class="stat">
         <span class="stat-lbl">Ingresos</span>
-        <span class="stat-val income">+{formatCOP(periodSummary.total_income)}</span>
+        <span class="stat-val income">+{formatCOP(filteredTotals.income)}</span>
       </span>
       <span class="stat-div">|</span>
       <span class="stat">
         <span class="stat-lbl">Gastos</span>
-        <span class="stat-val expense">−{formatCOP(periodSummary.total_expenses)}</span>
+        <span class="stat-val expense">−{formatCOP(filteredTotals.expenses)}</span>
       </span>
       <span class="stat-div">|</span>
       <span class="stat">
-        <span class="stat-lbl">Balance</span>
+        <span class="stat-lbl">Neto</span>
         <span
           class="stat-val"
-          class:income={periodSummary.balance >= 0}
-          class:expense={periodSummary.balance < 0}
+          class:income={filteredTotals.net >= 0}
+          class:expense={filteredTotals.net < 0}
         >
-          {periodSummary.balance >= 0 ? "+" : "−"}{formatCOP(Math.abs(periodSummary.balance))}
+          {filteredTotals.net >= 0 ? "+" : "−"}{formatCOP(Math.abs(filteredTotals.net))}
         </span>
       </span>
     </div>
@@ -472,22 +467,6 @@
     <div class="banner success">{bulkSuccessMsg}</div>
   {/if}
 
-  {#if importResult}
-    <div class="banner" class:success={importResult.skipped === 0} class:warning={importResult.skipped > 0}>
-      <strong>Importación completada</strong>
-      <span>{importResult.imported} importadas, {importResult.skipped} omitidas</span>
-      {#if importResult.errors.length > 0}
-        <ul class="import-errors">
-          {#each importResult.errors.slice(0, 5) as err}
-            <li>{err}</li>
-          {/each}
-          {#if importResult.errors.length > 5}
-            <li>… y {importResult.errors.length - 5} más</li>
-          {/if}
-        </ul>
-      {/if}
-    </div>
-  {/if}
 
   <!-- Seleccionar -->
   {#if !selectMode && txs.length > 0}
@@ -513,7 +492,7 @@
     <div class="timeline-wrap">
       <ScrollArea class="tl-scroll" scrollbar="thin">
       {#each grouped as group (group.date)}
-        {@const net = group.items.reduce((s, t) => s + (t.type === "ingreso" ? t.amount : -t.amount), 0)}
+        {@const net = group.items.reduce((s, t) => s + (t.type === "income" ? t.amount_cop : t.type === "expense" ? -t.amount_cop : 0), 0)}
         <div class="date-group">
           <!-- Group header -->
           <button
@@ -553,20 +532,21 @@
 
                 <span
                   class="tx-badge"
-                  class:badge-income={tx.type === "ingreso"}
-                  class:badge-expense={tx.type === "gasto"}
+                  class:badge-income={tx.type === "income"}
+                  class:badge-expense={tx.type === "expense"}
+                  class:badge-transfer={tx.type === "transfer"}
                 >
-                  {tx.type === "ingreso" ? "↑" : "↓"}
+                  {tx.type === "income" ? "↑" : tx.type === "expense" ? "↓" : "→"}
                 </span>
 
-                <span class="tx-cat">{tx.category}</span>
+                <span class="tx-cat">{categoryName(tx)}</span>
 
                 {#if tx.note}
                   <span class="tx-note">{tx.note}</span>
                 {/if}
 
-                {#if tx.is_debt}
-                  <span class="tx-tag debt">deuda</span>
+                {#if isCreditExpense(tx)}
+                  <span class="tx-tag credit" title="Gasto a crédito — cuenta como gasto real, pero no descuenta tu disponible hasta que abones la deuda">A crédito</span>
                 {/if}
 
                 {#if tx.is_extraordinary}
@@ -577,10 +557,10 @@
 
                 <span
                   class="tx-amount"
-                  class:income={tx.type === "ingreso"}
-                  class:expense={tx.type === "gasto"}
+                  class:income={tx.type === "income"}
+                  class:expense={tx.type === "expense"}
                 >
-                  {tx.type === "ingreso" ? "+" : "−"}{formatCOP(tx.amount)}
+                  {tx.type === "income" ? "+" : tx.type === "expense" ? "−" : "→"}{formatCOP(tx.amount_cop)}
                 </span>
 
                 {#if !selectMode}
@@ -616,32 +596,6 @@
     </div>
   {/if}
 
-  <!-- Sumatoria filtrada -->
-  {#if !loading && txs.length > 0}
-    <div class="filter-totals">
-      <span class="ft-prefix">Filtrado</span>
-      <span class="ft-div">|</span>
-      <span class="ft-item">
-        <span class="ft-lbl">Ingresos</span>
-        <span class="ft-val income">+{formatCOP(filteredTotals.income)}</span>
-      </span>
-      <span class="ft-div">|</span>
-      <span class="ft-item">
-        <span class="ft-lbl">Gastos</span>
-        <span class="ft-val expense">−{formatCOP(filteredTotals.expenses)}</span>
-      </span>
-      <span class="ft-div">|</span>
-      <span class="ft-item">
-        <span class="ft-lbl">Neto</span>
-        <span
-          class="ft-val"
-          class:income={filteredTotals.net >= 0}
-          class:expense={filteredTotals.net < 0}
-        >{filteredTotals.net >= 0 ? "+" : "−"}{formatCOP(Math.abs(filteredTotals.net))}</span>
-      </span>
-    </div>
-  {/if}
-
   <!-- Selection bar (bottom, fixed when select mode active) -->
   {#if selectMode}
     <div class="selection-bar">
@@ -669,12 +623,6 @@
   <div class="page-footer">
     <div class="footer-left">
       <span class="total-count">{totalCount} registros</span>
-      {#if periodSummary !== null}
-        {@const bal = periodSummary.balance}
-        <span class="page-total" class:income={bal >= 0} class:expense={bal < 0}>
-          Total período: {bal >= 0 ? "+" : "−"}{formatCOP(Math.abs(bal))}
-        </span>
-      {/if}
     </div>
 
     {#if totalPages > 1}
@@ -724,27 +672,19 @@
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
     >
-      <h2>Editar transacción #{editingTx.id}</h2>
+      <h2>Editar movimiento</h2>
 
       {#if editError}
         <div class="banner error"><pre>{editError}</pre></div>
       {/if}
 
+      <p class="edit-readonly-hint">
+        {categoryName(editingTx)} ·
+        {editingTx.type === "income" ? "Ingreso" : editingTx.type === "expense" ? "Gasto" : "Transferencia"}
+        <br />El tipo y la categoría no se pueden cambiar aquí — borra y vuelve a crear el movimiento si te equivocaste.
+      </p>
+
       <div class="modal-form">
-        <div class="type-toggle">
-          <button type="button" class="toggle-btn income" class:active={editKind === "ingreso"} onclick={() => { editKind = "ingreso"; }}>Ingreso</button>
-          <button type="button" class="toggle-btn expense" class:active={editKind === "gasto"} onclick={() => { editKind = "gasto"; }}>Gasto</button>
-        </div>
-
-        <div class="field">
-          <span class="field-label">Categoría</span>
-          <CustomSelect
-            bind:value={editCategory}
-            options={categories.map(c => ({ value: c, label: c }))}
-            placeholder="Selecciona categoría…"
-          />
-        </div>
-
         <div class="field">
           <label for="edit-amount">Monto</label>
           <input id="edit-amount" type="number" min="1" bind:value={editAmount} />
@@ -796,22 +736,22 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.75rem;
     min-height: 32px;
   }
 
   h1 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
 
-  .toolbar-right { display: flex; align-items: center; gap: 0.4rem; }
-
   .action-btn {
     padding: 0.35rem 0.8rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    font-size: 0.78rem;
-    font-weight: 500;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
     transition: color 0.15s, background 0.15s;
   }
@@ -821,7 +761,7 @@
   .icon-btn { padding: 0.35rem 0.7rem; font-size: 1rem; letter-spacing: -0.1em; }
 
   /* ⋯ dropdown */
-  .menu-wrap { position: relative; }
+  .menu-wrap { position: relative; margin-left: auto; }
 
   .menu-overlay {
     position: fixed;
@@ -838,7 +778,6 @@
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
     min-width: 148px;
     padding: 0.3rem;
     display: flex;
@@ -850,8 +789,11 @@
     width: 100%;
     text-align: left;
     padding: 0.45rem 0.65rem;
-    border-radius: 5px;
-    font-size: 0.82rem;
+    border-radius: var(--radius);
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
     transition: background 0.12s, color 0.12s;
   }
@@ -873,19 +815,22 @@
     gap: 3px;
     background: var(--bg-elevated);
     padding: 3px;
-    border-radius: 7px;
+    border-radius: var(--radius);
   }
 
   .period-selector button {
     padding: 0.28rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 500;
+    border-radius: var(--radius);
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
     transition: background 0.15s, color 0.15s;
   }
   .period-selector button:hover { color: var(--text-primary); background: var(--bg-surface); }
-  .period-selector button.active { background: var(--accent); color: #fff; }
+  .period-selector button.active { background: var(--accent); color: var(--bg-base); }
 
   /* Kind pills */
   .kind-pills {
@@ -893,14 +838,17 @@
     gap: 3px;
     background: var(--bg-elevated);
     padding: 3px;
-    border-radius: 7px;
+    border-radius: var(--radius);
   }
 
   .kind-pill {
     padding: 0.28rem 0.65rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 500;
+    border-radius: var(--radius);
+    font-size: 0.68rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-secondary);
     transition: background 0.15s, color 0.15s;
     white-space: nowrap;
@@ -915,23 +863,6 @@
     --cs-padding: 0.32rem 0.6rem;
   }
 
-  .filter-pill {
-    padding: 0.32rem 0.7rem;
-    border-radius: var(--radius);
-    font-size: 0.78rem;
-    font-weight: 500;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .filter-pill:hover { color: var(--text-primary); }
-  .filter-pill.active {
-    background: color-mix(in srgb, var(--danger) 15%, var(--bg-elevated));
-    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
-    color: var(--danger);
-  }
 
   /* Search */
   .search-wrap {
@@ -943,10 +874,10 @@
   .search-input {
     -webkit-appearance: none;
     appearance: none;
-    background: #14141f;
-    border: 1px solid #2a2a40;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius);
-    color: #e8e8f0;
+    color: var(--text-primary);
     font: inherit;
     font-size: 0.78rem;
     padding: 0.32rem 1.5rem 0.32rem 0.6rem;
@@ -983,7 +914,7 @@
 
   .stat { display: flex; align-items: center; gap: 0.4rem; }
   .stat-lbl { color: var(--text-muted); }
-  .stat-val { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .stat-val { font-weight: 600; font-variant-numeric: tabular-nums; font-family: var(--font-mono); color: var(--text-secondary); }
   .stat-val.income  { color: var(--success); }
   .stat-val.expense { color: var(--danger); }
   .stat-div { color: var(--border); font-size: 0.9rem; }
@@ -1009,13 +940,7 @@
     color: var(--success);
     font-weight: 500;
   }
-  .banner.warning {
-    background: color-mix(in srgb, var(--warning) 12%, var(--bg-surface));
-    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
-    color: var(--warning);
-  }
   .banner pre { font-size: 0.7rem; opacity: 0.8; white-space: pre-wrap; word-break: break-all; }
-  .import-errors { font-size: 0.72rem; opacity: 0.85; margin-top: 0.2rem; padding-left: 1.1rem; }
 
   /* ── Select row (above timeline) ── */
   .select-row {
@@ -1025,8 +950,11 @@
   }
 
   .select-trigger {
-    font-size: 0.72rem;
-    font-weight: 500;
+    font-size: 0.68rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-muted);
     padding: 0.15rem 0.5rem;
     border-radius: var(--radius);
@@ -1068,7 +996,7 @@
     width: 14px;
     height: 14px;
     border: 1.5px solid var(--border);
-    border-radius: 3px;
+    border-radius: var(--radius);
     background: var(--bg-elevated);
     cursor: pointer;
     position: relative;
@@ -1081,7 +1009,7 @@
     position: absolute;
     left: 3px; top: 0px;
     width: 4px; height: 8px;
-    border: 2px solid #fff;
+    border: 2px solid var(--bg-base);
     border-top: none; border-left: none;
     transform: rotate(45deg);
   }
@@ -1102,8 +1030,11 @@
   .sel-btn {
     padding: 0.28rem 0.65rem;
     border-radius: var(--radius);
-    font-size: 0.75rem;
-    font-weight: 500;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     color: var(--text-secondary);
@@ -1182,7 +1113,7 @@
   }
 
   .group-net {
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
     font-weight: 700;
     white-space: nowrap;
     font-size: 0.75rem;
@@ -1219,7 +1150,7 @@
     width: 15px;
     height: 15px;
     border: 1.5px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius);
     background: var(--bg-elevated);
     cursor: pointer;
     position: relative;
@@ -1233,7 +1164,7 @@
     position: absolute;
     left: 4px; top: 1px;
     width: 4px; height: 8px;
-    border: 2px solid #fff;
+    border: 2px solid var(--bg-base);
     border-top: none; border-left: none;
     transform: rotate(45deg);
   }
@@ -1246,12 +1177,13 @@
     justify-content: center;
     width: 20px;
     height: 20px;
-    border-radius: 5px;
+    border-radius: var(--radius);
     font-size: 0.7rem;
     font-weight: 700;
   }
-  .badge-income  { background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated)); color: var(--success); }
-  .badge-expense { background: color-mix(in srgb, var(--danger)  18%, var(--bg-elevated)); color: var(--danger); }
+  .badge-income   { background: color-mix(in srgb, var(--success) 18%, var(--bg-elevated)); color: var(--success); }
+  .badge-expense  { background: color-mix(in srgb, var(--danger)  18%, var(--bg-elevated)); color: var(--danger); }
+  .badge-transfer { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
 
   /* Category */
   .tx-cat {
@@ -1280,11 +1212,11 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    border-radius: 3px;
+    border-radius: var(--radius);
     padding: 0.1rem 0.35rem;
   }
-  .tx-tag.debt  { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); }
-  .tx-tag.extra { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); font-size: 0.58rem; }
+  .tx-tag.extra { background: transparent; color: var(--accent); border: 1px solid var(--accent); font-family: var(--font-mono); font-size: 0.58rem; }
+  .tx-tag.credit { background: transparent; color: var(--text-muted); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 0.58rem; }
 
   /* Gap / spacer */
   .tx-gap { flex: 1; min-width: 0.25rem; }
@@ -1294,7 +1226,7 @@
     flex-shrink: 0;
     font-size: 0.85rem;
     font-weight: 600;
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums; font-family: var(--font-mono);
     white-space: nowrap;
   }
   .tx-amount.income  { color: var(--success); }
@@ -1314,10 +1246,13 @@
   .tx-row:hover .tx-actions { opacity: 1; }
 
   .act-btn {
-    font-size: 0.72rem;
+    font-size: 0.66rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--text-muted);
     padding: 0.15rem 0.4rem;
-    border-radius: 4px;
+    border-radius: var(--radius);
     transition: color 0.15s, background 0.15s;
     white-space: nowrap;
   }
@@ -1346,16 +1281,14 @@
 
   .footer-left { display: flex; align-items: center; gap: 1rem; font-size: 0.78rem; }
   .total-count { color: var(--text-muted); }
-  .page-total  { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-  .page-total.income  { color: var(--success); }
-  .page-total.expense { color: var(--danger); }
 
   /* ── Paginación ── */
   .pagination { display: flex; align-items: center; gap: 2px; }
 
   .page-btn {
     min-width: 28px; height: 28px;
-    border-radius: 5px; font-size: 0.78rem; font-weight: 500;
+    border-radius: var(--radius); font-size: 0.78rem; font-weight: 500;
+    font-family: var(--font-mono);
     padding: 0 0.4rem;
     background: var(--bg-elevated); border: 1px solid var(--border);
     color: var(--text-secondary);
@@ -1364,7 +1297,7 @@
   }
   .page-btn:hover:not(:disabled) { background: var(--bg-surface); color: var(--text-primary); }
   .page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .page-btn.active { background: var(--accent); border-color: var(--accent); color: var(--bg-base); }
   .page-ellipsis { color: var(--text-muted); font-size: 0.78rem; padding: 0 0.1rem; }
 
   /* ── Modal ── */
@@ -1382,7 +1315,7 @@
   .modal {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: calc(var(--radius) + 4px);
+    border-radius: var(--radius);
     padding: 1.5rem;
     width: 100%;
     max-width: 400px;
@@ -1392,6 +1325,7 @@
   }
 
   .modal h2 { font-size: 1rem; font-weight: 600; color: var(--text-primary); }
+  .edit-readonly-hint { font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; margin: -0.5rem 0 0; }
   .modal-form { display: flex; flex-direction: column; gap: 0.75rem; }
 
   .field { display: flex; flex-direction: column; gap: 0.3rem; }
@@ -1400,51 +1334,65 @@
   input[type="text"],
   input[type="number"] {
     -webkit-appearance: none; appearance: none;
-    background-color: #1c1c2e; border: 1px solid #2a2a40;
+    background-color: var(--bg-elevated); border: 1px solid var(--border);
     border-radius: var(--radius);
-    color: #e8e8f0; font: inherit; font-size: 0.875rem;
+    color: var(--text-primary); font: inherit; font-size: 0.875rem;
     padding: 0.5rem 0.65rem; outline: none; width: 100%;
   }
+
+  input[type="number"] { font-family: var(--font-mono); }
 
   input:focus { border-color: var(--accent); }
 
   .checkbox-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); cursor: pointer; }
-  .checkbox-row input { accent-color: var(--accent); }
 
-  .type-toggle { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg-elevated); border-radius: var(--radius); padding: 3px; gap: 3px; }
-  .toggle-btn { padding: 0.45rem; border-radius: 5px; font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
-  .toggle-btn.income.active  { background: color-mix(in srgb, var(--success) 20%, var(--bg-surface)); color: var(--success); }
-  .toggle-btn.expense.active { background: color-mix(in srgb, var(--danger)  20%, var(--bg-surface)); color: var(--danger); }
+  /* Mismo checkbox propio que .tx-check/.sel-check más arriba — antes este
+     era el único checkbox nativo del archivo, con un estilo distinto. */
+  .checkbox-row input {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .checkbox-row input:hover { border-color: var(--accent); }
+  .checkbox-row input:checked { background: var(--accent); border-color: var(--accent); }
+  .checkbox-row input:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: 2px solid var(--bg-base);
+    border-top: none; border-left: none;
+    transform: rotate(45deg);
+  }
+
 
 
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 0.25rem; }
 
   .btn-cancel {
-    padding: 0.5rem 1rem; background: var(--bg-elevated); border: 1px solid var(--border);
-    border-radius: var(--radius); font-size: 0.85rem; color: var(--text-secondary);
+    padding: 0.5rem 1rem; background: transparent; border: 1px solid var(--border);
+    border-radius: var(--radius); font-size: 0.78rem; color: var(--text-secondary);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
+    transition: border-color 0.15s, color 0.15s;
   }
-  .btn-cancel:hover { color: var(--text-primary); }
+  .btn-cancel:hover { color: var(--text-primary); border-color: var(--text-secondary); }
 
   .btn-save {
     padding: 0.5rem 1rem; background: var(--accent); border-radius: var(--radius);
-    font-size: 0.85rem; font-weight: 600; color: #fff;
+    font-size: 0.78rem; font-weight: 700; color: var(--bg-base);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;
     transition: background 0.15s, opacity 0.15s;
   }
   .btn-save:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-save:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  /* ── Sumatoria filtrada ── */
-  .filter-totals {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.75rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    font-size: 0.76rem;
-  }
 
   .ft-prefix {
     font-size: 0.68rem;
@@ -1454,18 +1402,4 @@
     color: var(--text-muted);
     flex-shrink: 0;
   }
-
-  .ft-div { color: var(--border); font-size: 0.9rem; flex-shrink: 0; }
-
-  .ft-item { display: flex; align-items: center; gap: 0.35rem; }
-
-  .ft-lbl { color: var(--text-muted); }
-
-  .ft-val {
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    color: var(--text-secondary);
-  }
-  .ft-val.income  { color: var(--success); }
-  .ft-val.expense { color: var(--danger); }
 </style>

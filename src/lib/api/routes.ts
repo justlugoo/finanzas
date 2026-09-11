@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CustomRoute, CustomRouteInput } from "$lib/types";
+import type { RouteInputV2, RouteV2 } from "$lib/types";
 
 export const list = () =>
-  invoke<CustomRoute[]>("get_custom_routes");
+  invoke<RouteV2[]>("route_list_v2");
 
-export const save = (route: CustomRouteInput) =>
-  invoke<CustomRoute>("save_custom_route", { route });
+export const save = (input: RouteInputV2) =>
+  invoke<RouteV2>("route_save_v2", { input });
 
-export const remove = (id: number) =>
-  invoke<void>("delete_custom_route", { id });
+export const remove = (id: string) =>
+  invoke<void>("route_delete_v2", { id });
