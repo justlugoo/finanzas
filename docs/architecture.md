@@ -1,6 +1,6 @@
-# Arquitectura — Finanzas
+# Arquitectura — FinCapX
 
-Referencia técnica del proyecto: stack, estructura, base de datos, comandos y convenciones.
+Referencia técnica del proyecto para quien vaya a desarrollar sobre él: stack, estructura de carpetas, modelo de datos, comandos Tauri y convenciones de frontend. Para instalar o usar la app como usuario final, ver [`README.md`](../README.md). Para comandos de desarrollo día a día (`pnpm tauri dev`, `pnpm check`, etc.), ver [`CLAUDE.md`](../CLAUDE.md).
 
 ---
 
@@ -8,675 +8,168 @@ Referencia técnica del proyecto: stack, estructura, base de datos, comandos y c
 
 | Capa | Tecnología |
 |------|-----------|
-| Framework desktop | Tauri 2.x |
+| Framework desktop | Tauri 2 |
 | Backend | Rust (stable) |
-| Frontend | Svelte 5 (runes API) |
-| Estilos | CSS puro con variables — sin frameworks UI |
-| Base de datos | SQLite local vía `libsql` (modo local, sin sync cloud) |
+| Frontend | Svelte 5 (runes API — `$state`, `$derived`, `$effect`) + SvelteKit (`adapter-static`, SPA sin SSR) |
+| Estilos | CSS puro con variables (`src/app.css`) — sin frameworks UI |
+| Base de datos | SQLite local vía `libsql` — sin servidor, sin sync cloud |
 | Gestor de paquetes | pnpm |
 | Empaquetado | `tauri build` → `.rpm` y `.deb` |
 
-**Plataforma objetivo:** Linux (Fedora 44+). No se genera AppImage (requiere FUSE 2, no disponible por defecto en Fedora).
+**Plataforma objetivo:** Linux. No se genera AppImage (requiere FUSE 2, no disponible por defecto en Fedora).
 
 ---
 
-## 2. Estructura del proyecto
+## 2. Estado actual del proyecto — leer esto antes de tocar nada
+
+FinCapX pasó por un rediseño completo de modelo de datos (v1 → v2, detallado en la sección 5) para corregir bugs estructurales de v1: un ahorro no puede representarse sin que parezca un gasto, una compra a crédito se contaba dos veces, no existía un tipo "transferencia" que no afectara el patrimonio, etc.
+
+**A la fecha de este documento:**
+
+- El **frontend está escrito al 100% contra comandos v2** (`src/lib/api/*.ts` → `*_v2` en Rust, con la única excepción de `gas.ts`, que reutiliza los comandos v1 de precio de gasolina tal cual — esa parte del modelo no cambió con la migración).
+- El **backend mantiene ambos módulos en paralelo**: `commands/services/repositories/{modulo}.rs` (v1, ya no llamado por el frontend, vivo solo para no romper compilación mientras se confirma la migración) y `{modulo}_v2.rs` (el que realmente se usa). Los dos siguen registrados en `invoke_handler!` (`src-tauri/src/lib.rs`).
+- **El esquema v2 (tablas `accounts`, `entries`, `goals`, `loans`, `vehicles`, `fillups`, `trips`, `fuel_adjustments`, `budgets`, `budget_overrides`, `routes`, `categories`) NO se crea automáticamente al iniciar la app.** `db::apply_schema()` (llamado en cada arranque desde `init_db()` en `lib.rs`) solo garantiza el esquema v1. Las tablas v2 solo existen si en algún momento se ejecutó `migrations::migrate_001_schema_v2` contra esa base de datos concreta — hoy eso solo pasa en los tests de integración y en `src-tauri/examples/dry_run_migration.rs`, **nunca automáticamente en la app real**.
+- Esto significa: **una base de datos completamente nueva (developer que clona el repo por primera vez, o la base de datos de producción real del usuario, que sigue en v1) no funciona tal cual** — el frontend pedirá comandos que consultan tablas inexistentes. Antes de poder usar la app end-to-end hace falta correr `migrate_001_schema_v2` una vez contra esa base (ver sección 6).
+- La base de datos de **desarrollo** (`~/.local/share/finanzas-dev/local.db`, la que usa `pnpm tauri dev`) ya fue migrada manualmente durante el desarrollo de v2 y sigue así entre sesiones — por eso `pnpm tauri dev` funciona sin pasos extra en este equipo. Un clon nuevo del repo, o borrar ese archivo, requiere repetir la migración.
+- La base de datos de **producción** (`~/.local/share/finanzas/local.db`, la que usa el binario instalado) **todavía no se ha migrado** — sigue en v1. El corte real (backup + `migrate_001_schema_v2` + ajuste de saldo inicial de caja) es una decisión deliberada del usuario, pendiente.
+
+En resumen: el código está completo y probado, pero **compilar e instalar este proyecto tal cual reemplazaría un binario v1 funcional por uno v2 que no tiene tablas que leer**, hasta que se corra la migración. No asumir que "clonar y `pnpm tauri build`" es suficiente sin ese paso.
+
+---
+
+## 3. Arquitectura del backend — 3 capas estrictas
 
 ```
-Finanzas/
-├── src/                        # Frontend Svelte
-│   ├── app.css                 # Variables CSS globales, tema oscuro
-│   ├── lib/
-│   │   ├── constants.ts        # MESES, MESES_CORTO, DIAS_SEMANA
-│   │   ├── types.ts            # Interfaces TypeScript espejo de structs Rust
-│   │   ├── api/                # Capa de acceso al backend (centraliza invoke)
-│   │   │   ├── index.ts        # Re-exports de todos los módulos
-│   │   │   ├── transactions.ts
-│   │   │   ├── budgets.ts
-│   │   │   ├── goals.ts
-│   │   │   ├── loans.ts
-│   │   │   ├── metas.ts
-│   │   │   ├── fillups.ts
-│   │   │   ├── gas.ts
-│   │   │   ├── vehicles.ts
-│   │   │   ├── routes.ts
-│   │   │   └── system.ts
-│   │   └── components/
-│   │       ├── CustomSelect.svelte
-│   │       ├── DatePicker.svelte
-│   │       ├── PaymentModal.svelte
-│   │       └── ScrollArea.svelte
-│   └── routes/
-│       ├── +layout.svelte      # Layout global: nav + widget sidebar
-│       ├── +page.svelte        # Resumen (dashboard)
-│       ├── registrar/+page.svelte
-│       ├── historial/+page.svelte
-│       ├── metas/+page.svelte
-│       └── config/+page.svelte
-├── src-tauri/
-│   └── src/
-│       ├── main.rs             # Entry point
-│       ├── lib.rs              # Setup Tauri: tray, autostart, invoke_handler
-│       ├── error.rs            # AppError con Serialize
-│       ├── db.rs               # Schema SQL, open_database(), apply_pragmas()
-│       ├── state.rs            # DbState, ConnGuard, get_conn()
-│       ├── utils.rs            # Helpers puros: format_cop, period_to_dates, etc.
-│       ├── models/
-│       │   └── mod.rs          # Todos los tipos: Transaction, Budget, Goal, …
-│       ├── repositories/       # Solo SQL — sin lógica de negocio
-│       │   ├── mod.rs
-│       │   ├── transactions.rs
-│       │   ├── budgets.rs
-│       │   ├── goals.rs
-│       │   ├── loans.rs
-│       │   ├── fillups.rs
-│       │   ├── gas.rs
-│       │   ├── vehicles.rs
-│       │   └── routes.rs
-│       ├── services/           # Lógica de negocio — orquesta repositorios
-│       │   ├── mod.rs
-│       │   ├── transactions.rs
-│       │   ├── budgets.rs
-│       │   ├── goals.rs
-│       │   ├── loans.rs
-│       │   ├── metas.rs
-│       │   ├── fillups.rs
-│       │   ├── gas.rs
-│       │   ├── vehicles.rs
-│       │   ├── routes.rs
-│       │   └── system.rs
-│       └── commands/           # Handlers Tauri delgados — solo adaptadores
-│           ├── mod.rs
-│           ├── transactions.rs
-│           ├── budgets.rs
-│           ├── goals.rs
-│           ├── loans.rs
-│           ├── metas.rs
-│           ├── fillups.rs
-│           ├── gas.rs
-│           ├── vehicles.rs
-│           ├── routes.rs
-│           └── system.rs
-├── static/                     # Assets estáticos servidos en / (íconos, favicon, webmanifest)
-├── docs/
-│   └── architecture.md        # Este archivo
-├── README.md
-├── LICENSE.md
-├── package.json
-├── pnpm-lock.yaml
-├── pnpm-workspace.yaml
-├── tsconfig.json
-└── vite.config.ts
+commands/   ← adaptador delgado de Tauri (#[tauri::command]), sin lógica de negocio
+    ↓
+services/   ← toda la lógica de negocio, validaciones, orquestación de transacciones
+    ↓
+repositories/ ← solo SQL, sin lógica de negocio
+```
+
+Cada módulo de dominio (`entries`, `goals_v2`, `vehicles_v2`, etc.) replica esta estructura en los tres directorios. `models/mod.rs` concentra todos los structs (`Deserialize` para inputs de comandos, `Serialize` para lo que vuelve al frontend). `utils.rs` tiene las conversiones de unidades puras (galones↔mililitros, km↔metros, resolución de `PeriodV2`) — sección 1 del diseño original: la conversión de unidades vive en un único módulo, nunca repetida en cada servicio.
+
+`state.rs` maneja la conexión a SQLite (`DbState`, `get_conn`); `db.rs` abre la base de datos y aplica el esquema v1 en cada arranque; `migrations/mod.rs` tiene el esquema v2 completo y el migrador v1→v2 (nunca invocado automáticamente, ver sección 2).
+
+---
+
+## 4. Estructura de carpetas
+
+```
+src-tauri/src/
+├── commands/        # un archivo por dominio; *_v2.rs son los que usa el frontend
+├── services/        # lógica de negocio, misma convención *_v2.rs
+├── repositories/     # SQL puro, misma convención
+├── migrations/mod.rs # esquema v2 completo + migrador v1→v2
+├── models/mod.rs     # structs compartidos (inputs/outputs de comandos)
+├── db.rs             # apertura de la base + esquema v1 + migraciones aditivas de columnas
+├── state.rs           # DbState, conexión compartida
+├── utils.rs            # conversión de unidades, resolución de períodos
+├── error.rs             # AppError / AppResult
+└── lib.rs                # setup de Tauri, tray, autostart, invoke_handler!
+
+src-tauri/tests/         # tests de integración por dominio v2 (cargo test)
+src-tauri/examples/       # dry_run_migration.rs — corre migrate_001 contra una copia
+
+src/
+├── app.css              # tokens del sistema de diseño (sección 7)
+├── routes/
+│   ├── +layout.svelte    # sidebar, navegación, widget flotante de saldo
+│   ├── +page.svelte       # Resumen (dashboard)
+│   ├── registrar/+page.svelte
+│   ├── historial/+page.svelte
+│   ├── metas/+page.svelte
+│   └── config/+page.svelte
+└── lib/
+    ├── types.ts           # interfaces TypeScript espejo de los structs Rust
+    ├── constants.ts        # meses, tamaños de página, conversiones de unidades
+    ├── txState.svelte.ts   # señal reactiva compartida (versión de transacciones, para refrescar entre pantallas)
+    ├── api/                # una función por comando Tauri, agrupada por dominio — las páginas nunca llaman invoke() directo
+    └── components/         # CustomSelect, DatePicker, PaymentModal, ScrollArea
 ```
 
 ---
 
-## 3. Arquitectura general
+## 5. Modelo de datos (v2)
 
-El proyecto sigue una **Arquitectura Layered** (por capas de responsabilidad técnica). Cada capa solo habla con la inmediatamente inferior — nunca con capas no adyacentes.
+Los montos son `INTEGER` en COP (sin decimales). Las fechas son `TEXT` en `YYYY-MM-DD`. Los ids son ULID (`TEXT`). Borrado lógico vía `deleted_at` en las tablas que lo necesitan. Fuente de verdad exacta: `src-tauri/src/migrations/mod.rs::SCHEMA_V2`.
 
-```
-┌───────────────────────────────────────────────────────┐
-│                  Tauri App (Finanzas)                 │
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │               Frontend (Svelte 5)               │  │
-│  │  routes/  ──invoke via──►  lib/api/  ──► Tauri  │  │
-│  └─────────────────────────────────────────────────┘  │
-│                          ▲                            │
-│  ┌───────────────────────┼──────────────────────────┐ │
-│  │              Backend (Rust)                      │ │
-│  │                                                  │ │
-│  │  commands/  ──►  services/  ──►  repositories/  │ │
-│  │  (delgado)      (lógica)          (solo SQL)    │ │
-│  │                                                  │ │
-│  │          models/ · state.rs · utils.rs           │ │
-│  └──────────────────────────────────────────────────┘ │
-│                          │                            │
-│  ┌───────────────────────▼──────────────────────────┐ │
-│  │    SQLite local (libsql)                         │ │
-│  │    ~/.local/share/finanzas/local.db              │ │
-│  └──────────────────────────────────────────────────┘ │
-└───────────────────────────────────────────────────────┘
-```
+| Tabla | Propósito | Notas clave |
+|---|---|---|
+| `accounts` | Bolsas de dinero conceptuales | `cash` (disponible), `savings`, `receivable`, `payable`, `apps` (plata en Didi/Uber sin retirar). Sin multi-cuenta bancaria real todavía. |
+| `categories` | Categorías de ingreso/gasto | `is_fixed` (para ingresos), `route_id` opcional (asocia una categoría de gasto a una ruta de kilometraje), `is_system` excluye categorías internas de los reportes. |
+| `entries` | **Todo movimiento de dinero** | Reemplaza la vieja tabla `transactions`. `kind` = `income` / `expense` / `transfer`. Un `CHECK` compuesto obliga la combinación correcta de `account_from`/`account_to`/`category_id` según el tipo — a nivel de base de datos, no solo de aplicación. |
+| `goals` | Ahorros y deudas | `kind` = `saving` / `debt`. No contienen dinero — el dinero vive en `entries`; `goals` solo describe el objetivo. |
+| `loans` | Préstamos hechos a otras personas | Igual que `goals`: solo describe, el movimiento real está en `entries` (`transfer cash→receivable` al prestar). |
+| `budgets` / `budget_overrides` | Presupuesto mensual por categoría | `budget_overrides` permite un monto distinto para un mes puntual sin cambiar el presupuesto base. |
+| `routes` | Rutas de kilometraje frecuente | Usadas por `categories.route_id` y por el cálculo de costo por ruta en Config. |
+| `vehicles` | Vehículos registrados | `efficiency_m_per_l` (rendimiento) y `tank_capacity_ml` — ambos obligatorios al crear/editar desde la UI (la capacidad del tanque no es solo cosmética: permite detectar un rendimiento mal configurado, ver `services::fuel::overflow_warning`). |
+| `fillups` | Tanqueos reales (con recibo) | Puede enlazar a un `entries` (el gasto real pagado) vía `entry_id`. |
+| `trips` | Viajes recorridos | Solo consumo de tanque (metros → mililitros vía rendimiento del vehículo), sin gasto asociado — separar "cuánto gasté" de "cuánto combustible consumí" fue uno de los motivos centrales de la migración. |
+| `fuel_adjustments` | Anclas de nivel de tanque | Permite resetear el nivel calculado sin borrar `fillups`/`trips` (`vehicle_reset_fuel_level`). |
+| `gas_prices` | Precio histórico del galón | Única tabla que **no cambió** con la migración — se reutiliza tal cual de v1. |
 
-**Responsabilidad de cada capa:**
-
-| Capa | Responsabilidad |
-|------|----------------|
-| `commands/` | Adaptadores Tauri: llaman `get_conn()` y delegan al servicio. Sin lógica. |
-| `services/` | Lógica de negocio: validan, coordinan repositorios, calculan y notifican. |
-| `repositories/` | SQL puro: aceptan `&libsql::Connection`, retornan tipos del dominio. |
-| `models/` | Tipos compartidos (structs, enums) usados en todas las capas. |
-| `state.rs` | `DbState`, `ConnGuard`, `get_conn()` — gestión de la conexión lazy. |
-| `utils.rs` | Helpers puros sin dependencias de dominio. |
-| `lib/api/` | Centraliza todos los `invoke()` del frontend. Las páginas nunca llaman `invoke()` directamente. |
-
-No hay sincronización cloud ni servidor externo.
-
-### Estado compartido en Rust
-
-```rust
-pub struct DbState {
-    pub db:   Arc<RwLock<Option<libsql::Database>>>,
-    pub conn: Arc<tokio::sync::Mutex<Option<libsql::Connection>>>,
-}
-```
-
-La conexión se crea lazy en el primer `get_conn()` y se reutiliza en todas las llamadas siguientes. Un `Mutex` garantiza acceso secuencial (libsql no es `Send` en modo local). Si la DB aún no está lista al arrancar, `get_conn()` espera hasta 3 segundos antes de retornar error.
+**Reglas de negocio no obvias, ya resueltas en el esquema/servicios:**
+- Ahorrar plata, prestarla, cobrar una deuda o abonarla nunca deberían aparecer como ingreso/gasto normal — se resuelven como `kind = transfer` entre cuentas conceptuales, y por eso nunca alteran el patrimonio total (solo mueven de una bolsa a otra), excepto abonar una deuda propia, que sí sube el patrimonio (se paga un pasivo real).
+- Una compra a crédito (`goal_create_debt_v2` → `create_debt`) es un **gasto real desde el día uno** (`expense` con `account_from = payable`), no algo que se materializa solo si falta saldo.
+- `is_extraordinary` en `entries` marca eventos no recurrentes: se excluyen de la comparación contra presupuesto, pero se incluyen (desglosados) en los totales reales del período.
 
 ---
 
-## 4. Base de datos
+## 6. Comandos Tauri
 
-**Diagrama ER:** [`docs/Diagrams/DiagramaER.png`](Diagrams/DiagramaER.png)  
-**Schema completo:** [`docs/schema_finanzas.sql`](schema_finanzas.sql)
+Todos registrados en `src-tauri/src/lib.rs::invoke_handler!`. Los que usa el frontend activo son los sufijados `_v2` (más `commands::gas::*`, compartido). Los comandos sin sufijo (`create_transaction`, `loan_create`, `metas_list`, etc.) son el módulo v1: siguen registrados y compilando, pero ninguna pantalla los invoca — quedan pendientes de borrar tras confirmar un mes de uso real en v2 (ver sección 2).
 
+| Dominio | Comandos v2 principales | Módulo `src/lib/api/` |
+|---|---|---|
+| Movimientos | `entry_create/list/get/update/delete/delete_bulk`, `get_account_balances`, `get_period_summary_v2`, `get_category_progress_v2`, `get_month_comparison_v2`, `entry_export_csv` | `entries.ts` |
+| Cuentas | `account_list` | `accounts.ts` |
+| Categorías | `category_create/list/update/delete` | `categories.ts` |
+| Presupuestos | `budget_list_with_categories`, `budget_set_monthly`, `budget_set_override` | `budgets.ts` |
+| Metas unificadas | `metas_list_v2` (solo lectura, combina goals+loans), `meta_add_payment` | `metas.ts`, `metaPayments.ts` |
+| Objetivos de ahorro/deuda | `goal_create_v2/update/delete/get_detail_v2`, `goal_create_debt_v2` | `goals.ts` |
+| Préstamos | `loan_create_v2/list/get/update/delete_v2`, `loans_total_pending_v2` | `loans.ts` |
+| Vehículos | `vehicle_list/create/update/delete_v2` | `vehicles.ts` |
+| Combustible | `fillup_create_v2`, `fillup_create_with_expense_v2`, `fillups_list_v2`, `vehicle_fuel_status_v2`, `trip_register_v2`, `vehicle_reset_fuel_level` | `fillups.ts` |
+| Precio de gasolina (v1, sin cambios) | `get_current_gas_price`, `list_gas_prices`, `register_gas_price_manual`, `get_weekly_gas_comparison`, `get_route_costs` | `gas.ts` |
+| Rutas | `route_list/save/delete_v2` | `routes.ts` |
+| Sistema | `get_autostart_enabled`, `set_autostart_enabled`, `backup_database`, `factory_reset_v2` | `system.ts` |
 
-
-**Motor:** SQLite via `libsql` (modo local)  
-**Ubicación:**
-- Release: `~/.local/share/finanzas/local.db`
-- Debug (`pnpm tauri dev`): `~/.local/share/finanzas-dev/local.db`
-
-El aislamiento de path evita que las pruebas de desarrollo modifiquen los datos reales del usuario.
-
-**Inicialización:** El schema se aplica en cada arranque con `CREATE TABLE IF NOT EXISTS` (idempotente). Las migraciones destructivas (ej. eliminación de columnas) se detectan vía `pragma_table_info` y reconstruyen la tabla afectada preservando datos.
-
-**PRAGMAs activos** (aplicados en cada conexión):
-
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;
-PRAGMA cache_size   = -65536;   -- 64 MB caché de páginas
-PRAGMA mmap_size    = 268435456; -- 256 MB mmap
-PRAGMA temp_store   = MEMORY;
-```
-
-### Tablas
-
-10 tablas en total. `loans`/`loan_payments` se añadieron en v1.1.0; `fuel_fillups` y las columnas `gas_km`, `trip_vehicle_id`, `tank_liters`, `installments` se añadieron en v1.2.0, todas como migraciones aditivas no destructivas.
-
-#### `transactions`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| date | TEXT | `YYYY-MM-DD` |
-| type | TEXT | `ingreso` \| `gasto` |
-| category | TEXT | Nombre de categoría (string directo) |
-| amount | INTEGER | Valor en COP (siempre positivo) |
-| note | TEXT | Nullable |
-| is_extraordinary | INTEGER | `0` \| `1` — excluye del cálculo de `CategoryProgress.current_amount` (progreso de presupuesto), pero sí se suma en los totales generales de `PeriodSummary` |
-| goal_id | INTEGER | FK → `goals.id` ON DELETE SET NULL. Nullable |
-| created_at | TEXT | ISO timestamp |
-| is_debt | INTEGER | `0` \| `1` — gasto financiado a futuro |
-| gas_km | REAL | Nullable — km del viaje; si está presente se consume galones del tanque del vehículo asociado |
-| trip_vehicle_id | INTEGER | Nullable — vehículo usado en el viaje (FK lógica a `vehicles.id`) |
-
-Índices: `(date)`, `(category)`, `(date, category)`.
-
-#### `budgets`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| category | TEXT PK | Nombre de categoría |
-| monthly_amount | INTEGER | Meta mensual en COP (puede ser 0) |
-| route_id | INTEGER | FK → `custom_routes.id` ON DELETE SET NULL. Nullable |
-| type | TEXT | `ingreso` \| `gasto` |
-| is_fixed | INTEGER | `0` \| `1` — solo relevante para ingresos |
-
-#### `goals`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| name | TEXT | Nombre del objetivo |
-| target_amount | INTEGER | Monto objetivo en COP |
-| target_date | TEXT | `YYYY-MM-DD`. Nullable |
-| status | TEXT | `activo` \| `completado` \| `pausado`. El módulo Metas auto-deriva `completado` cuando `current_amount >= target_amount`; `pausado` es solo a nivel DB |
-| created_at | TEXT | ISO timestamp |
-| is_debt_goal | INTEGER | `0` \| `1` — objetivo de tipo deuda |
-| installments | INTEGER | Nullable — cuotas estimadas (informativo, no afecta cálculos) |
-
-`current_amount` no se almacena: se calcula con `SELECT SUM(amount) FROM transactions WHERE goal_id = ?`.
-
-Los goals con `is_debt_goal = 1` son idempotentes por nombre: al registrar un gasto con `is_debt = true`, el backend busca primero un goal existente con ese nombre (`"Deuda: <nota>"` o `"Deuda: <categoría>"`). Si existe lo reutiliza; si no, lo crea. La transacción origen queda vinculada al goal vía `goal_id`.
-
-#### `gas_prices`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| date | TEXT UNIQUE | `YYYY-MM-DD` — un precio por día (UPSERT) |
-| price_per_gallon | INTEGER | COP. Rango válido: 1.000–100.000 |
-| source | TEXT | `manual` \| `scraping` |
-
-#### `custom_routes`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| name | TEXT | Nombre descriptivo |
-| km_round_trip | REAL | Kilómetros ida y vuelta |
-| description | TEXT | Nullable |
-
-#### `vehicles`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| name | TEXT | Nombre del vehículo |
-| km_per_gallon | REAL | Rendimiento. Debe ser > 0 |
-| tank_liters | REAL | Nullable — capacidad del tanque en litros. Habilita el cálculo de nivel y autonomía |
-
-#### `config`
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| key | TEXT PK | Identificador de la configuración |
-| value | TEXT | Valor serializado como string |
-
-#### `loans` _(v1.1.0)_
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| person_name | TEXT | Nombre del deudor (texto libre) |
-| amount | INTEGER | Monto original prestado en COP. Debe ser > 0 |
-| date | TEXT | `YYYY-MM-DD` — fecha del préstamo |
-| note | TEXT | Nullable |
-| status | TEXT | `pendiente` \| `pagado`. Calculado automáticamente al registrar abonos |
-| created_at | TEXT | ISO timestamp |
-
-Índices: `(status)`, `(person_name)`.
-
-#### `loan_payments` _(v1.1.0)_
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| loan_id | INTEGER | Referencia lógica a `loans.id` — **sin FK explícita** (libsql compila con `SQLITE_DEFAULT_FOREIGN_KEYS=1` y las FK explícitas bloquean INSERTs) |
-| amount | INTEGER | Monto del abono en COP. Debe ser > 0 |
-| date | TEXT | `YYYY-MM-DD` — fecha del abono |
-| created_at | TEXT | ISO timestamp |
-
-Índice: `(loan_id)`.
-
-**Lógica de negocio de préstamos:**
-- `paid` y `pending` son campos calculados: `paid = SUM(loan_payments.amount)`, `pending = amount - paid`.
-- Al registrar un abono, el servicio verifica que `paid + nuevo_abono ≤ amount` (rechaza si se supera).
-- Si `paid ≥ amount` tras el abono, el repositorio actualiza `loans.status = 'pagado'` automáticamente.
-- `loans_total_pending` calcula en SQL la suma de `pending` de todos los préstamos con `status = 'pendiente'`.
-
-#### `fuel_fillups` _(v1.2.0)_
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| id | INTEGER PK | Autoincremental |
-| date | TEXT | `YYYY-MM-DD` — fecha del tanqueo |
-| vehicle_id | INTEGER | Referencia lógica a `vehicles.id` (sin FK explícita) |
-| gallons | REAL | Galones cargados: `amount_cop / price_per_gallon` al momento del registro |
-| price_per_gallon | INTEGER | Precio del galón en COP vigente en esa fecha |
-| total_cost | INTEGER | Monto pagado en COP (= `amount_cop` del input) |
-| note | TEXT | Nullable |
-| created_at | TEXT | ISO timestamp |
-| transaction_id | INTEGER | Nullable — ID del gasto en `transactions` creado simultáneamente |
-
-Índices: `(date)`, `(vehicle_id)`.
-
-**Lógica de negocio de tanqueos:**
-- Al crear un tanqueo, el servicio abre una transacción DB y (1) inserta un `gasto` en `transactions` con la categoría indicada (normalmente "Gasolina") y (2) inserta el registro en `fuel_fillups` con el `transaction_id` resultante. Si cualquier paso falla se hace ROLLBACK.
-- El precio del galón se resuelve con `find_price_for_date`: toma el precio más reciente con `date <= fecha_tanqueo`. Si no existe, retorna `ValidationError`.
-- **Nivel del tanque** (derivado, nunca almacenado): `level_gallons = SUM(fuel_fillups.gallons) - SUM(transactions.gas_km / vehicles.km_per_gallon)` para el vehículo dado. Puede ser negativo si hay viajes registrados sin tanqueos previos — el frontend lo muestra como "sin datos".
-- **Autonomía**: `autonomy_km = max(level_gallons, 0) * km_per_gallon`. Nunca negativa.
-- **Porcentaje de tanque**: `level_gallons / (tank_liters / 3.785) * 100`, clamped a [0, 100]. Solo disponible si `tank_liters` está configurado.
+Las páginas nunca llaman `invoke()` directamente — siempre a través de estos wrappers (`src/lib/api/index.ts` re-exporta todo como `entryApi`, `goalApi`, etc.). Los errores del backend (`AppResult<T>`) se deserializan automáticamente y llegan como excepción JS al `catch` del `invoke()`.
 
 ---
 
-## 5. Convenciones Rust
+## 7. Frontend
 
-**Arquitectura por capas:**
-- `repositories/` solo ejecutan SQL. No validan, no calculan, no notifican.
-- `services/` son los únicos que validan datos de entrada, coordinan repositorios, aplican cálculos y envían notificaciones.
-- `commands/` son adaptadores delgados: llaman `get_conn()` y delegan al servicio. No contienen lógica de negocio.
-- `models/mod.rs` concentra todos los tipos. Ninguna capa define tipos propios fuera de este módulo.
-
-**Tipos y serialización:**
-- Errores: `AppResult<T>` = `Result<T, AppError>`. `AppError` implementa `Serialize` para que Tauri lo envíe al frontend.
-- Todos los comandos son `async` y reciben `State<'_, DbState>`.
-- Montos en COP: siempre `i64` (enteros, sin decimales).
-- Fechas: `String` en formato `YYYY-MM-DD` o `YYYY-MM-DD HH:MM:SS`.
-- Booleanos: `bool` en Rust, `INTEGER 0/1` en SQLite. La conversión la hace el backend.
-- Campo `type` en structs Rust: `#[serde(rename = "type")] kind: String` (`type` es palabra reservada).
-- Parámetros camelCase del frontend (ej. `monthlyAmount`) son deserializados automáticamente a snake_case por Tauri/serde.
+- **Runas de Svelte 5** en todo el código, no la store API legacy.
+- Cada página (`routes/*/+page.svelte`) trae su propio `<script>` con estado, efectos y helpers — no hay stores globales salvo `txState.svelte.ts` (un contador de versión que las páginas observan para refrescarse cuando otra pantalla crea/edita/borra algo).
+- `types.ts` es el espejo manual de los structs `Deserialize`/`Serialize` de Rust — si se cambia un campo en `models/mod.rs`, hay que reflejarlo aquí a mano (no hay generación automática de tipos).
+- Componentes compartidos: `CustomSelect` (select propio, con menú `position:fixed` calculado en JS para escapar de contenedores con `overflow`), `DatePicker` (input de texto enmascarado `DD/MM/AAAA`, sin popup nativo), `PaymentModal` (modal genérico de detalle + registrar abono, usado por Metas), `ScrollArea` (wrapper de scroll con scrollbar delgada, usado en vez de `overflow` directo en cualquier panel que necesite recortar contenido).
 
 ---
 
-## 6. Convenciones Svelte / TypeScript
+## 8. Sistema de diseño — "Terminal Ligero"
 
-**Capa de API:**
-- Toda llamada al backend va a través de `$lib/api/`. Ninguna página llama `invoke()` directamente.
-- Importar los módulos así: `import { transactionApi, budgetApi } from "$lib/api"`.
-- Cada módulo de `$lib/api/` exporta funciones tipadas que encapsulan el `invoke()` correspondiente.
+Tema oscuro fijo, sin modo claro. Tokens en `src/app.css`:
 
-**Svelte y estilos:**
-- Svelte 5 runes: `$state()`, `$derived()`, `$effect()`. No usar sintaxis legacy de Svelte 4.
-- Tipos TypeScript en `src/lib/types.ts`: espejo de los structs Rust. Mantener sincronizados manualmente.
-- Constantes de fechas y días en `src/lib/constants.ts`: `MESES`, `MESES_CORTO`, `DIAS_SEMANA`.
-- CSS por componente en el bloque `<style>`. Variables globales en `app.css`.
-- Tema: oscuro siempre. Fondo base `#0c0c14`, acento `#7c6bff`.
+- `--bg-base` / `--bg-surface` / `--bg-elevated` — tres niveles de fondo, sin sombras para dar profundidad.
+- `--border` — toda separación de secciones es `border`/`border-bottom`, nunca `box-shadow`.
+- `--accent` (ámbar) — único acento decorativo de toda la app.
+- `--success` / `--danger` — solo para semántica financiera real (ingreso/gasto, saldo positivo/negativo), nunca decorativos.
+- `--font` (Inter) / `--font-mono` (JetBrains Mono), autohospedadas vía `@fontsource/*` — la app debe funcionar sin internet.
+- `--radius: 0` — toda la app hereda de esta variable; nunca hardcodear un radio en un componente nuevo.
 
----
-
-## 7. Comandos disponibles
-
-Todos los comandos se invocan con `invoke('nombre', { params })`. Retornan `Promise<T>` o lanzan un error con forma `{ kind: string, message?: string }`.
-
-### Transacciones
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `create_transaction` | `input: TransactionInput` | `Transaction` |
-| `list_transactions` | `filter: TransactionFilter` | `TransactionPage` |
-| `update_transaction` | `id: i64, input: TransactionInput` | `Transaction` |
-| `delete_transaction` | `id: i64` | `()` |
-| `delete_transactions_bulk` | `ids: Vec<i64>` | `i64` (cantidad eliminada) |
-| `get_current_balance` | — | `CurrentBalance` — incluye `cash_on_hand` y `net_worth` desde v1.1.0 |
-| `export_transactions_csv` | `filter: TransactionFilter` | `CsvExport` — header: `ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,ID Objetivo,Es deuda,Creado en` |
-| `import_transactions_csv` | `content: String` | `ImportResult` — lee columnas `ID Objetivo` y `Es deuda`; si no están presentes (CSVs antiguos), defaultean a `NULL`/`false` sin error |
-
-**`TransactionInput`:**
-```
-date, type, category, amount, note?, is_extraordinary,
-goal_id?, gas_km?, is_debt?, vehicle_id?, installments?
-```
-Si `gas_km > 0`, `vehicle_id` es obligatorio: el backend registra los km en `trip_vehicle_id` de la transacción, y `vehicle_fuel_status` los descuenta del nivel del tanque.  
-`installments` es informativo (cuotas estimadas en deudas); no afecta el cálculo del balance.
-
-### Resumen y analytics
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `get_period_summary` | `period: Period` | `PeriodSummary` |
-| `get_category_progress` | `period: Period` | `Vec<CategoryProgress>` |
-| `get_month_comparison` | — | `MonthComparison` |
-
-**`Period`:** `{ type: "Daily" }` \| `{ type: "Weekly" }` \| `{ type: "Monthly" }` \| `{ type: "Yearly" }` \| `{ type: "Custom", value: { start, end } }`
-
-### Categorías (budgets)
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `list_budgets` | — | `Vec<Budget>` |
-| `create_budget` | `category, monthlyAmount, kind, isFixed?` | `Budget` |
-| `update_budget` | `category, monthlyAmount` | `Budget` |
-| `update_budget_fixed` | `category, isFixed` | `Budget` |
-| `update_budget_route` | `category, routeId` | `()` |
-| `delete_budget` | `category` | `()` |
-| `list_categories` | `kind?: String` | `Vec<String>` |
-
-### Objetivos
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `list_goals` | `status?: String` | `Vec<GoalWithProgress>` |
-| `get_goal_detail` | `id: i64` | `GoalDetail` |
-| `create_goal` | `input: GoalInput` | `GoalWithProgress` |
-| `update_goal` | `id: i64, input: GoalInput` | `GoalWithProgress` |
-| `delete_goal` | `id: i64` | `()` |
-
-`status` válidos: `"activo"`, `"completado"`, `"pausado"`.  
-Al eliminar un objetivo, las transacciones asociadas pierden el `goal_id` (FK ON DELETE SET NULL).
-
-### Préstamos
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `loan_create` | `input: LoanInput` | `LoanWithBalance` |
-| `loan_list` | — | `Vec<LoanWithBalance>` |
-| `loan_get` | `id: i64` | `LoanWithBalance` |
-| `loan_update` | `id: i64, input: LoanUpdateInput` | `LoanWithBalance` |
-| `loan_add_payment` | `input: LoanPaymentInput` | `LoanWithBalance` |
-| `loan_delete` | `id: i64` | `()` |
-| `loans_total_pending` | — | `i64` (suma de `pending` de préstamos con `status = 'pendiente'`) |
-
-`loan_delete` elimina en cascada manual todos los `loan_payments` del préstamo antes de borrar el registro en `loans`.  
-`loan_add_payment` rechaza con `ValidationError` si el abono haría que la suma supere el monto original.  
-`loan_update` rechaza con `ValidationError` si el nuevo monto es menor que la suma ya abonada.
-
-### Metas
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `metas_list` | — | `Vec<Meta>` |
-
-Vista unificada que agrega préstamos (`me_deben`), goals de deuda (`debo`) y goals de ahorro (`quiero_juntar`) en un solo tipo normalizado `Meta`. El campo `estado` se auto-deriva del progreso: `completado` si `abonado >= total`, `pendiente` en caso contrario.
-
-### Gasolina
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `get_current_gas_price` | — | `GasPrice \| null` |
-| `list_gas_prices` | `limit: i64` | `Vec<GasPrice>` |
-| `register_gas_price_manual` | `price: i64` | `GasPrice` |
-| `get_weekly_gas_comparison` | — | `Vec<WeeklyGasPoint>` |
-| `get_route_costs` | — | `RoutesCost` |
-
-`register_gas_price_manual` hace UPSERT por fecha vía `ON CONFLICT(date) DO UPDATE`. Preserva el `id` de la fila existente y fuerza `source = 'manual'`. El registro manual siempre gana en colisión de fecha (decisión explícita, no efecto secundario de `REPLACE`).
-
-### Tanqueos _(v1.2.0)_
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `fillup_create` | `input: FuelFillupInput` | `FuelFillup` |
-| `fillups_list` | `vehicleId?: i64` | `Vec<FuelFillup>` |
-| `vehicle_fuel_status` | `vehicleId: i64` | `VehicleFuelStatus` |
-
-`fillup_create` inserta atómicamente un `gasto` en `transactions` y un registro en `fuel_fillups`. Requiere que exista un precio de gasolina para la fecha (busca el más reciente con `date ≤ fecha_tanqueo`).  
-`vehicle_fuel_status` devuelve nivel en galones, autonomía en km y porcentaje de tanque (solo si `tank_liters` está configurado).
-
-### Vehículos
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `list_vehicles` | — | `Vec<Vehicle>` |
-| `create_vehicle` | `input: VehicleInput` | `Vehicle` |
-| `update_vehicle` | `id: i64, input: VehicleInput` | `Vehicle` |
-| `delete_vehicle` | `id: i64` | `()` |
-
-`VehicleInput` incluye `tank_liters?: f64` (opcional). Si se provee, habilita el widget de nivel de tanque en el dashboard.
-
-### Rutas personalizadas
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `get_custom_routes` | — | `Vec<CustomRoute>` |
-| `save_custom_route` | `route: CustomRouteInput` | `CustomRoute` |
-| `delete_custom_route` | `id: i64` | `()` |
-
-### Sistema
-
-| Comando | Parámetros | Retorna |
-|---------|-----------|---------|
-| `get_autostart_enabled` | — | `bool` |
-| `set_autostart_enabled` | `enabled: bool` | `()` |
-| `backup_database` | — | `String` (path del backup) |
-| `factory_reset` | — | `()` |
-
-`factory_reset` elimina todas las filas de: `transactions`, `goals`, `gas_prices`, `budgets`, `custom_routes`, `vehicles`. También borra `sqlite_sequence` para que los próximos inserts arranquen desde `id = 1` en todas las tablas con `AUTOINCREMENT`. La tabla `config` no se toca.
+Convenciones repetidas en toda la app: mono uppercase + letter-spacing en botones y badges; mono para montos/fechas/ids; sans para texto libre; paneles planos con borde en vez de contenido flotando sin límites; filas de listas con acciones (editar/borrar) ocultas hasta hacer hover, no botones cuadrados siempre visibles; ningún `<table>` HTML — listas de filas flexbox en su lugar.
 
 ---
 
-## 8. Tipos TypeScript principales
+## 9. Base de datos
 
-```typescript
-interface Transaction {
-  id: number; date: string; type: string; category: string;
-  amount: number; note: string | null; is_extraordinary: boolean;
-  goal_id: number | null; created_at: string; is_debt: boolean;
-  gas_km: number | null;          // km del viaje (v1.2.0)
-  trip_vehicle_id: number | null; // vehículo del viaje (v1.2.0)
-}
+SQLite local vía `libsql`, sin servidor ni sincronización cloud.
 
-interface TransactionInput {
-  date: string; type: string; category: string; amount: number;
-  note: string | null; is_extraordinary: boolean; goal_id: number | null;
-  gas_km: number | null; is_debt?: boolean; vehicle_id?: number | null;
-  installments?: number | null; // cuotas estimadas (v1.2.0)
-}
+| Modo | Ruta |
+|---|---|
+| Desarrollo (`pnpm tauri dev`) | `~/.local/share/finanzas-dev/local.db` |
+| Producción (build instalado) | `~/.local/share/finanzas/local.db` |
 
-interface Budget {
-  category: string; monthly_amount: number;
-  route_id: number | null; type: "ingreso" | "gasto"; is_fixed: boolean;
-}
-
-interface Goal {
-  id: number; name: string; target_amount: number;
-  target_date: string | null; status: string;
-  created_at: string; is_debt_goal: boolean;
-  installments: number | null; // cuotas estimadas (v1.2.0)
-}
-
-interface GoalWithProgress {
-  goal: Goal; current_amount: number; percentage: number;
-  monthly_required: number | null;
-  projected_completion_date: string | null; on_track: boolean;
-}
-
-interface Vehicle {
-  id: number; name: string; km_per_gallon: number;
-  tank_liters: number | null; // capacidad del tanque en litros (v1.2.0)
-}
-
-interface VehicleInput {
-  name: string; km_per_gallon: number;
-  tank_liters?: number | null;
-}
-
-// v1.2.0: tanqueos
-interface FuelFillup {
-  id: number; date: string; vehicle_id: number;
-  gallons: number; price_per_gallon: number; total_cost: number;
-  note: string | null; created_at: string; transaction_id: number | null;
-}
-
-interface FuelFillupInput {
-  date: string; vehicle_id: number;
-  amount_cop: number;   // monto pagado; el backend calcula los galones
-  category: string;     // normalmente "Gasolina"
-  note: string | null;
-}
-
-interface VehicleFuelStatus {
-  vehicle_id: number; vehicle_name: string; km_per_gallon: number;
-  tank_liters: number | null;
-  level_gallons: number;      // puede ser negativo si hay viajes sin tanqueos previos
-  autonomy_km: number;        // siempre ≥ 0
-  tank_percentage: number | null; // solo si tank_liters está configurado
-}
-
-interface CustomRoute {
-  id: number; name: string; km_round_trip: number; description: string | null;
-}
-
-interface CategoryProgress {
-  category: string; monthly_target: number; current_amount: number;
-  percentage: number; is_over: boolean; kind: string; is_fixed: boolean;
-}
-
-type Period =
-  | { type: "Daily" } | { type: "Weekly" }
-  | { type: "Monthly" } | { type: "Yearly" }
-  | { type: "Custom"; value: { start: string; end: string } };
-
-// v1.1.0: cash_on_hand y net_worth añadidos
-interface CurrentBalance {
-  total_income: number;
-  total_expenses: number;
-  balance: number;
-  cash_on_hand: number;  // balance − total préstamos pendientes por cobrar
-  net_worth: number;     // balance (= cash_on_hand + préstamos pendientes)
-}
-
-// v1.1.0: préstamos a terceros
-interface Loan {
-  id: number; person_name: string; amount: number;
-  date: string; note: string | null;
-  status: "pendiente" | "pagado"; created_at: string;
-}
-
-interface LoanPayment {
-  id: number; loan_id: number; amount: number;
-  date: string; created_at: string;
-}
-
-interface LoanWithBalance {
-  loan: Loan;
-  paid: number;    // SUM(loan_payments.amount)
-  pending: number; // loan.amount - paid
-  payments: LoanPayment[];
-}
-
-interface LoanInput {
-  person_name: string; amount: number;
-  date: string; note: string | null;
-}
-
-interface LoanPaymentInput {
-  loan_id: number; amount: number; date: string;
-}
-
-interface LoanUpdateInput {
-  person_name: string; amount: number;
-}
-
-// Metas: vista unificada de préstamos, deudas y ahorros
-interface MetaAbono { id: number; date: string; amount: number; }
-
-interface Meta {
-  id: string;           // "loan:{id}" | "goal:{id}"
-  tipo: string;         // "me_deben" | "debo" | "quiero_juntar"
-  nombre: string;
-  total: number;
-  abonado: number;
-  pendiente: number;
-  estado: string;       // "completado" | "pendiente" — auto-derivado
-  fecha: string | null;
-  nota: string | null;
-  cuotas: number | null;
-  abonos: MetaAbono[];
-  on_track: boolean | null;                    // solo quiero_juntar
-  monthly_required: number | null;             // solo quiero_juntar
-  projected_completion_date: string | null;    // solo quiero_juntar
-}
-```
-
----
-
-## 9. System tray y ciclo de vida
-
-- Al cerrar la ventana (botón X): si el tray está activo, la ventana se oculta en lugar de cerrarse. La app sigue corriendo en segundo plano.
-- Click izquierdo en el ícono del tray: toggle mostrar/ocultar ventana.
-- Menú del tray: **Abrir Finanzas** y **Salir**.
-- En GNOME puro (Fedora sin extensión AppIndicator): `libappindicator` no está disponible. El tray falla silenciosamente y el cierre de la ventana termina el proceso.
-- **Autoarranque:** registrado vía `tauri-plugin-autostart` con el flag `--autostart`. Si la app arranca con ese flag, la ventana permanece oculta.
-- En binarios debug, el autoarranque se desregistra automáticamente para evitar que el binario de desarrollo quede apuntando al `.desktop` entry.
-
----
-
-## 10. Cálculo de costo de gasolina
-
-Al registrar un movimiento con `gas_km > 0`:
-
-1. El frontend requiere que `vehicle_id` esté seleccionado.
-2. El backend llama `insert_auto_gas(date, category, gas_km, vehicle_id)`.
-3. Se consulta `km_per_gallon` del vehículo y el `price_per_gallon` más reciente.
-4. Costo: `round(gas_km / km_per_gallon * price_per_gallon)` en COP.
-5. Se inserta una transacción adicional de tipo `gasto` en la categoría de gasolina de la ruta asociada al presupuesto de la categoría original.
-6. Si no hay precio de gasolina registrado → error descriptivo. Si no existe el vehículo → error.
-
----
-
-## 11. Errores
-
-```rust
-pub enum AppError {
-    NotFound(String),
-    ValidationError(String),
-    DatabaseError(String),
-    IoError(String),
-}
-```
-
-Serializado con `#[serde(tag = "kind", content = "message")]`. El frontend recibe `{ kind: "ValidationError", message: "..." }` y puede mostrar el mensaje directamente al usuario.
+Backup manual desde **Configuración → Sistema**. Ver sección 2 para el estado real de la migración v1→v2 antes de asumir que cualquiera de estas dos bases tiene el esquema nuevo.
