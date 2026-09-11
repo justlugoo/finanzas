@@ -183,9 +183,9 @@
     const k = mappedKind;
     let cancelled = false;
     async function apply() {
-      if (kind === "tanqueo") return; // tanqueo usa categoría fija "Gasolina"
       await loadCategories();
       if (cancelled) return;
+      if (kind === "tanqueo") return; // tanqueo usa categoría fija "Gasolina", pero necesita allCategories cargado
       const filtered = allCategories.filter(c => c.kind === k && (k === "income" || c.name !== "Gasolina"));
       categories = filtered;
       if (!filtered.some(c => c.id === categoryId)) categoryId = filtered[0]?.id ?? "";
