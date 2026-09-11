@@ -153,9 +153,9 @@ pub async fn raw_level_ml(conn: &Connection, vehicle_id: &str, as_of: &str) -> A
     let mut rows = conn
         .query(
             "SELECT
-                COALESCE((SELECT SUM(volume_ml) FROM fillups WHERE vehicle_id = ?1 AND occurred_on > ?2 AND deleted_at IS NULL), 0)
+                COALESCE((SELECT SUM(volume_ml) FROM fillups WHERE vehicle_id = ?1 AND occurred_on >= ?2 AND deleted_at IS NULL), 0)
                 -
-                COALESCE((SELECT SUM(consumed_ml) FROM trips WHERE vehicle_id = ?1 AND occurred_on > ?2 AND deleted_at IS NULL), 0)",
+                COALESCE((SELECT SUM(consumed_ml) FROM trips WHERE vehicle_id = ?1 AND occurred_on >= ?2 AND deleted_at IS NULL), 0)",
             libsql::params![vehicle_id.to_string(), since],
         )
         .await?;

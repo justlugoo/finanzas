@@ -150,3 +150,18 @@ async fn reset_level_no_borra_historico() {
     assert_eq!(fillup_count, 1, "el tanqueo anterior al reset no debe borrarse");
     assert_eq!(trip_count, 1, "el viaje anterior al reset no debe borrarse");
 }
+
+/// Un tanqueo registrado el mismo día que un reset manual debe sumarse al
+/// nivel, no quedar ignorado — las fechas son solo `YYYY-MM-DD` (sin hora),
+/// así que "posterior al ancla" debe interpretarse como >= ese día, no >.
+#[tokio::test]
+async fn tanqueo_el_mismo_dia_del_reset_si_cuenta() {
+    let conn = fresh_db().await;
+    let vehicle = repositories::vehicles_v2::insert(&conn, "Carro", 10_000, Some(20_000)).await.unwrap();
+
+    services::fuel::reset_level(&conn, &vehicle.id, 0, "2026-02-01", Some("reseteo manual")).await.unwrap();
+    repositories::fuel::insert_fillup(&conn, &vehicle.id, "2026-02-01", 5_000, 1, 1, None, None).await.unwrap();
+
+    let level = services::fuel::tank_level(&conn, &vehicle.id).await.unwrap();
+    assert_eq!(level.level_ml, 5_000, "el tanqueo del mismo día del reset debe contar");
+}
