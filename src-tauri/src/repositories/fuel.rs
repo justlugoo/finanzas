@@ -1,7 +1,17 @@
 use crate::error::AppResult;
 use crate::models::{FillupV2, FuelAdjustment, Trip};
+use chrono::Utc;
 use libsql::Connection;
 use ulid::Ulid;
+
+/// Marca de tiempo con precisión de microsegundo, escrita a mano en vez de
+/// dejar el default `datetime('now')` de la columna (que solo tiene
+/// resolución de segundo). La necesitamos para poder ordenar con certeza
+/// "qué se creó antes" entre un tanqueo/viaje y un reset del mismo día —
+/// ver el comentario de `raw_level_ml` más abajo.
+fn now_precise() -> String {
+    Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+}
 
 pub async fn insert_fillup(
     conn: &Connection,
@@ -16,8 +26,8 @@ pub async fn insert_fillup(
     let id = Ulid::new().to_string();
     conn.execute(
         "INSERT INTO fillups \
-         (id, occurred_on, vehicle_id, volume_ml, price_cop_per_gallon, total_cop, entry_id, note) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, occurred_on, vehicle_id, volume_ml, price_cop_per_gallon, total_cop, entry_id, note, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         libsql::params![
             id.clone(),
             occurred_on.to_string(),
@@ -26,7 +36,8 @@ pub async fn insert_fillup(
             price_cop_per_gallon,
             total_cop,
             entry_id.map(|s| s.to_string()),
-            note.map(|s| s.to_string())
+            note.map(|s| s.to_string()),
+            now_precise()
         ],
     )
     .await?;
@@ -52,14 +63,15 @@ pub async fn insert_trip(
 ) -> AppResult<Trip> {
     let id = Ulid::new().to_string();
     conn.execute(
-        "INSERT INTO trips (id, occurred_on, vehicle_id, distance_m, consumed_ml, entry_id) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO trips (id, occurred_on, vehicle_id, distance_m, consumed_ml, entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         libsql::params![
             id.clone(),
             occurred_on.to_string(),
             vehicle_id.to_string(),
             distance_m,
             consumed_ml,
-            entry_id.map(|s| s.to_string())
+            entry_id.map(|s| s.to_string()),
+            now_precise()
         ],
     )
     .await?;
@@ -82,8 +94,15 @@ pub async fn insert_adjustment(
 ) -> AppResult<FuelAdjustment> {
     let id = Ulid::new().to_string();
     conn.execute(
-        "INSERT INTO fuel_adjustments (id, occurred_on, vehicle_id, level_ml, note) VALUES (?, ?, ?, ?, ?)",
-        libsql::params![id.clone(), occurred_on.to_string(), vehicle_id.to_string(), level_ml, note.map(|s| s.to_string())],
+        "INSERT INTO fuel_adjustments (id, occurred_on, vehicle_id, level_ml, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        libsql::params![
+            id.clone(),
+            occurred_on.to_string(),
+            vehicle_id.to_string(),
+            level_ml,
+            note.map(|s| s.to_string()),
+            now_precise()
+        ],
     )
     .await?;
     Ok(FuelAdjustment {
@@ -123,19 +142,27 @@ pub async fn list_fillups(conn: &Connection, vehicle_id: Option<&str>) -> AppRes
 
 struct Anchor {
     occurred_on: String,
+    created_at: String,
+    id: String,
     level_ml: i64,
 }
 
 async fn latest_anchor(conn: &Connection, vehicle_id: &str, as_of: &str) -> AppResult<Option<Anchor>> {
     let mut rows = conn
         .query(
-            "SELECT occurred_on, level_ml FROM fuel_adjustments \
-             WHERE vehicle_id = ? AND occurred_on <= ? ORDER BY occurred_on DESC, id DESC LIMIT 1",
+            "SELECT occurred_on, created_at, id, level_ml FROM fuel_adjustments \
+             WHERE vehicle_id = ? AND occurred_on <= ? \
+             ORDER BY occurred_on DESC, created_at DESC, id DESC LIMIT 1",
             libsql::params![vehicle_id.to_string(), as_of.to_string()],
         )
         .await?;
     Ok(match rows.next().await? {
-        Some(row) => Some(Anchor { occurred_on: row.get(0)?, level_ml: row.get(1)? }),
+        Some(row) => Some(Anchor {
+            occurred_on: row.get(0)?,
+            created_at: row.get(1)?,
+            id: row.get(2)?,
+            level_ml: row.get(3)?,
+        }),
         None => None,
     })
 }
@@ -144,20 +171,36 @@ async fn latest_anchor(conn: &Connection, vehicle_id: &str, as_of: &str) -> AppR
 /// schema-v2.md: `base + Σ(fillups.volume_ml) − Σ(trips.consumed_ml)` desde
 /// la última ancla (o desde "el principio de los tiempos" si no hay
 /// ninguna). El clamp lo aplica la capa de servicio, una sola vez.
+///
+/// "Desde la última ancla" se decide por (`occurred_on`, `created_at`, `id`),
+/// no solo por fecha: `occurred_on` no tiene hora, así que un tanqueo y un
+/// reset el mismo día son indistinguibles solo por fecha. `created_at` se
+/// escribe a mano con precisión de microsegundo (`now_precise()`, no el
+/// default `datetime('now')` de la columna, que solo llega al segundo) para
+/// poder ordenar con certeza quién se creó primero; `id` (ULID) queda como
+/// desempate final por si dos operaciones cayeran en el mismo microsegundo.
+/// Sin esto, un tanqueo creado ANTES de un reset del mismo día volvía a
+/// sumarse después del reset, dejando el nivel calculado sin bajar aunque
+/// el reset "diera bien" (bug real reportado por el usuario).
 pub async fn raw_level_ml(conn: &Connection, vehicle_id: &str, as_of: &str) -> AppResult<i64> {
     let anchor = latest_anchor(conn, vehicle_id, as_of).await?;
-    let (base, since) = match anchor {
-        Some(a) => (a.level_ml, a.occurred_on),
-        None => (0, "0000-01-01".to_string()),
+    let (base, since_date, since_created_at, since_id) = match anchor {
+        Some(a) => (a.level_ml, a.occurred_on, a.created_at, a.id),
+        None => (0, "0000-01-01".to_string(), String::new(), String::new()),
     };
+    let cmp = "(occurred_on > ?2
+                OR (occurred_on = ?2 AND created_at > ?3)
+                OR (occurred_on = ?2 AND created_at = ?3 AND id > ?4))";
+    let sql = format!(
+        "SELECT
+            COALESCE((SELECT SUM(volume_ml) FROM fillups
+                      WHERE vehicle_id = ?1 AND deleted_at IS NULL AND {cmp}), 0)
+            -
+            COALESCE((SELECT SUM(consumed_ml) FROM trips
+                      WHERE vehicle_id = ?1 AND deleted_at IS NULL AND {cmp}), 0)"
+    );
     let mut rows = conn
-        .query(
-            "SELECT
-                COALESCE((SELECT SUM(volume_ml) FROM fillups WHERE vehicle_id = ?1 AND occurred_on >= ?2 AND deleted_at IS NULL), 0)
-                -
-                COALESCE((SELECT SUM(consumed_ml) FROM trips WHERE vehicle_id = ?1 AND occurred_on >= ?2 AND deleted_at IS NULL), 0)",
-            libsql::params![vehicle_id.to_string(), since],
-        )
+        .query(&sql, libsql::params![vehicle_id.to_string(), since_date, since_created_at, since_id])
         .await?;
     let row = rows.next().await?.expect("SELECT con COALESCE siempre retorna una fila");
     let delta: i64 = row.get(0)?;

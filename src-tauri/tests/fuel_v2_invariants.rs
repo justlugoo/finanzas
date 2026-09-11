@@ -165,3 +165,21 @@ async fn tanqueo_el_mismo_dia_del_reset_si_cuenta() {
     let level = services::fuel::tank_level(&conn, &vehicle.id).await.unwrap();
     assert_eq!(level.level_ml, 5_000, "el tanqueo del mismo día del reset debe contar");
 }
+
+/// Bug real reportado por el usuario: "Resetear nivel" decía que funcionaba
+/// pero el widget no cambiaba. Causa — un tanqueo creado ANTES del reset,
+/// el mismo día, se volvía a sumar después del reset porque la comparación
+/// solo miraba la fecha (sin hora). El orden real de creación (el `id`,
+/// un ULID) es lo que debe decidir si el tanqueo quedó antes o después del
+/// reset, no la fecha por sí sola.
+#[tokio::test]
+async fn tanqueo_del_mismo_dia_antes_del_reset_no_se_vuelve_a_sumar() {
+    let conn = fresh_db().await;
+    let vehicle = repositories::vehicles_v2::insert(&conn, "Carro", 10_000, Some(20_000)).await.unwrap();
+
+    repositories::fuel::insert_fillup(&conn, &vehicle.id, "2026-02-01", 5_000, 1, 1, None, None).await.unwrap();
+    services::fuel::reset_level(&conn, &vehicle.id, 0, "2026-02-01", Some("reseteo manual")).await.unwrap();
+
+    let level = services::fuel::tank_level(&conn, &vehicle.id).await.unwrap();
+    assert_eq!(level.level_ml, 0, "el tanqueo anterior al reset, aunque del mismo día, no debe volver a sumarse");
+}
