@@ -9,7 +9,7 @@
   import TourPoint from "$lib/components/TourPoint.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
   import { kmToM } from "$lib/constants";
-  import { isActiveStep } from "$lib/tour.svelte";
+  import { isActivePoint } from "$lib/tour.svelte";
   import { registrarDraft, clearRegistrarDraft } from "$lib/registrarDraft.svelte";
 
   // ── Borrador del formulario ──────────────────────────────────────────────
@@ -184,10 +184,11 @@
     return () => { cancelled = true; };
   });
 
-  // Pre-fill km del viaje cuando la categoría tiene ruta asociada
+  // Pre-fill km del viaje cuando la categoría tiene ruta asociada — no
+  // aplica sin vehículo registrado (no hay kilometraje que llevar).
   $effect(() => {
     const cat = allCategories.find(c => c.id === registrarDraft.categoryId);
-    if (cat?.route_id) {
+    if (vehicles.length > 0 && cat?.route_id) {
       const route = customRoutes.find(r => r.id === cat.route_id);
       if (route) { registrarDraft.gasKmRaw = (route.distance_m / 1000).toString(); registrarDraft.viajeOpen = true; }
     } else {
@@ -205,6 +206,9 @@
       vehicles = vs;
       if (registrarDraft.vehicleId === null && vs.length > 0) registrarDraft.vehicleId = vs[0].id;
       if (registrarDraft.fillupVehicleId === null && vs.length > 0) registrarDraft.fillupVehicleId = vs[0].id;
+      // Sin vehículos no hay tanqueo que registrar — si el borrador quedó en
+      // esa pestaña (por ejemplo, se borró el único vehículo), se regresa.
+      if (vs.length === 0 && registrarDraft.kind === "tanqueo") registrarDraft.kind = "ingreso";
     }).catch(() => {});
   });
 
@@ -429,10 +433,10 @@
       {/if}
 
       <form id="tx-form" onsubmit={handleSubmit} class="entry-form">
+        {#if isActivePoint("registros", 0)}<TourPoint side="right" text="Cada registro actualiza al instante tu disponible y tus presupuestos" />{/if}
 
         <!-- Pestañas de tipo -->
         <div class="kind-tabs">
-          {#if isActiveStep("registros")}<TourPoint text="Ingreso, gasto o tanqueo" />{/if}
           <button
             type="button"
             class="kind-tab tab-income"
@@ -445,12 +449,14 @@
             class:active={registrarDraft.kind === "gasto"}
             onclick={() => { registrarDraft.kind = "gasto"; saveError = null; }}
           >Gasto</button>
-          <button
-            type="button"
-            class="kind-tab tab-fuel"
-            class:active={registrarDraft.kind === "tanqueo"}
-            onclick={() => { registrarDraft.kind = "tanqueo"; saveError = null; }}
-          >Tanqueo</button>
+          {#if vehicles.length > 0}
+            <button
+              type="button"
+              class="kind-tab tab-fuel"
+              class:active={registrarDraft.kind === "tanqueo"}
+              onclick={() => { registrarDraft.kind = "tanqueo"; saveError = null; }}
+            >Tanqueo</button>
+          {/if}
         </div>
 
         {#if registrarDraft.kind === "tanqueo"}
@@ -519,7 +525,6 @@
           <!-- ── Ingreso / Gasto ── -->
           <div class="entry-card">
           <div class="amount-display" class:tone-income={registrarDraft.kind === "ingreso"} class:tone-expense={registrarDraft.kind === "gasto"}>
-            {#if isActiveStep("registros")}<TourPoint text="Monto del movimiento" />{/if}
             <span class="amount-currency">$</span>
             <input
               class="amount-input"
@@ -533,7 +538,6 @@
           <span class="amount-caption">monto del {kindLabel}</span>
 
           <div class="chip-section">
-            {#if isActiveStep("registros")}<TourPoint text="Categoría del movimiento" />{/if}
             <span class="chip-section-label">Categoría</span>
             {#if displayCategories.length === 0}
               <p class="empty-hint">Sin categorías todavía.</p>
@@ -551,8 +555,10 @@
             {/if}
           </div>
 
-          <!-- Kilometraje del viaje (para el tanque, sin costo estimado) -->
-          {#if routeCosts}
+          <!-- Kilometraje del viaje (para el tanque, sin costo estimado) —
+               sin vehículo registrado esto no aplica a nadie, así que ni
+               siquiera se muestra el toggle. -->
+          {#if routeCosts && vehicles.length > 0}
             <div class="viaje-section">
               <button type="button" class="viaje-toggle" onclick={toggleViaje}>
                 <span class="chip-section-label">Kilometraje <span class="optional">opcional</span></span>
@@ -561,9 +567,6 @@
 
               {#if registrarDraft.viajeOpen}
                 <div class="viaje-body">
-                  {#if vehicles.length === 0}
-                    <p class="empty-hint">Configura un vehículo en <a href="/config">Ajustes</a> para registrar viajes.</p>
-                  {:else}
                     {#if customRoutes.length > 0}
                       <div class="viaje-field">
                         <span class="viaje-field-label">Destino</span>
@@ -604,7 +607,6 @@
                         </div>
                       </div>
                     {/if}
-                  {/if}
                 </div>
               {/if}
             </div>
@@ -612,7 +614,6 @@
 
           <div class="meta-row">
             <div class="meta-field">
-              {#if isActiveStep("registros")}<TourPoint text="Fecha (ya viene con la de hoy)" />{/if}
               <span class="meta-label">Fecha</span>
               <DatePicker bind:value={registrarDraft.date} />
             </div>
@@ -650,17 +651,19 @@
 
     <div class="save-bar-wrap">
       <button type="button" class="clear-form-btn" onclick={clearForm}>Limpiar formulario</button>
-      <button
-        type="submit"
-        form="tx-form"
-        class="save-bar"
-        class:save-income={registrarDraft.kind === "ingreso"}
-        class:save-expense={registrarDraft.kind === "gasto"}
-        class:save-fuel={registrarDraft.kind === "tanqueo"}
-        disabled={saving || (registrarDraft.kind === "tanqueo" ? fillupAmount <= 0 || registrarDraft.fillupVehicleId === null : amount <= 0)}
-      >
-        {saving ? "Guardando…" : `Guardar ${kindLabel}`}
-      </button>
+      <span class="save-btn-anchor">
+        <button
+          type="submit"
+          form="tx-form"
+          class="save-bar"
+          class:save-income={registrarDraft.kind === "ingreso"}
+          class:save-expense={registrarDraft.kind === "gasto"}
+          class:save-fuel={registrarDraft.kind === "tanqueo"}
+          disabled={saving || (registrarDraft.kind === "tanqueo" ? fillupAmount <= 0 || registrarDraft.fillupVehicleId === null : amount <= 0)}
+        >
+          {saving ? "Guardando…" : `Guardar ${kindLabel}`}
+        </button>
+      </span>
     </div>
   </div>
 
@@ -1263,6 +1266,8 @@
     justify-content: flex-end;
     gap: 0.75rem;
   }
+
+  .save-btn-anchor { display: inline-flex; }
 
   .clear-form-btn {
     padding: 0.55rem 1rem;

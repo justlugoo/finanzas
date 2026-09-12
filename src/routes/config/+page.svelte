@@ -1,12 +1,12 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { gasApi, budgetApi, categoryApi, vehicleApi, routeApi, systemApi, fillupApi } from "$lib/api";
-  import type { GasPrice, WeeklyGasPoint, CategoryBudgetRow, RoutesCost, RouteV2, VehicleV2 } from "$lib/types";
+  import type { GasPrice, WeeklyGasPoint, CategoryBudgetRow, RoutesCost, RouteV2, VehicleV2, TankLevel } from "$lib/types";
   import { mPerLToKmPerGallon, mlToGallons, metersToKm, ML_PER_GALLON } from "$lib/constants";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import TourPoint from "$lib/components/TourPoint.svelte";
-  import { isActiveStep } from "$lib/tour.svelte";
+  import { isActivePoint } from "$lib/tour.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
@@ -69,6 +69,19 @@
   let resetLevelMsg   = $state<string | null>(null);
   let resetLevelError = $state<string | null>(null);
   let resetLevelGallons = $derived(parseFloat(resetLevelRaw.replace(",", ".")) || 0);
+
+  // Nivel actual del tanque del vehículo seleccionado — misma información
+  // que el widget "Tanque" del Resumen, para que se vea antes de resetear.
+  let currentLevel = $state<TankLevel | null>(null);
+
+  async function loadCurrentLevel() {
+    if (!selectedVehicleId) { currentLevel = null; return; }
+    try {
+      currentLevel = await fillupApi.vehicleFuelStatus(selectedVehicleId);
+    } catch {
+      currentLevel = null;
+    }
+  }
 
   // ── Actualizar precio ─────────────────────────────────────────────────────
   let newPriceRaw = $state("");
@@ -151,6 +164,11 @@
       }
     }
     load();
+  });
+
+  $effect(() => {
+    const _vid = selectedVehicleId;
+    loadCurrentLevel();
   });
 
   // ── Guardar precio ────────────────────────────────────────────────────────
@@ -494,6 +512,7 @@
       });
       resetLevelMsg = `Nivel reseteado a ${resetLevelGallons.toFixed(1)} gal. Los tanqueos y viajes anteriores siguen intactos.`;
       resetLevelRaw = ""; resetLevelNote = "";
+      await loadCurrentLevel();
       setTimeout(() => { resetLevelMsg = null; }, 4000);
     } catch (e) {
       console.error("[config] reset fuel level error:", e);
@@ -530,7 +549,10 @@
       {#if activeTab === "presupuestos"}
 
         <div class="panel">
-          <div class="panel-header"><span class="panel-title">Presupuestos mensuales</span></div>
+          <div class="panel-header">
+            {#if isActivePoint("presupuestos", 0)}<TourPoint text="Fija un presupuesto mensual por categoría, para controlar tus gastos" />{/if}
+            <span class="panel-title">Presupuestos mensuales</span>
+          </div>
 
           {#if budgets.length === 0}
             <p class="muted">Sin categorías todavía.</p>
@@ -639,11 +661,9 @@
           {#if budgetFormError}<div class="banner error small">{budgetFormError}</div>{/if}
           <form class="inline-form-3" onsubmit={addBudget}>
             <span class="tour-field grow">
-              {#if isActiveStep("presupuestos")}<TourPoint text="Nombre de la categoría (ej. Comida, Sueldo)" />{/if}
               <input type="text" placeholder="Nombre de la categoría" bind:value={newBudgetName} disabled={addingBudget} />
             </span>
             <div class="input-narrow tour-field" style="--cs-padding: 0.4rem 0.6rem;">
-              {#if isActiveStep("presupuestos")}<TourPoint text="Ingreso o gasto" />{/if}
               <CustomSelect
                 bind:value={newBudgetType}
                 options={[
@@ -719,16 +739,13 @@
                 {#if vehicleFormError}<div class="banner error small">{vehicleFormError}</div>{/if}
                 <form class="stacked-form" onsubmit={addVehicle}>
                   <span class="tour-field full">
-                    {#if isActiveStep("vehiculos")}<TourPoint text="Nombre del vehículo" />{/if}
                     <input type="text" placeholder="Nombre (ej. Moto, Carro)" bind:value={newVehicleName} disabled={addingVehicle} />
                   </span>
                   <div class="stacked-form-row">
                     <span class="tour-field">
-                      {#if isActiveStep("vehiculos")}<TourPoint text="Rendimiento (km/gal)" />{/if}
                       <input type="text" inputmode="decimal" placeholder="km/gal" bind:value={newVehicleKmRaw} disabled={addingVehicle} />
                     </span>
                     <span class="tour-field">
-                      {#if isActiveStep("vehiculos")}<TourPoint text="Capacidad del tanque (gal)" />{/if}
                       <input type="text" inputmode="decimal" placeholder="galones" bind:value={newVehicleTankRaw} disabled={addingVehicle} />
                     </span>
                   </div>
@@ -765,7 +782,6 @@
               {#if saveError}<div class="banner error small">{saveError}</div>{/if}
               <form onsubmit={handleSavePrice} class="stacked-form">
                 <span class="tour-field full">
-                  {#if isActiveStep("vehiculos")}<TourPoint text="Precio actual por galón" />{/if}
                   <input
                     type="text"
                     inputmode="numeric"
@@ -829,12 +845,10 @@
               {#if routeError}<div class="banner error small">{routeError}</div>{/if}
               <form class="stacked-form" onsubmit={addCustomRoute}>
                 <span class="tour-field full">
-                  {#if isActiveStep("vehiculos")}<TourPoint text="Nombre de la ruta (ej. Trabajo)" />{/if}
                   <input type="text" placeholder="Nombre de la ruta" bind:value={newRouteName} disabled={addingRoute} />
                 </span>
                 <div class="stacked-form-row">
                   <span class="tour-field">
-                    {#if isActiveStep("vehiculos")}<TourPoint text="Km del recorrido redondo" />{/if}
                     <input type="text" inputmode="decimal" placeholder="km redondo" bind:value={newRouteKmRaw} disabled={addingRoute} />
                   </span>
                   <button type="submit" class="btn-secondary" disabled={addingRoute || !newRouteName.trim() || !newRouteKmRaw}>
@@ -866,13 +880,31 @@
                   </div>
                 {/if}
 
+                {#if currentLevel}
+                  {@const pct = currentLevel.tank_percentage}
+                  <div class="tank-preview">
+                    <div class="tank-preview-header">
+                      <span class="tank-preview-label">Nivel actual</span>
+                      {#if pct != null}<span class="tank-preview-pct">{Math.round(pct)}%</span>{/if}
+                    </div>
+                    {#if pct != null}
+                      <div class="bar-track">
+                        <div class="bar-fill" class:low={pct < 20} style="width: {pct}%"></div>
+                      </div>
+                    {/if}
+                    <div class="tank-preview-meta">
+                      <span>~{Math.round(metersToKm(currentLevel.autonomy_m))} km</span>
+                      <span>{mlToGallons(currentLevel.level_ml).toFixed(1)} gal</span>
+                    </div>
+                  </div>
+                {/if}
+
                 {#if resetLevelMsg}<div class="banner success small">{resetLevelMsg}</div>{/if}
                 {#if resetLevelError}<div class="banner error small">{resetLevelError}</div>{/if}
 
                 <form class="stacked-form" onsubmit={handleResetFuelLevel}>
                   <div class="stacked-form-row">
                     <span class="tour-field">
-                      {#if isActiveStep("vehiculos")}<TourPoint text="Nivel actual del tanque (gal)" />{/if}
                       <input type="text" inputmode="decimal" placeholder="Nivel actual (gal)" bind:value={resetLevelRaw} disabled={resettingLevel} />
                     </span>
                     <input type="text" placeholder="Nota (opcional)" bind:value={resetLevelNote} disabled={resettingLevel} />
@@ -886,7 +918,6 @@
 
             <div class="panel">
               <span class="tour-field-block">
-                {#if isActiveStep("vehiculos")}<TourPoint text="Historial de precios y comparación semanal" />{/if}
                 <button type="button" class="disclosure-toggle" onclick={() => { showPriceTables = !showPriceTables; }}>
                   <span class="panel-title">Historial y comparación semanal</span>
                   <span class="switch" class:on={showPriceTables}></span>
@@ -976,7 +1007,6 @@
           {#if backupPath}<div class="banner success small">Backup guardado en: {backupPath}</div>{/if}
           {#if backupError}<div class="banner error small">{backupError}</div>{/if}
           <span class="tour-field-block">
-            {#if isActiveStep("sistema")}<TourPoint text="Copia de seguridad de tu base de datos local" />{/if}
             <button type="button" class="btn-secondary" onclick={handleBackup} disabled={backupBusy}>
               {backupBusy ? "Exportando…" : "Exportar backup"}
             </button>
@@ -1181,6 +1211,7 @@
   .edit-row-vehicle > input[type="text"] { min-width: 0; }
 
   .panel-header {
+    position: relative;
     display: flex;
     align-items: baseline;
     justify-content: space-between;
@@ -1204,6 +1235,38 @@
   }
 
   .panel-hint { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; margin: 0; }
+
+  /* ── Vista previa del nivel de tanque — misma info que el widget "Tanque"
+     del Resumen, para verla antes de resetear. ── */
+  .tank-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.65rem 0.75rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .tank-preview-header { display: flex; align-items: center; justify-content: space-between; }
+  .tank-preview-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .tank-preview-pct { font-size: 0.85rem; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+  .bar-track { height: 4px; background: var(--bg-surface); border-radius: var(--radius); overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
+  .bar-fill.low { background: var(--danger); }
+  .tank-preview-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
 
   /* Separa visualmente un formulario de "agregar" de la lista de arriba —
      sin esto, filas de datos e inputs de un formulario quedan pegados y se

@@ -8,7 +8,7 @@
   import TourPoint from "$lib/components/TourPoint.svelte";
   import { txState, bumpTxVersion } from "$lib/txState.svelte";
   import { MESES_CORTO, DIAS_SEMANA } from "$lib/constants";
-  import { isActiveStep } from "$lib/tour.svelte";
+  import { isActivePoint } from "$lib/tour.svelte";
 
   type PeriodKey = "Day" | "Week" | "Month" | "Year" | "All";
 
@@ -367,7 +367,7 @@
   <div class="filters">
     <!-- Período -->
     <nav class="period-selector">
-      {#if isActiveStep("historial")}<TourPoint text="Filtra por período" />{/if}
+      {#if isActivePoint("historial", 0)}<TourPoint text="Filtra por período, tipo o categoría; edita o elimina cualquier movimiento" />{/if}
       {#each (Object.keys(PERIOD_LABELS) as PeriodKey[]) as key}
         <button
           class:active={activePeriod === key}
@@ -378,7 +378,6 @@
 
     <!-- Tipo: pills -->
     <div class="kind-pills">
-      {#if isActiveStep("historial")}<TourPoint text="Filtra por tipo" />{/if}
       {#each [["", "Todos"], ["income", "Ingresos"], ["expense", "Gastos"], ["transfer", "Transferencias"]] as [val, label]}
         <button
           class="kind-pill"
@@ -392,7 +391,6 @@
 
     <!-- Categoría -->
     <div class="filter-select-wrap">
-      {#if isActiveStep("historial")}<TourPoint text="Filtra por categoría" />{/if}
       <CustomSelect
         value={filterCat}
         options={[
@@ -502,10 +500,12 @@
     </div>
   {:else if grouped.length === 0}
     <div class="timeline-wrap empty-state">
+      {#if isActivePoint("historial", 1)}<TourPoint text="Aquí aparece cada movimiento, con opción de editarlo o eliminarlo" />{/if}
       <p class="empty-msg">Sin transacciones en este período.</p>
     </div>
   {:else}
     <div class="timeline-wrap">
+      {#if isActivePoint("historial", 1)}<TourPoint text="Cada movimiento se puede editar o eliminar" />{/if}
       <ScrollArea class="tl-scroll" scrollbar="thin">
       {#each grouped as group (group.date)}
         {@const net = group.items.reduce((s, t) => s + (t.type === "income" ? t.amount_cop : t.type === "expense" ? -t.amount_cop : 0), 0)}
@@ -753,6 +753,7 @@
 
   /* ── Toolbar ── */
   .toolbar {
+    position: relative;
     flex-shrink: 0;
     display: flex;
     align-items: center;

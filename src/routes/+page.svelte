@@ -5,7 +5,7 @@
   import ScrollArea from "$lib/components/ScrollArea.svelte";
   import TourPoint from "$lib/components/TourPoint.svelte";
   import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE, mlToGallons, metersToKm } from "$lib/constants";
-  import { isActiveStep } from "$lib/tour.svelte";
+  import { isActivePoint } from "$lib/tour.svelte";
 
   type PeriodKey = "Day" | "Week" | "Month" | "Year" | "All";
 
@@ -276,13 +276,13 @@
       class:balance-pos={!loading && (globalBal?.disponible ?? 0) >= 0}
       class:balance-neg={!loading && (globalBal?.disponible ?? 0) < 0}
     >
-      {#if isActiveStep("resumen")}<TourPoint text="Cuánto tienes disponible ahora" />{/if}
+      {#if isActivePoint("resumen", 0)}<TourPoint text="Cuánto tienes disponible ahora" />{/if}
       <span class="status-label">Disponible</span>
       <span class="status-value">{loading ? "…" : formatCOP(globalBal?.disponible ?? 0)}</span>
     </div>
     <div class="status-divider"></div>
     <div class="status-item">
-      {#if isActiveStep("resumen")}<TourPoint text="Ahorros y deudas incluidos" />{/if}
+      {#if isActivePoint("resumen", 1)}<TourPoint text="Ahorros y deudas incluidos" />{/if}
       <span class="status-label">Patrimonio</span>
       <span class="status-value status-value-secondary">{loading ? "…" : formatCOP(globalBal?.patrimonio ?? 0)}</span>
     </div>

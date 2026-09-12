@@ -8,7 +8,7 @@
   import DatePicker from "$lib/components/DatePicker.svelte";
   import TourPoint from "$lib/components/TourPoint.svelte";
   import { MESES_CORTO } from "$lib/constants";
-  import { isActiveStep } from "$lib/tour.svelte";
+  import { isActivePoint } from "$lib/tour.svelte";
 
   let metas     = $state<MetaV2[]>([]);
   let loading   = $state(true);
@@ -390,7 +390,7 @@
       {/if}
     </div>
     <span class="tour-field-block">
-      {#if isActiveStep("metas")}<TourPoint text="Crea un ahorro, préstamo o deuda — no desde Registros" />{/if}
+      {#if isActivePoint("metas", 0)}<TourPoint text="Crea un ahorro, préstamo o deuda — no desde Registros" />{/if}
       <button class="btn-primary" onclick={() => { createOpen = true; loadExpenseCategories(); }}>+ Nueva</button>
     </span>
   </div>

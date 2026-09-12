@@ -4,7 +4,7 @@
   // recorrido, no una tarea: nunca bloquea "Siguiente" ni exige crear nada
   // — el mensaje de cada paso vive anclado sobre cada input/botón real
   // (TourPoint, en cada página), no acá.
-  import { tour, TOUR_STEPS, startTour, nextStep, prevStep, endTour } from "$lib/tour.svelte";
+  import { tour, TOUR_STEPS, startTour, nextStep, prevStep, endTour, isFirstPoint, isLastPoint } from "$lib/tour.svelte";
 
   let {
     firstInstall,
@@ -26,7 +26,7 @@
   }
 
   async function handleNext() {
-    if (tour.stepIndex === TOUR_STEPS.length - 1) {
+    if (isLastPoint()) {
       endTour();
       onDismiss();
       return;
@@ -56,7 +56,7 @@
   </div>
 {:else if tour.active}
   {@const step = TOUR_STEPS[tour.stepIndex]}
-  <div class="navbar">
+  <div class="navbar" data-tour-navbar>
     <div class="dots">
       {#each TOUR_STEPS as _, i}
         <span class="dot" class:active={i === tour.stepIndex}></span>
@@ -65,11 +65,11 @@
     <span class="step-title">{step.title}</span>
     <span class="spacer"></span>
     <button class="skip-link" onclick={handleSkip}>Omitir tour</button>
-    {#if tour.stepIndex > 0}
+    {#if !isFirstPoint()}
       <button class="btn-secondary" onclick={prevStep}>Atrás</button>
     {/if}
     <button class="btn-primary" onclick={handleNext}>
-      {tour.stepIndex === TOUR_STEPS.length - 1 ? "Terminar" : "Siguiente"}
+      {isLastPoint() ? "Terminar" : "Siguiente"}
     </button>
   </div>
 {/if}
