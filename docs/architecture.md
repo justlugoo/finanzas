@@ -24,7 +24,7 @@ Referencia técnica del proyecto para quien vaya a desarrollar sobre él: stack,
 
 FinCapX pasó por un rediseño completo de modelo de datos (v1 → v2, detallado en la sección 5) para corregir bugs estructurales de v1: un ahorro no puede representarse sin que parezca un gasto, una compra a crédito se contaba dos veces, no existía un tipo "transferencia" que no afectara el patrimonio, etc.
 
-**A la fecha de este documento (actualizado 2026-09-11):**
+**A la fecha de este documento (actualizado 2026-09-12):**
 
 - El **frontend está escrito al 100% contra comandos v2** (`src/lib/api/*.ts` → `*_v2` en Rust, con la única excepción de `gas.ts`, que reutiliza los comandos v1 de precio de gasolina tal cual — esa parte del modelo no cambió con la migración).
 - El **backend mantiene ambos módulos en paralelo**: `commands/services/repositories/{modulo}.rs` (v1, ya no llamado por el frontend, vivo solo para no romper compilación mientras se confirma la migración) y `{modulo}_v2.rs` (el que realmente se usa). Los dos siguen registrados en `invoke_handler!` (`src-tauri/src/lib.rs`).
@@ -75,18 +75,20 @@ src-tauri/examples/       # dry_run_migration.rs — corre migrate_001 contra un
 src/
 ├── app.css              # tokens del sistema de diseño (sección 7)
 ├── routes/
-│   ├── +layout.svelte    # sidebar, navegación, widget flotante de saldo
+│   ├── +layout.svelte    # sidebar, navegación (Resumen/Registros/Historial/Metas/Ajustes), widget flotante de saldo, disparador del onboarding
 │   ├── +page.svelte       # Resumen (dashboard)
-│   ├── registrar/+page.svelte
+│   ├── registrar/+page.svelte  # "Registros" en el nav — el nombre de ruta/archivo no cambió
 │   ├── historial/+page.svelte
 │   ├── metas/+page.svelte
-│   └── config/+page.svelte
+│   └── config/+page.svelte     # "Ajustes" en el nav — pestañas: Presupuestos, Vehículos y gasolina, Sistema, Datos
 └── lib/
     ├── types.ts           # interfaces TypeScript espejo de los structs Rust
     ├── constants.ts        # meses, tamaños de página, conversiones de unidades
     ├── txState.svelte.ts   # señal reactiva compartida (versión de transacciones, para refrescar entre pantallas)
+    ├── registrarDraft.svelte.ts  # borrador del formulario de Registros — vive fuera del componente para no perderse al cambiar de pantalla
+    ├── tour.svelte.ts       # estado y pasos del tour de onboarding (ver sección 7)
     ├── api/                # una función por comando Tauri, agrupada por dominio — las páginas nunca llaman invoke() directo
-    └── components/         # CustomSelect, DatePicker, PaymentModal, ScrollArea
+    └── components/         # CustomSelect, DatePicker, PaymentModal, ScrollArea, TourPoint, Onboarding
 ```
 
 ---
@@ -103,7 +105,7 @@ Los montos son `INTEGER` en COP (sin decimales). Las fechas son `TEXT` en `YYYY-
 | `goals` | Ahorros y deudas | `kind` = `saving` / `debt`. No contienen dinero — el dinero vive en `entries`; `goals` solo describe el objetivo. |
 | `loans` | Préstamos hechos a otras personas | Igual que `goals`: solo describe, el movimiento real está en `entries` (`transfer cash→receivable` al prestar). |
 | `budgets` / `budget_overrides` | Presupuesto mensual por categoría | `budget_overrides` permite un monto distinto para un mes puntual sin cambiar el presupuesto base. |
-| `routes` | Rutas de kilometraje frecuente | Usadas por `categories.route_id` y por el cálculo de costo por ruta en Config. |
+| `routes` | Rutas de kilometraje frecuente | Usadas por `categories.route_id` y por el cálculo de costo por ruta en Ajustes → Vehículos y gasolina. |
 | `vehicles` | Vehículos registrados | `efficiency_m_per_l` (rendimiento) y `tank_capacity_ml` — ambos obligatorios al crear/editar desde la UI (la capacidad del tanque no es solo cosmética: permite detectar un rendimiento mal configurado, ver `services::fuel::overflow_warning`). |
 | `fillups` | Tanqueos reales (con recibo) | Puede enlazar a un `entries` (el gasto real pagado) vía `entry_id`. |
 | `trips` | Viajes recorridos | Solo consumo de tanque (metros → mililitros vía rendimiento del vehículo), sin gasto asociado — separar "cuánto gasté" de "cuánto combustible consumí" fue uno de los motivos centrales de la migración. |
@@ -114,6 +116,8 @@ Los montos son `INTEGER` en COP (sin decimales). Las fechas son `TEXT` en `YYYY-
 - Ahorrar plata, prestarla, cobrar una deuda o abonarla nunca deberían aparecer como ingreso/gasto normal — se resuelven como `kind = transfer` entre cuentas conceptuales, y por eso nunca alteran el patrimonio total (solo mueven de una bolsa a otra), excepto abonar una deuda propia, que sí sube el patrimonio (se paga un pasivo real).
 - Una compra a crédito (`goal_create_debt_v2` → `create_debt`) es un **gasto real desde el día uno** (`expense` con `account_from = payable`), no algo que se materializa solo si falta saldo.
 - `is_extraordinary` en `entries` marca eventos no recurrentes: se excluyen de la comparación contra presupuesto, pero se incluyen (desglosados) en los totales reales del período.
+- Un vehículo es opcional: sin ninguno registrado, el frontend oculta Tanqueo y Kilometraje en Registros (no tiene sentido pedir kilometraje a quien no tiene vehículo) — el backend no necesita saberlo, es una decisión puramente de UI (`vehicles.length === 0` en `registrar/+page.svelte`).
+- `services::system_v2::factory_reset` borra **todo** dato de usuario, incluyendo `gas_prices` — solo se preservan `accounts` (filas de sistema fijas) y `categories` con `is_system = 1`. Antes excluía `gas_prices` "por ser historial de referencia"; corregido porque "restablecer de fábrica" debe dejar la app exactamente como una instalación nueva.
 
 ---
 
@@ -143,9 +147,17 @@ Las páginas nunca llaman `invoke()` directamente — siempre a través de estos
 ## 7. Frontend
 
 - **Runas de Svelte 5** en todo el código, no la store API legacy.
-- Cada página (`routes/*/+page.svelte`) trae su propio `<script>` con estado, efectos y helpers — no hay stores globales salvo `txState.svelte.ts` (un contador de versión que las páginas observan para refrescarse cuando otra pantalla crea/edita/borra algo).
+- Cada página (`routes/*/+page.svelte`) trae su propio `<script>` con estado, efectos y helpers — los módulos de estado compartido fuera de un componente son la excepción, no la regla: `txState.svelte.ts` (contador de versión que las páginas observan para refrescarse cuando otra pantalla crea/edita/borra algo) y `registrarDraft.svelte.ts` (el borrador del formulario de Registros — vive en un módulo aparte para sobrevivir a que el usuario navegue a otra sección y vuelva; un `$state` local normal se habría reiniciado solo al desmontarse el componente).
 - `types.ts` es el espejo manual de los structs `Deserialize`/`Serialize` de Rust — si se cambia un campo en `models/mod.rs`, hay que reflejarlo aquí a mano (no hay generación automática de tipos).
-- Componentes compartidos: `CustomSelect` (select propio, con menú `position:fixed` calculado en JS para escapar de contenedores con `overflow`), `DatePicker` (input de texto enmascarado `DD/MM/AAAA`, sin popup nativo), `PaymentModal` (modal genérico de detalle + registrar abono, usado por Metas), `ScrollArea` (wrapper de scroll con scrollbar delgada, usado en vez de `overflow` directo en cualquier panel que necesite recortar contenido).
+- Componentes compartidos: `CustomSelect` (select propio, con menú `position:fixed` calculado en JS para escapar de contenedores con `overflow`), `DatePicker` (input de texto enmascarado `DD/MM/AAAA`, sin popup nativo, precarga la fecha de hoy sin exigir que el usuario la reescriba), `PaymentModal` (modal genérico de detalle + registrar abono, usado por Metas), `ScrollArea` (wrapper de scroll con scrollbar delgada, usado en vez de `overflow` directo en cualquier panel que necesite recortar contenido).
+
+### Tour de onboarding
+
+Dispara por versión instalada (`localStorage["onboarding_seen_version"]` vs. `getVersion()` de Tauri), nunca por si la base de datos está vacía — así "Restablecer datos de fábrica" no lo vuelve a mostrar a un usuario que ya conoce la app. Estado y definición de pasos en `tour.svelte.ts` (`TOUR_STEPS`: presupuestos → registros → historial → metas → resumen, cada uno con `pointCount` puntos que se muestran de a uno, nunca todos juntos de una sección).
+
+`TourPoint.svelte` es el mensaje flotante en sí: se ancla al elemento DOM padre donde se renderiza (`rootEl.parentElement`), mide su posición con `getBoundingClientRect()` y se dibuja con `position:fixed` — el mismo patrón que el menú de `CustomSelect` — para escapar de cualquier `ScrollArea`/`overflow:hidden` y quedar siempre por encima de todo. Se voltea automáticamente arriba/abajo si no cabe, se clampea para no salirse de la ventana, y nunca se superpone con la barra de navegación del propio tour (detectada vía `[data-tour-navbar]` en `Onboarding.svelte`). Acepta `side="right"` para anclarse al lado de un bloque ancho (ej. el `<form>` de Registros) en vez de arriba/abajo.
+
+`Onboarding.svelte` es el modal de confirmación inicial + la barra inferior de navegación del tour (Omitir / Atrás / Siguiente) — nunca bloquea el avance ni exige crear datos, es un recorrido informativo puro.
 
 ---
 
@@ -173,4 +185,4 @@ SQLite local vía `libsql`, sin servidor ni sincronización cloud.
 | Desarrollo (`pnpm tauri dev`) | `~/.local/share/finanzas-dev/local.db` |
 | Producción (build instalado) | `~/.local/share/finanzas/local.db` |
 
-Backup manual desde **Configuración → Sistema**. Ambas bases de este equipo (desarrollo y producción) ya están migradas a v2 — ver sección 2 para el detalle y para las tablas v1 vacías que reaparecen como efecto secundario cosmético. Una base de datos nueva o de otra instalación sigue necesitando la migración manual.
+Backup manual desde **Ajustes → Sistema**. Ambas bases de este equipo (desarrollo y producción) ya están migradas a v2 — ver sección 2 para el detalle y para las tablas v1 vacías que reaparecen como efecto secundario cosmético. Una base de datos nueva o de otra instalación sigue necesitando la migración manual.
