@@ -19,7 +19,15 @@
     return `${d}/${m}/${y}`;
   }
 
-  let display   = $state(isoToDisplay(value || todayISO()));
+  // Si llega vacío (un formulario nuevo sin fecha elegida todavía), fijar
+  // hoy de una vez en el VALOR real, no solo mostrarlo — antes esto solo se
+  // mostraba visualmente sin escribir nada al valor ligado del padre, así
+  // que el campo se veía con fecha pero el formulario se enviaba sin
+  // ninguna (o el botón de guardar quedaba deshabilitado) hasta que el
+  // usuario tecleaba la fecha a mano, aunque ya fuera la misma que se veía.
+  if (!value) value = todayISO();
+
+  let display   = $state(isoToDisplay(value));
   let lastValue = value;
 
   // Si `value` cambia desde afuera (ej. el formulario se limpia tras

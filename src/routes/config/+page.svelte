@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { page } from '$app/stores';
   import { gasApi, budgetApi, categoryApi, vehicleApi, routeApi, systemApi, fillupApi } from "$lib/api";
   import type { GasPrice, WeeklyGasPoint, CategoryBudgetRow, RoutesCost, RouteV2, VehicleV2 } from "$lib/types";
   import { mPerLToKmPerGallon, mlToGallons, metersToKm, ML_PER_GALLON } from "$lib/constants";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
+  import TourPoint from "$lib/components/TourPoint.svelte";
+  import { isActiveStep } from "$lib/tour.svelte";
 
   let currentPrice   = $state<GasPrice | null>(null);
   let priceHistory   = $state<GasPrice[]>([]);
@@ -18,10 +21,24 @@
   let loading        = $state(true);
   let pageError      = $state<string | null>(null);
 
-  // ── Pestañas — una sección a la vez, no las cinco de golpe ───────────────
-  type Tab = "gasolina" | "vehiculos" | "presupuestos" | "sistema" | "datos";
-  let activeTab = $state<Tab>("gasolina");
+  // ── Pestañas — una sección a la vez, no las cuatro de golpe. Vehículos y
+  // Gasolina van unificadas en una sola pestaña (antes separadas): un
+  // vehículo por sí solo no sirve de mucho sin su precio/costos, y viceversa.
+  // Presupuestos va primera porque, a diferencia de vehículos, siempre hace
+  // falta para usar la app (no todos tienen un vehículo que registrar). ───
+  type Tab = "presupuestos" | "vehiculos" | "sistema" | "datos";
+  const TABS: Tab[] = ["presupuestos", "vehiculos", "sistema", "datos"];
+  let activeTab = $state<Tab>("presupuestos");
   let showPriceTables = $state(false);
+
+  // `?tab=` permite deep-link a una pestaña puntual (usado por el tour de
+  // bienvenida). Un efecto, no un valor inicial: navegar de /config?tab=a a
+  // /config?tab=b es la MISMA ruta para SvelteKit, así que el componente no
+  // se vuelve a montar — sin esto, el segundo `?tab=` nunca se leería.
+  $effect(() => {
+    const t = $page.url.searchParams.get("tab");
+    if (t && TABS.includes(t as Tab)) activeTab = t as Tab;
+  });
 
   // ── Vehículos ─────────────────────────────────────────────────────────────
   let newVehicleName      = $state("");
@@ -80,6 +97,15 @@
   let deletingBudget   = $state<string | null>(null);
   let confirmingDeleteBudget = $state<string | null>(null);
   let togglingFixed    = $state<string | null>(null);
+
+  // Fila de ejemplo (mockdata) que se muestra mientras no haya categorías —
+  // solo ilustra cómo se ve un presupuesto ya creado, no existe en la BD.
+  // Si molesta se puede ocultar; queda recordado para no volver a mostrarla.
+  let budgetExampleDismissed = $state(localStorage.getItem("budget_example_dismissed") === "true");
+  function dismissBudgetExample() {
+    budgetExampleDismissed = true;
+    localStorage.setItem("budget_example_dismissed", "true");
+  }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   function formatCOP(n: number): string {
@@ -480,7 +506,7 @@
 
 <div class="config-shell">
   <header class="config-header">
-    <h1>Configuración</h1>
+    <h1>Ajustes</h1>
   </header>
 
   {#if pageError}
@@ -488,9 +514,8 @@
   {/if}
 
   <nav class="tabs">
-    <button type="button" class="tab" class:active={activeTab === "gasolina"} onclick={() => { activeTab = "gasolina"; }}>Gasolina</button>
-    <button type="button" class="tab" class:active={activeTab === "vehiculos"} onclick={() => { activeTab = "vehiculos"; }}>Vehículos</button>
     <button type="button" class="tab" class:active={activeTab === "presupuestos"} onclick={() => { activeTab = "presupuestos"; }}>Presupuestos</button>
+    <button type="button" class="tab" class:active={activeTab === "vehiculos"} onclick={() => { activeTab = "vehiculos"; }}>Vehículos y gasolina</button>
     <button type="button" class="tab" class:active={activeTab === "sistema"} onclick={() => { activeTab = "sistema"; }}>Sistema</button>
     <button type="button" class="tab tab-danger" class:active={activeTab === "datos"} onclick={() => { activeTab = "datos"; }}>Datos</button>
   </nav>
@@ -501,247 +526,6 @@
       <p class="muted">Cargando…</p>
     {:else}
 
-      <!-- ══════════════════════ GASOLINA ══════════════════════ -->
-      {#if activeTab === "gasolina"}
-
-        <div class="panel">
-          <div class="price-hero">
-            {#if currentPrice}
-              <span class="price-value">{formatCOP(currentPrice.price_per_gallon)}</span>
-              <span class="price-unit">/galón</span>
-            {:else}
-              <span class="price-value muted">Sin precio registrado</span>
-            {/if}
-          </div>
-          {#if currentPrice}
-            <div class="price-meta">
-              <span>{currentPrice.date}</span>
-              <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
-            </div>
-          {/if}
-
-          {#if saveMsg}<div class="banner success small">{saveMsg}</div>{/if}
-          {#if saveError}<div class="banner error small">{saveError}</div>{/if}
-          <form onsubmit={handleSavePrice} class="inline-form">
-            <input
-              type="text"
-              inputmode="numeric"
-              placeholder="Nuevo precio por galón"
-              value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
-              oninput={handlePriceInput}
-            />
-            <button type="submit" class="btn-primary" disabled={saving || newPrice <= 0}>
-              {saving ? "Guardando…" : "Guardar"}
-            </button>
-          </form>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <span class="panel-title">Costos por ruta</span>
-            {#if routeCosts}
-              <span class="panel-title-hint">{formatCOP(routeCosts.precio_galon)}/gal{#if selectedVehicle} · {selectedVehicleKmPerGallon.toFixed(1)} km/gal{/if}</span>
-            {/if}
-          </div>
-
-          {#if vehicles.length > 1}
-            <div class="chip-grid chip-grid-sm">
-              {#each vehicles as v (v.id)}
-                <button
-                  type="button"
-                  class="chip chip-sm"
-                  class:active={selectedVehicleId === v.id}
-                  onclick={() => { selectedVehicleId = v.id; }}
-                >{v.name}</button>
-              {/each}
-            </div>
-          {/if}
-
-          {#if customRoutes.length > 0 && selectedVehicle}
-            <div class="item-list">
-              {#each customRoutes as route (route.id)}
-                {@const routeKm = metersToKm(route.distance_m)}
-                {@const cost = Math.round(routeKm / selectedVehicleKmPerGallon * routeCosts!.precio_galon)}
-                <div class="item-row">
-                  <span class="item-name">{route.name}</span>
-                  <span class="item-meta">{routeKm} km</span>
-                  <span class="item-value">{formatCOP(cost)}</span>
-                  <div class="item-actions">
-                    <button
-                      class="item-act danger"
-                      onclick={() => removeCustomRoute(route.id)}
-                      disabled={deletingRouteId === route.id}
-                    >{deletingRouteId === route.id ? "…" : "Eliminar"}</button>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {:else if customRoutes.length === 0}
-            <p class="muted small">Sin rutas todavía.</p>
-          {:else}
-            <p class="muted small">Agrega un vehículo para ver los costos.</p>
-          {/if}
-
-          {#if routeError}<div class="banner error small">{routeError}</div>{/if}
-          <form class="inline-form-3" onsubmit={addCustomRoute}>
-            <input type="text" placeholder="Nombre de la ruta" bind:value={newRouteName} disabled={addingRoute} />
-            <input type="text" inputmode="decimal" placeholder="km redondo" bind:value={newRouteKmRaw} class="input-narrow" disabled={addingRoute} />
-            <button type="submit" class="btn-secondary" disabled={addingRoute || !newRouteName.trim() || !newRouteKmRaw}>
-              {addingRoute ? "…" : "+ Agregar"}
-            </button>
-          </form>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header"><span class="panel-title">Nivel de tanque</span></div>
-          <p class="panel-hint">
-            Resetea el nivel de un vehículo sin borrar tanqueos ni viajes anteriores — útil si corriges su rendimiento (km/gal) y quieres que la autonomía se calcule de nuevo desde hoy.
-          </p>
-
-          {#if vehicles.length === 0}
-            <p class="muted small">Agrega un vehículo primero.</p>
-          {:else}
-            {#if vehicles.length > 1}
-              <div class="chip-grid chip-grid-sm">
-                {#each vehicles as v (v.id)}
-                  <button
-                    type="button"
-                    class="chip chip-sm"
-                    class:active={selectedVehicleId === v.id}
-                    onclick={() => { selectedVehicleId = v.id; }}
-                  >{v.name}</button>
-                {/each}
-              </div>
-            {/if}
-
-            {#if resetLevelMsg}<div class="banner success small">{resetLevelMsg}</div>{/if}
-            {#if resetLevelError}<div class="banner error small">{resetLevelError}</div>{/if}
-
-            <form class="inline-form-3" onsubmit={handleResetFuelLevel}>
-              <input type="text" inputmode="decimal" class="input-narrow" placeholder="Nivel actual (gal)" bind:value={resetLevelRaw} disabled={resettingLevel} />
-              <input type="text" placeholder="Nota (opcional)" bind:value={resetLevelNote} disabled={resettingLevel} />
-              <button type="submit" class="btn-secondary" disabled={resettingLevel || !selectedVehicleId || resetLevelRaw === ""}>
-                {resettingLevel ? "…" : "Resetear nivel"}
-              </button>
-            </form>
-          {/if}
-        </div>
-
-        <div class="panel">
-          <button type="button" class="disclosure-toggle" onclick={() => { showPriceTables = !showPriceTables; }}>
-            <span class="panel-title">Historial y comparación semanal</span>
-            <span class="switch" class:on={showPriceTables}></span>
-          </button>
-
-          {#if showPriceTables}
-            <div class="disclosure-body">
-              {#if priceHistory.length > 0}
-                <div class="subpanel">
-                  <span class="subpanel-title">Historial de precios</span>
-                  <div class="record-list">
-                    {#each priceHistory as p (p.id)}
-                      <div class="record-row">
-                        <span class="record-date">{p.date}</span>
-                        <span class="source-badge source-{p.source}">{p.source}</span>
-                        <span class="record-gap"></span>
-                        <span class="record-value">{formatCOP(p.price_per_gallon)}</span>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-
-              {#if weeklyData.length > 0}
-                <div class="subpanel">
-                  <span class="subpanel-title">Comparación semanal</span>
-                  <div class="record-list">
-                    {#each weeklyData as w, i}
-                      {@const prev = weeklyData[i + 1]}
-                      <div class="record-row">
-                        <span class="record-date">{w.week_start}</span>
-                        <span class="record-count">{w.entry_count} registro{w.entry_count !== 1 ? "s" : ""}</span>
-                        <span class="record-gap"></span>
-                        <span class="record-value">
-                          {formatCOP(w.avg_price)}
-                          {#if prev}
-                            {@const delta = w.avg_price - prev.avg_price}
-                            <span class="delta" class:up={delta > 0} class:down={delta < 0}>
-                              {delta > 0 ? "↑" : delta < 0 ? "↓" : "—"}
-                            </span>
-                          {/if}
-                        </span>
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-
-              {#if priceHistory.length === 0 && weeklyData.length === 0}
-                <p class="muted small">Todavía no hay suficientes datos.</p>
-              {/if}
-            </div>
-          {/if}
-        </div>
-
-      {/if}
-
-      <!-- ══════════════════════ VEHÍCULOS ══════════════════════ -->
-      {#if activeTab === "vehiculos"}
-
-        <div class="panel">
-          <div class="panel-header"><span class="panel-title">Vehículos</span></div>
-
-          {#if vehicles.length === 0}
-            <p class="muted">Sin vehículos todavía.</p>
-          {:else}
-            <div class="item-list">
-              {#each vehicles as v (v.id)}
-                {#if editingVehicleId === v.id}
-                  <div class="edit-row">
-                    <input type="text" bind:value={editVehicleName} disabled={savingVehicle} placeholder="Nombre" />
-                    <input type="text" inputmode="decimal" class="input-narrow" bind:value={editVehicleKmRaw} disabled={savingVehicle} placeholder="km/gal" />
-                    <input type="text" inputmode="decimal" class="input-narrow" bind:value={editVehicleTankRaw} disabled={savingVehicle} placeholder="galones" />
-                    <button class="icon-btn confirm" onclick={() => saveEditVehicle(v.id)} disabled={savingVehicle} title="Guardar">✓</button>
-                    <button class="icon-btn" onclick={() => { editingVehicleId = null; }} disabled={savingVehicle} title="Cancelar">✕</button>
-                  </div>
-                {:else}
-                  <div class="item-row">
-                    <span class="item-name">{v.name}</span>
-                    <span class="item-meta">{mPerLToKmPerGallon(v.efficiency_m_per_l).toFixed(1)} km/gal{#if v.tank_capacity_ml != null} · {mlToGallons(v.tank_capacity_ml).toFixed(1)} gal{/if}</span>
-                    <div class="item-actions">
-                      <button class="item-act" onclick={() => startEditVehicle(v)}>Editar</button>
-                      <button
-                        class="item-act danger"
-                        onclick={() => deleteVehicle(v.id)}
-                        disabled={deletingVehicleId === v.id}
-                      >{deletingVehicleId === v.id ? "…" : "Eliminar"}</button>
-                    </div>
-                  </div>
-                {/if}
-              {/each}
-            </div>
-          {/if}
-
-          <div class="form-section">
-            <span class="form-section-label">Agregar vehículo</span>
-
-            {#if vehicleFormError}<div class="banner error small">{vehicleFormError}</div>{/if}
-            <form class="inline-form-3" onsubmit={addVehicle}>
-              <input type="text" placeholder="Nombre (ej. Moto, Carro)" bind:value={newVehicleName} disabled={addingVehicle} />
-              <input type="text" inputmode="decimal" class="input-narrow" placeholder="km/gal" bind:value={newVehicleKmRaw} disabled={addingVehicle} />
-              <input type="text" inputmode="decimal" class="input-narrow" placeholder="galones" bind:value={newVehicleTankRaw} disabled={addingVehicle} />
-              <button type="submit" class="btn-secondary" disabled={addingVehicle || !newVehicleName.trim() || !newVehicleKmRaw || !newVehicleTankRaw}>
-                {addingVehicle ? "…" : "+ Agregar"}
-              </button>
-            </form>
-            <p class="panel-hint">
-              La capacidad del tanque (en galones, igual que el resto de la app) es obligatoria: además de mostrar el % de nivel y la autonomía en el Dashboard, es lo que permite detectar un rendimiento (km/gal) mal configurado — si un tanqueo deja el nivel calculado por encima de la capacidad real, la app te avisa.
-            </p>
-          </div>
-        </div>
-
-      {/if}
-
       <!-- ══════════════════════ PRESUPUESTOS ══════════════════════ -->
       {#if activeTab === "presupuestos"}
 
@@ -750,6 +534,24 @@
 
           {#if budgets.length === 0}
             <p class="muted">Sin categorías todavía.</p>
+            {#if !budgetExampleDismissed}
+              <!-- Mockdata: solo para mostrar cómo se ve un presupuesto ya creado —
+                   no existe en la base de datos, no reacciona a clics. -->
+              <div class="item-list">
+                <div class="budget-row budget-row-example">
+                  <div class="budget-cat">
+                    <span class="item-name">Sueldo</span>
+                    <span class="pill-toggle on">Fijo</span>
+                  </div>
+                  <div class="budget-route-example">Sin ruta</div>
+                  <div class="budget-amount">
+                    <span class="amount-btn">{formatCOP(1500000)}</span>
+                  </div>
+                  <span class="example-tag">Ejemplo</span>
+                  <button class="item-act example-dismiss" onclick={dismissBudgetExample} title="Ocultar ejemplo">✕</button>
+                </div>
+              </div>
+            {/if}
           {:else}
             <div class="item-list">
               {#each budgets as b (b.category.id)}
@@ -836,8 +638,12 @@
 
           {#if budgetFormError}<div class="banner error small">{budgetFormError}</div>{/if}
           <form class="inline-form-3" onsubmit={addBudget}>
-            <input type="text" placeholder="Nombre de la categoría" bind:value={newBudgetName} disabled={addingBudget} />
-            <div class="input-narrow" style="--cs-padding: 0.4rem 0.6rem;">
+            <span class="tour-field grow">
+              {#if isActiveStep("presupuestos")}<TourPoint text="Nombre de la categoría (ej. Comida, Sueldo)" />{/if}
+              <input type="text" placeholder="Nombre de la categoría" bind:value={newBudgetName} disabled={addingBudget} />
+            </span>
+            <div class="input-narrow tour-field" style="--cs-padding: 0.4rem 0.6rem;">
+              {#if isActiveStep("presupuestos")}<TourPoint text="Ingreso o gasto" />{/if}
               <CustomSelect
                 bind:value={newBudgetType}
                 options={[
@@ -860,6 +666,283 @@
               {addingBudget ? "…" : "+ Agregar"}
             </button>
           </form>
+        </div>
+
+      {/if}
+
+      <!-- ══════════════════════ VEHÍCULOS Y GASOLINA ══════════════════════ -->
+      {#if activeTab === "vehiculos"}
+
+        <div class="combo-grid">
+
+          <!-- ── Vehículos ── -->
+          <div class="combo-col">
+            <div class="panel">
+              <div class="panel-header"><span class="panel-title">Vehículos</span></div>
+
+              {#if vehicles.length === 0}
+                <p class="muted">Sin vehículos todavía.</p>
+              {:else}
+                <div class="item-list">
+                  {#each vehicles as v (v.id)}
+                    {#if editingVehicleId === v.id}
+                      <div class="edit-row-vehicle">
+                        <input type="text" bind:value={editVehicleName} disabled={savingVehicle} placeholder="Nombre" />
+                        <div class="stacked-form-row">
+                          <input type="text" inputmode="decimal" bind:value={editVehicleKmRaw} disabled={savingVehicle} placeholder="km/gal" />
+                          <input type="text" inputmode="decimal" bind:value={editVehicleTankRaw} disabled={savingVehicle} placeholder="galones" />
+                          <button class="icon-btn confirm" onclick={() => saveEditVehicle(v.id)} disabled={savingVehicle} title="Guardar">✓</button>
+                          <button class="icon-btn" onclick={() => { editingVehicleId = null; }} disabled={savingVehicle} title="Cancelar">✕</button>
+                        </div>
+                      </div>
+                    {:else}
+                      <div class="item-row">
+                        <span class="item-name">{v.name}</span>
+                        <span class="item-meta">{mPerLToKmPerGallon(v.efficiency_m_per_l).toFixed(1)} km/gal{#if v.tank_capacity_ml != null} · {mlToGallons(v.tank_capacity_ml).toFixed(1)} gal{/if}</span>
+                        <div class="item-actions">
+                          <button class="item-act" onclick={() => startEditVehicle(v)}>Editar</button>
+                          <button
+                            class="item-act danger"
+                            onclick={() => deleteVehicle(v.id)}
+                            disabled={deletingVehicleId === v.id}
+                          >{deletingVehicleId === v.id ? "…" : "Eliminar"}</button>
+                        </div>
+                      </div>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
+
+              <div class="form-section">
+                <span class="form-section-label">Agregar vehículo</span>
+
+                {#if vehicleFormError}<div class="banner error small">{vehicleFormError}</div>{/if}
+                <form class="stacked-form" onsubmit={addVehicle}>
+                  <span class="tour-field full">
+                    {#if isActiveStep("vehiculos")}<TourPoint text="Nombre del vehículo" />{/if}
+                    <input type="text" placeholder="Nombre (ej. Moto, Carro)" bind:value={newVehicleName} disabled={addingVehicle} />
+                  </span>
+                  <div class="stacked-form-row">
+                    <span class="tour-field">
+                      {#if isActiveStep("vehiculos")}<TourPoint text="Rendimiento (km/gal)" />{/if}
+                      <input type="text" inputmode="decimal" placeholder="km/gal" bind:value={newVehicleKmRaw} disabled={addingVehicle} />
+                    </span>
+                    <span class="tour-field">
+                      {#if isActiveStep("vehiculos")}<TourPoint text="Capacidad del tanque (gal)" />{/if}
+                      <input type="text" inputmode="decimal" placeholder="galones" bind:value={newVehicleTankRaw} disabled={addingVehicle} />
+                    </span>
+                  </div>
+                  <button type="submit" class="btn-secondary full-width" disabled={addingVehicle || !newVehicleName.trim() || !newVehicleKmRaw || !newVehicleTankRaw}>
+                    {addingVehicle ? "…" : "+ Agregar"}
+                  </button>
+                </form>
+                <p class="panel-hint">
+                  La capacidad (galones) es obligatoria: muestra el % de nivel y la autonomía, y detecta un rendimiento mal configurado.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Gasolina ── -->
+          <div class="combo-col">
+            <div class="panel">
+              <div class="price-hero">
+                {#if currentPrice}
+                  <span class="price-value">{formatCOP(currentPrice.price_per_gallon)}</span>
+                  <span class="price-unit">/galón</span>
+                {:else}
+                  <span class="price-value muted">Sin precio registrado</span>
+                {/if}
+              </div>
+              {#if currentPrice}
+                <div class="price-meta">
+                  <span>{currentPrice.date}</span>
+                  <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
+                </div>
+              {/if}
+
+              {#if saveMsg}<div class="banner success small">{saveMsg}</div>{/if}
+              {#if saveError}<div class="banner error small">{saveError}</div>{/if}
+              <form onsubmit={handleSavePrice} class="stacked-form">
+                <span class="tour-field full">
+                  {#if isActiveStep("vehiculos")}<TourPoint text="Precio actual por galón" />{/if}
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="Nuevo precio por galón"
+                    value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
+                    oninput={handlePriceInput}
+                  />
+                </span>
+                <button type="submit" class="btn-primary full-width" disabled={saving || newPrice <= 0}>
+                  {saving ? "Guardando…" : "Guardar"}
+                </button>
+              </form>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <span class="panel-title">Costos por ruta</span>
+                {#if routeCosts}
+                  <span class="panel-title-hint">{formatCOP(routeCosts.precio_galon)}/gal{#if selectedVehicle} · {selectedVehicleKmPerGallon.toFixed(1)} km/gal{/if}</span>
+                {/if}
+              </div>
+
+              {#if vehicles.length > 1}
+                <div class="chip-grid chip-grid-sm">
+                  {#each vehicles as v (v.id)}
+                    <button
+                      type="button"
+                      class="chip chip-sm"
+                      class:active={selectedVehicleId === v.id}
+                      onclick={() => { selectedVehicleId = v.id; }}
+                    >{v.name}</button>
+                  {/each}
+                </div>
+              {/if}
+
+              {#if customRoutes.length > 0 && selectedVehicle}
+                <div class="item-list">
+                  {#each customRoutes as route (route.id)}
+                    {@const routeKm = metersToKm(route.distance_m)}
+                    {@const cost = Math.round(routeKm / selectedVehicleKmPerGallon * routeCosts!.precio_galon)}
+                    <div class="item-row">
+                      <span class="item-name">{route.name}</span>
+                      <span class="item-meta">{routeKm} km</span>
+                      <span class="item-value">{formatCOP(cost)}</span>
+                      <div class="item-actions">
+                        <button
+                          class="item-act danger"
+                          onclick={() => removeCustomRoute(route.id)}
+                          disabled={deletingRouteId === route.id}
+                        >{deletingRouteId === route.id ? "…" : "Eliminar"}</button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else if customRoutes.length === 0}
+                <p class="muted small">Sin rutas todavía.</p>
+              {:else}
+                <p class="muted small">Agrega un vehículo para ver los costos.</p>
+              {/if}
+
+              {#if routeError}<div class="banner error small">{routeError}</div>{/if}
+              <form class="stacked-form" onsubmit={addCustomRoute}>
+                <span class="tour-field full">
+                  {#if isActiveStep("vehiculos")}<TourPoint text="Nombre de la ruta (ej. Trabajo)" />{/if}
+                  <input type="text" placeholder="Nombre de la ruta" bind:value={newRouteName} disabled={addingRoute} />
+                </span>
+                <div class="stacked-form-row">
+                  <span class="tour-field">
+                    {#if isActiveStep("vehiculos")}<TourPoint text="Km del recorrido redondo" />{/if}
+                    <input type="text" inputmode="decimal" placeholder="km redondo" bind:value={newRouteKmRaw} disabled={addingRoute} />
+                  </span>
+                  <button type="submit" class="btn-secondary" disabled={addingRoute || !newRouteName.trim() || !newRouteKmRaw}>
+                    {addingRoute ? "…" : "+ Agregar"}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header"><span class="panel-title">Nivel de tanque</span></div>
+              <p class="panel-hint">
+                Resetea el nivel de un vehículo sin borrar tanqueos ni viajes anteriores — útil si corriges su rendimiento (km/gal) y quieres que la autonomía se calcule de nuevo desde hoy.
+              </p>
+
+              {#if vehicles.length === 0}
+                <p class="muted small">Agrega un vehículo primero.</p>
+              {:else}
+                {#if vehicles.length > 1}
+                  <div class="chip-grid chip-grid-sm">
+                    {#each vehicles as v (v.id)}
+                      <button
+                        type="button"
+                        class="chip chip-sm"
+                        class:active={selectedVehicleId === v.id}
+                        onclick={() => { selectedVehicleId = v.id; }}
+                      >{v.name}</button>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if resetLevelMsg}<div class="banner success small">{resetLevelMsg}</div>{/if}
+                {#if resetLevelError}<div class="banner error small">{resetLevelError}</div>{/if}
+
+                <form class="stacked-form" onsubmit={handleResetFuelLevel}>
+                  <div class="stacked-form-row">
+                    <span class="tour-field">
+                      {#if isActiveStep("vehiculos")}<TourPoint text="Nivel actual del tanque (gal)" />{/if}
+                      <input type="text" inputmode="decimal" placeholder="Nivel actual (gal)" bind:value={resetLevelRaw} disabled={resettingLevel} />
+                    </span>
+                    <input type="text" placeholder="Nota (opcional)" bind:value={resetLevelNote} disabled={resettingLevel} />
+                  </div>
+                  <button type="submit" class="btn-secondary full-width" disabled={resettingLevel || !selectedVehicleId || resetLevelRaw === ""}>
+                    {resettingLevel ? "…" : "Resetear nivel"}
+                  </button>
+                </form>
+              {/if}
+            </div>
+
+            <div class="panel">
+              <span class="tour-field-block">
+                {#if isActiveStep("vehiculos")}<TourPoint text="Historial de precios y comparación semanal" />{/if}
+                <button type="button" class="disclosure-toggle" onclick={() => { showPriceTables = !showPriceTables; }}>
+                  <span class="panel-title">Historial y comparación semanal</span>
+                  <span class="switch" class:on={showPriceTables}></span>
+                </button>
+              </span>
+
+              {#if showPriceTables}
+                <div class="disclosure-body">
+                  {#if priceHistory.length > 0}
+                    <div class="subpanel">
+                      <span class="subpanel-title">Historial de precios</span>
+                      <div class="record-list">
+                        {#each priceHistory as p (p.id)}
+                          <div class="record-row">
+                            <span class="record-date">{p.date}</span>
+                            <span class="source-badge source-{p.source}">{p.source}</span>
+                            <span class="record-gap"></span>
+                            <span class="record-value">{formatCOP(p.price_per_gallon)}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if weeklyData.length > 0}
+                    <div class="subpanel">
+                      <span class="subpanel-title">Comparación semanal</span>
+                      <div class="record-list">
+                        {#each weeklyData as w, i}
+                          {@const prev = weeklyData[i + 1]}
+                          <div class="record-row">
+                            <span class="record-date">{w.week_start}</span>
+                            <span class="record-count">{w.entry_count} registro{w.entry_count !== 1 ? "s" : ""}</span>
+                            <span class="record-gap"></span>
+                            <span class="record-value">
+                              {formatCOP(w.avg_price)}
+                              {#if prev}
+                                {@const delta = w.avg_price - prev.avg_price}
+                                <span class="delta" class:up={delta > 0} class:down={delta < 0}>
+                                  {delta > 0 ? "↑" : delta < 0 ? "↓" : "—"}
+                                </span>
+                              {/if}
+                            </span>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if priceHistory.length === 0 && weeklyData.length === 0}
+                    <p class="muted small">Todavía no hay suficientes datos.</p>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          </div>
         </div>
 
       {/if}
@@ -892,9 +975,12 @@
           <div class="panel-header"><span class="panel-title">Base de datos local</span></div>
           {#if backupPath}<div class="banner success small">Backup guardado en: {backupPath}</div>{/if}
           {#if backupError}<div class="banner error small">{backupError}</div>{/if}
-          <button type="button" class="btn-secondary" onclick={handleBackup} disabled={backupBusy}>
-            {backupBusy ? "Exportando…" : "Exportar backup"}
-          </button>
+          <span class="tour-field-block">
+            {#if isActiveStep("sistema")}<TourPoint text="Copia de seguridad de tu base de datos local" />{/if}
+            <button type="button" class="btn-secondary" onclick={handleBackup} disabled={backupBusy}>
+              {backupBusy ? "Exportando…" : "Exportar backup"}
+            </button>
+          </span>
         </div>
 
       {/if}
@@ -906,8 +992,8 @@
           <div class="panel-header"><span class="panel-title danger-title">Restablecer datos de fábrica</span></div>
           {#if resetSuccess}<div class="banner success small">Datos eliminados. La app está lista para usar.</div>{/if}
           <p class="danger-hint">
-            Elimina permanentemente todas las transacciones, objetivos, historial de gasolina, categorías, rutas y vehículos.
-            La app quedará vacía, lista para configurar desde cero. Esta acción no se puede deshacer.
+            Elimina permanentemente transacciones, presupuestos, categorías, metas (ahorros, préstamos y deudas), vehículos, tanqueos y rutas.
+            La app queda vacía, lista para empezar de cero. No se puede deshacer.
           </p>
           <button type="button" class="btn-danger" onclick={openReset}>Restablecer datos de fábrica</button>
         </div>
@@ -924,7 +1010,7 @@
   <div class="modal-overlay" role="button" tabindex="-1" onclick={closeReset} onkeydown={(e) => { if (e.key === "Escape") closeReset(); }}>
     <div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
       <h2>¿Restablecer datos de fábrica?</h2>
-      <p class="modal-body">Esto eliminará <strong>TODAS</strong> las transacciones, objetivos e historial de gasolina. Esta acción no se puede deshacer.</p>
+      <p class="modal-body">Esto eliminará <strong>TODOS</strong> tus datos: transacciones, presupuestos, categorías, metas, vehículos y tanqueos. Esta acción no se puede deshacer.</p>
       <div class="modal-actions">
         <button class="btn-cancel" onclick={closeReset}>Cancelar</button>
         <button class="btn-danger-confirm" onclick={() => { resetStep = 2; }}>Sí, continuar</button>
@@ -1034,6 +1120,65 @@
   }
 
   .panel-danger { border-color: var(--danger); }
+
+  /* ── Vehículos y Gasolina unificados — dos columnas: vehículos (más
+     angosta, es el prerequisito) a la izquierda, gasolina (varios paneles)
+     a la derecha. ── */
+  .combo-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) 1fr;
+    gap: 0.85rem;
+    align-items: start;
+  }
+  .combo-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  /* ── Anclas del tour — envuelven un input o botón puntual para que el
+     <TourPoint> (position:absolute) se posicione justo encima de él, sin
+     alterar el layout de la fila que lo contiene cuando el tour no está
+     activo. ── */
+  .tour-field {
+    position: relative;
+    display: flex;
+    min-width: 0;
+  }
+  .tour-field.grow { flex: 1; min-width: 140px; }
+  .tour-field.narrow { flex: 0 0 auto; width: 110px; }
+  .tour-field.full { display: flex; width: 100%; }
+  .tour-field > input { flex: 1; min-width: 0; width: 100%; }
+  .tour-field-block { position: relative; display: block; }
+
+  /* ── Formulario apilado — para la columna angosta de Vehículos, donde un
+     formulario de 3 campos en fila (como en el resto de la app) no cabe. ── */
+  .stacked-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .stacked-form-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .stacked-form-row input,
+  .stacked-form-row .tour-field { flex: 1; min-width: 0; }
+  .stacked-form-row input { width: 100%; }
+  .btn-secondary.full-width,
+  .btn-primary.full-width { width: 100%; }
+
+  .edit-row-vehicle {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .item-list .edit-row-vehicle:last-child { border-bottom: none; }
+  .edit-row-vehicle > input[type="text"] { min-width: 0; }
 
   .panel-header {
     display: flex;
@@ -1156,8 +1301,9 @@
 
   .item-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.3rem 0.6rem;
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--border);
     font-size: 0.82rem;
@@ -1247,7 +1393,6 @@
   .icon-btn.confirm:hover:not(:disabled) { border-color: var(--success); }
 
   /* ── Formularios inline ── */
-  .inline-form { display: flex; gap: 0.5rem; }
   .inline-form-3 { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 
   input[type="text"] {
@@ -1413,6 +1558,30 @@
   .budget-cat { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.4rem; }
   .budget-route { flex: 0 0 130px; min-width: 0; }
   .budget-amount { flex: 0 0 auto; min-width: 90px; display: flex; justify-content: flex-end; }
+
+  /* ── Fila de ejemplo (mockdata) — mismo layout que una fila real, pero
+     atenuada y con borde punteado, igual que el tag "Archivada" de
+     Historial: se distingue de un dato real a simple vista. ── */
+  .budget-row-example { opacity: 0.7; border-bottom-style: dashed; }
+  .budget-row-example:hover { background: none; }
+  .budget-route-example {
+    flex: 0 0 130px;
+    min-width: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .example-tag {
+    flex-shrink: 0;
+    font-size: 0.58rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.35rem;
+    border-radius: var(--radius);
+    border: 1px dashed var(--border);
+    color: var(--text-muted);
+  }
   .budget-row-actions {
     flex: 0 0 auto;
     min-width: 64px;

@@ -11,6 +11,19 @@ async fn fresh_db() -> Connection {
     let db = libsql::Builder::new_local(":memory:").build().await.expect("build db");
     let conn = db.connect().expect("connect");
     finanzas_lib::migrations::init_fresh_v2_schema(&conn).await.expect("schema v2");
+    // `gas_prices` es una tabla heredada del schema v1 que nunca se remodeló
+    // en v2 — en producción la crea `db::apply_schema()` en cada arranque
+    // (CREATE TABLE IF NOT EXISTS), pero aplicar ahí el batch v1 completo
+    // choca con las tablas que sí cambiaron de forma en v2 (vehicles/loans/
+    // goals/budgets), así que aquí solo se agrega la tabla puntual que falta.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS gas_prices (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            date                TEXT    NOT NULL UNIQUE,
+            price_per_gallon    INTEGER NOT NULL CHECK (price_per_gallon BETWEEN 1000 AND 100000),
+            source              TEXT    NOT NULL CHECK (source IN ('manual', 'scraping'))
+        );",
+    ).await.expect("gas_prices table");
     conn
 }
 
@@ -388,11 +401,14 @@ async fn factory_reset_v2_no_borra_cuentas_de_sistema() {
     let conn = fresh_db().await;
     let cat = services::categories::create(&conn, CategoryInput { name: "Comida".into(), kind: "expense".into(), is_fixed: false, route_id: None }).await.unwrap();
     services::vehicles_v2::create(&conn, VehicleInputV2 { name: "Carro".into(), km_per_gallon: 30.0, tank_gallons: 12.0 }).await.unwrap();
+    finanzas_lib::repositories::gas::upsert(&conn, "2026-09-01", 15000).await.unwrap();
 
     services::system_v2::factory_reset(&conn).await.unwrap();
 
     assert!(services::categories::list(&conn, None, false).await.unwrap().is_empty());
     assert!(services::vehicles_v2::list(&conn).await.unwrap().is_empty());
+    // El historial de precios de gasolina también es dato de usuario: no debe sobrevivir.
+    assert!(services::gas::list(&conn, None).await.unwrap().is_empty());
     // Las 5 cuentas de sistema deben sobrevivir siempre.
     let balances = services::entries::account_balances(&conn).await.unwrap();
     assert_eq!(balances.cash, 0);

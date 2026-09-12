@@ -5,8 +5,10 @@
   import DatePicker from "$lib/components/DatePicker.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
+  import TourPoint from "$lib/components/TourPoint.svelte";
   import { txState, bumpTxVersion } from "$lib/txState.svelte";
   import { MESES_CORTO, DIAS_SEMANA } from "$lib/constants";
+  import { isActiveStep } from "$lib/tour.svelte";
 
   type PeriodKey = "Day" | "Week" | "Month" | "Year" | "All";
 
@@ -365,6 +367,7 @@
   <div class="filters">
     <!-- Período -->
     <nav class="period-selector">
+      {#if isActiveStep("historial")}<TourPoint text="Filtra por período" />{/if}
       {#each (Object.keys(PERIOD_LABELS) as PeriodKey[]) as key}
         <button
           class:active={activePeriod === key}
@@ -375,6 +378,7 @@
 
     <!-- Tipo: pills -->
     <div class="kind-pills">
+      {#if isActiveStep("historial")}<TourPoint text="Filtra por tipo" />{/if}
       {#each [["", "Todos"], ["income", "Ingresos"], ["expense", "Gastos"], ["transfer", "Transferencias"]] as [val, label]}
         <button
           class="kind-pill"
@@ -388,6 +392,7 @@
 
     <!-- Categoría -->
     <div class="filter-select-wrap">
+      {#if isActiveStep("historial")}<TourPoint text="Filtra por categoría" />{/if}
       <CustomSelect
         value={filterCat}
         options={[
@@ -826,6 +831,7 @@
   }
 
   .period-selector {
+    position: relative;
     display: flex;
     gap: 3px;
     background: var(--bg-elevated);
@@ -849,6 +855,7 @@
 
   /* Kind pills */
   .kind-pills {
+    position: relative;
     display: flex;
     gap: 3px;
     background: var(--bg-elevated);
@@ -874,6 +881,7 @@
   .kind-pill.active.expense { color: var(--danger); }
 
   .filter-select-wrap {
+    position: relative;
     font-size: 0.78rem;
     --cs-padding: 0.32rem 0.6rem;
   }

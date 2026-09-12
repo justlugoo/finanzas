@@ -6,7 +6,9 @@
   import PaymentModal from "$lib/components/PaymentModal.svelte";
   import CustomSelect from "$lib/components/CustomSelect.svelte";
   import DatePicker from "$lib/components/DatePicker.svelte";
+  import TourPoint from "$lib/components/TourPoint.svelte";
   import { MESES_CORTO } from "$lib/constants";
+  import { isActiveStep } from "$lib/tour.svelte";
 
   let metas     = $state<MetaV2[]>([]);
   let loading   = $state(true);
@@ -387,7 +389,10 @@
         <span class="header-hint">{formatCOP(thisMonthPaid)} abonados este mes</span>
       {/if}
     </div>
-    <button class="btn-primary" onclick={() => { createOpen = true; loadExpenseCategories(); }}>+ Nueva</button>
+    <span class="tour-field-block">
+      {#if isActiveStep("metas")}<TourPoint text="Crea un ahorro, préstamo o deuda — no desde Registros" />{/if}
+      <button class="btn-primary" onclick={() => { createOpen = true; loadExpenseCategories(); }}>+ Nueva</button>
+    </span>
   </div>
 
   {#if pageError}
@@ -777,6 +782,8 @@
   }
 
   .header-title { display: flex; align-items: baseline; gap: 0.65rem; min-width: 0; }
+
+  .tour-field-block { position: relative; display: block; }
 
   h1 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; }
 

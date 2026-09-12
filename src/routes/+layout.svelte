@@ -1,19 +1,57 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { getVersion } from "@tauri-apps/api/app";
   import { txState } from "$lib/txState.svelte";
   import { entryApi, goalApi, categoryApi } from "$lib/api";
   import { MESES_CORTO, WIDGET_RECENT_SIZE } from "$lib/constants";
   import type { AccountBalances, PeriodSummaryV2, GoalWithProgressV2, Entry } from "$lib/types";
+  import Onboarding from "$lib/components/Onboarding.svelte";
   import '../app.css';
 
   let { children } = $props();
 
+  // ── Onboarding ────────────────────────────────────────────────────────────
+  // Se dispara por versión instalada, nunca por si la base de datos está
+  // vacía: un "Restablecer datos de fábrica" deja la app sin datos pero el
+  // usuario ya la conoce, así que no debe volver a aparecer. Se muestra de
+  // nuevo en cada versión nueva (instalación limpia o actualización) —
+  // localStorage no lo toca ni el factory reset (solo borra tablas SQLite)
+  // ni una reinstalación del mismo binario.
+  //
+  // `firstInstall` distingue el caso real (localStorage nunca tuvo esta
+  // clave — nunca se vio el onboarding en esta máquina) de una actualización
+  // de versión sobre una instalación ya usada: en el primero se ofrece
+  // crear datos de ejemplo, en el segundo solo se explica (ver
+  // $lib/tour.svelte.ts).
+  let showOnboarding = $state(false);
+  let onboardingFirstInstall = $state(false);
+
+  $effect(() => {
+    getVersion().then(version => {
+      const seenVersion = localStorage.getItem("onboarding_seen_version");
+      if (seenVersion !== version) {
+        onboardingFirstInstall = seenVersion === null;
+        showOnboarding = true;
+      }
+    }).catch(() => {});
+  });
+
+  async function dismissOnboarding() {
+    showOnboarding = false;
+    try {
+      localStorage.setItem("onboarding_seen_version", await getVersion());
+    } catch {
+      // Si por lo que sea no se puede leer la versión, no se persiste nada
+      // — reaparecerá la próxima vez, que es el comportamiento seguro.
+    }
+  }
+
   const navItems = [
     { href: '/',          label: 'Resumen'   },
-    { href: '/registrar', label: 'Registrar' },
+    { href: '/registrar', label: 'Registros' },
     { href: '/historial', label: 'Historial' },
     { href: '/metas',     label: 'Metas'     },
-    { href: '/config',    label: 'Config'    },
+    { href: '/config',    label: 'Ajustes'   },
   ];
 
   // ── Estado del widget ──────────────────────────────────────────────────────
@@ -203,6 +241,10 @@
     {@render children()}
   </div>
 </div>
+
+{#if showOnboarding}
+  <Onboarding firstInstall={onboardingFirstInstall} onDismiss={dismissOnboarding} />
+{/if}
 
 <style>
   .app-shell {

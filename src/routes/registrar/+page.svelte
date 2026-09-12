@@ -6,30 +6,28 @@
   } from "$lib/types";
   import DatePicker from "$lib/components/DatePicker.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
+  import TourPoint from "$lib/components/TourPoint.svelte";
   import { bumpTxVersion } from "$lib/txState.svelte";
   import { kmToM } from "$lib/constants";
+  import { isActiveStep } from "$lib/tour.svelte";
+  import { registrarDraft, clearRegistrarDraft } from "$lib/registrarDraft.svelte";
 
-  // ── Estado del formulario ──────────────────────────────────────────────────
-  let kind = $state<"ingreso" | "gasto" | "tanqueo">(
-    (localStorage.getItem("registrar_kind") as "ingreso" | "gasto" | "tanqueo") ?? "gasto"
-  );
-  let categoryId    = $state("");
-  let amountRaw     = $state("");
-  let date          = $state(todayISO());
-  let note          = $state("");
-  let extraordinary = $state(false);
-
-  // ── Viaje (para el tanque, sin costo estimado — sección 7 de schema-v2.md) ──
-  let gasKmRaw   = $state("");
-  let gasKm      = $derived(parseFloat(gasKmRaw) || 0);
+  // ── Borrador del formulario ──────────────────────────────────────────────
+  // Vive en `registrarDraft` (módulo aparte, no en este componente) para
+  // que sobreviva a navegar a otra sección y volver — antes, al desmontarse
+  // el componente, todo lo que se estaba escribiendo se perdía.
   let savedGasKm = $state(0);
   let vehicles   = $state<VehicleV2[]>([]);
-  let vehicleId  = $state<string | null>(null);
-  let viajeOpen  = $state(false);
+  let gasKm      = $derived(parseFloat(registrarDraft.gasKmRaw) || 0);
 
   function toggleViaje() {
-    viajeOpen = !viajeOpen;
-    if (!viajeOpen) gasKmRaw = "";
+    registrarDraft.viajeOpen = !registrarDraft.viajeOpen;
+    if (!registrarDraft.viajeOpen) registrarDraft.gasKmRaw = "";
+  }
+
+  function clearForm() {
+    clearRegistrarDraft();
+    saveError = null;
   }
 
   // ── Hint flotante de "Extraordinario" — position:fixed con coordenadas
@@ -49,14 +47,9 @@
   function hideExtraHint() { extraHintOpen = false; }
 
   // ── Tanqueo ───────────────────────────────────────────────────────────────
-  let fillupVehicleId = $state<string | null>(null);
-  let fillupAmountRaw = $state("");
-  let fillupPriceRaw  = $state("");
-  let fillupDate      = $state(todayISO());
-  let fillupNote      = $state("");
-  let fillupSaved     = $state<FillupWithExpenseResult | null>(null);
-  let fillupAmount    = $derived(parseInt(fillupAmountRaw.replace(/\D/g, ""), 10) || 0);
-  let fillupPrice     = $derived(parseInt(fillupPriceRaw.replace(/\D/g, ""), 10) || 0);
+  let fillupSaved  = $state<FillupWithExpenseResult | null>(null);
+  let fillupAmount = $derived(parseInt(registrarDraft.fillupAmountRaw.replace(/\D/g, ""), 10) || 0);
+  let fillupPrice  = $derived(parseInt(registrarDraft.fillupPriceRaw.replace(/\D/g, ""), 10) || 0);
 
   // ── Datos cargados ─────────────────────────────────────────────────────────
   let allCategories = $state<Category[]>([]);
@@ -100,9 +93,9 @@
   let saved        = $state<Entry | null>(null);
   let saveError    = $state<string | null>(null);
 
-  let amount = $derived(parseInt(amountRaw.replace(/\D/g, ""), 10) || 0);
+  let amount = $derived(parseInt(registrarDraft.amountRaw.replace(/\D/g, ""), 10) || 0);
 
-  let mappedKind = $derived<"income" | "expense">(kind === "ingreso" ? "income" : "expense");
+  let mappedKind = $derived<"income" | "expense">(registrarDraft.kind === "ingreso" ? "income" : "expense");
 
   let displayCategories = $derived(
     allCategories.filter(c => c.kind === mappedKind && (mappedKind === "income" || c.name !== "Gasolina"))
@@ -151,32 +144,29 @@
 
   function handleAmountInput(e: Event & { currentTarget: HTMLInputElement }) {
     const digits = e.currentTarget.value.replace(/\D/g, "");
-    if (!digits) { amountRaw = ""; e.currentTarget.value = ""; return; }
+    if (!digits) { registrarDraft.amountRaw = ""; e.currentTarget.value = ""; return; }
     const num = parseInt(digits, 10);
-    amountRaw = digits;
+    registrarDraft.amountRaw = digits;
     e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
   }
 
   function handleFillupAmountInput(e: Event & { currentTarget: HTMLInputElement }) {
     const digits = e.currentTarget.value.replace(/\D/g, "");
-    if (!digits) { fillupAmountRaw = ""; e.currentTarget.value = ""; return; }
+    if (!digits) { registrarDraft.fillupAmountRaw = ""; e.currentTarget.value = ""; return; }
     const num = parseInt(digits, 10);
-    fillupAmountRaw = digits;
+    registrarDraft.fillupAmountRaw = digits;
     e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
   }
 
   function handleFillupPriceInput(e: Event & { currentTarget: HTMLInputElement }) {
     const digits = e.currentTarget.value.replace(/\D/g, "");
-    if (!digits) { fillupPriceRaw = ""; e.currentTarget.value = ""; return; }
+    if (!digits) { registrarDraft.fillupPriceRaw = ""; e.currentTarget.value = ""; return; }
     const num = parseInt(digits, 10);
-    fillupPriceRaw = digits;
+    registrarDraft.fillupPriceRaw = digits;
     e.currentTarget.value = new Intl.NumberFormat("es-CO").format(num);
   }
 
   // ── Effects ────────────────────────────────────────────────────────────────
-
-  // Persist kind
-  $effect(() => { localStorage.setItem("registrar_kind", kind); });
 
   // Aplicar categorías del cache cuando cambia el tipo
   $effect(() => {
@@ -185,10 +175,10 @@
     async function apply() {
       await loadCategories();
       if (cancelled) return;
-      if (kind === "tanqueo") return; // tanqueo usa categoría fija "Gasolina", pero necesita allCategories cargado
+      if (registrarDraft.kind === "tanqueo") return; // tanqueo usa categoría fija "Gasolina", pero necesita allCategories cargado
       const filtered = allCategories.filter(c => c.kind === k && (k === "income" || c.name !== "Gasolina"));
       categories = filtered;
-      if (!filtered.some(c => c.id === categoryId)) categoryId = filtered[0]?.id ?? "";
+      if (!filtered.some(c => c.id === registrarDraft.categoryId)) registrarDraft.categoryId = filtered[0]?.id ?? "";
     }
     apply();
     return () => { cancelled = true; };
@@ -196,12 +186,12 @@
 
   // Pre-fill km del viaje cuando la categoría tiene ruta asociada
   $effect(() => {
-    const cat = allCategories.find(c => c.id === categoryId);
+    const cat = allCategories.find(c => c.id === registrarDraft.categoryId);
     if (cat?.route_id) {
       const route = customRoutes.find(r => r.id === cat.route_id);
-      if (route) { gasKmRaw = (route.distance_m / 1000).toString(); viajeOpen = true; }
+      if (route) { registrarDraft.gasKmRaw = (route.distance_m / 1000).toString(); registrarDraft.viajeOpen = true; }
     } else {
-      gasKmRaw = "";
+      registrarDraft.gasKmRaw = "";
     }
   });
 
@@ -210,11 +200,11 @@
     gasApi.getRouteCosts().then(r => { routeCosts = r; }).catch(() => {});
     routeApi.list().then(r => { customRoutes = r; }).catch(() => {});
     accountApi.list().then(a => { accounts = a; }).catch(() => {});
-    gasApi.getCurrent().then(p => { if (p && !fillupPriceRaw) fillupPriceRaw = String(p.price_per_gallon); }).catch(() => {});
+    gasApi.getCurrent().then(p => { if (p && !registrarDraft.fillupPriceRaw) registrarDraft.fillupPriceRaw = String(p.price_per_gallon); }).catch(() => {});
     vehicleApi.list().then(vs => {
       vehicles = vs;
-      if (vehicleId === null && vs.length > 0) vehicleId = vs[0].id;
-      if (fillupVehicleId === null && vs.length > 0) fillupVehicleId = vs[0].id;
+      if (registrarDraft.vehicleId === null && vs.length > 0) registrarDraft.vehicleId = vs[0].id;
+      if (registrarDraft.fillupVehicleId === null && vs.length > 0) registrarDraft.fillupVehicleId = vs[0].id;
     }).catch(() => {});
   });
 
@@ -244,7 +234,7 @@
 
   // Cargar estadísticas de la categoría seleccionada
   $effect(() => {
-    const cat = categoryId;
+    const cat = registrarDraft.categoryId;
     catBudget = null; catRecentTxs = []; catAvg3m = null;
     if (!cat) { catLoading = false; return; }
 
@@ -280,21 +270,21 @@
 
   function selectGasPreset(km: number) {
     const str = km.toString();
-    gasKmRaw = gasKmRaw === str ? "" : str;
+    registrarDraft.gasKmRaw = registrarDraft.gasKmRaw === str ? "" : str;
   }
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
 
-    if (kind === "tanqueo") {
+    if (registrarDraft.kind === "tanqueo") {
       await doFillupSave();
       return;
     }
 
     if (amount <= 0)   { saveError = "El monto debe ser mayor que 0."; return; }
-    if (!categoryId)   { saveError = "Selecciona una categoría."; return; }
+    if (!registrarDraft.categoryId)   { saveError = "Selecciona una categoría."; return; }
 
-    if (kind === "gasto") {
+    if (registrarDraft.kind === "gasto") {
       try {
         const bal = await entryApi.getAccountBalances();
         if (bal.disponible < amount) {
@@ -318,17 +308,17 @@
       const cash = accountId("cash");
       if (!cash) throw new Error("No se encontró la cuenta 'cash'.");
       const tx: Entry = await entryApi.create({
-        occurred_on: date, type: mappedKind, amount_cop: amount,
+        occurred_on: registrarDraft.date, type: mappedKind, amount_cop: amount,
         account_from: mappedKind === "expense" ? cash : null,
         account_to:   mappedKind === "income"  ? cash : null,
-        category_id: categoryId, goal_id: null, loan_id: null,
-        note: note.trim() || null, is_extraordinary: extraordinary,
+        category_id: registrarDraft.categoryId, goal_id: null, loan_id: null,
+        note: registrarDraft.note.trim() || null, is_extraordinary: registrarDraft.extraordinary,
       });
 
       // Viaje asociado (sin costo — solo consumo de tanque, sección 7)
-      if (viajeOpen && gasKm > 0 && vehicleId !== null) {
+      if (registrarDraft.viajeOpen && gasKm > 0 && registrarDraft.vehicleId !== null) {
         try {
-          await fillupApi.registerTrip({ vehicle_id: vehicleId, occurred_on: date, distance_m: kmToM(gasKm) });
+          await fillupApi.registerTrip({ vehicle_id: registrarDraft.vehicleId, occurred_on: registrarDraft.date, distance_m: kmToM(gasKm) });
         } catch (e) {
           console.error("[registrar] trip register error:", e);
         }
@@ -340,16 +330,16 @@
       lastTx       = tx;
       statsRevision++;
 
-      amountRaw       = "";
-      note            = "";
-      extraordinary   = false;
-      date            = todayISO();
-      const cat = allCategories.find(c => c.id === categoryId);
+      registrarDraft.amountRaw     = "";
+      registrarDraft.note          = "";
+      registrarDraft.extraordinary = false;
+      registrarDraft.date          = todayISO();
+      const cat = allCategories.find(c => c.id === registrarDraft.categoryId);
       if (cat?.route_id) {
         const route = customRoutes.find(r => r.id === cat.route_id);
-        gasKmRaw = route ? (route.distance_m / 1000).toString() : "";
+        registrarDraft.gasKmRaw = route ? (route.distance_m / 1000).toString() : "";
       } else {
-        gasKmRaw = "";
+        registrarDraft.gasKmRaw = "";
       }
       setTimeout(() => { saved = null; savedGasKm = 0; }, 6000);
     } catch (e: any) {
@@ -363,7 +353,7 @@
   async function doFillupSave() {
     if (fillupAmount <= 0) { saveError = "El monto debe ser mayor que 0."; return; }
     if (fillupPrice  <= 0) { saveError = "El precio del galón debe ser mayor que 0."; return; }
-    if (fillupVehicleId === null) { saveError = "Selecciona un vehículo."; return; }
+    if (registrarDraft.fillupVehicleId === null) { saveError = "Selecciona un vehículo."; return; }
 
     saving    = true;
     saveError = null;
@@ -372,18 +362,18 @@
     try {
       const gasolinaCat = await findOrCreateCategory("Gasolina", "expense");
       const result = await fillupApi.createWithExpense({
-        vehicle_id: fillupVehicleId,
-        occurred_on: fillupDate,
+        vehicle_id: registrarDraft.fillupVehicleId,
+        occurred_on: registrarDraft.fillupDate,
         total_cop: fillupAmount,
         price_cop_per_gallon: fillupPrice,
         category_id: gasolinaCat,
-        note: fillupNote.trim() || null,
+        note: registrarDraft.fillupNote.trim() || null,
       });
 
       fillupSaved     = result;
-      fillupAmountRaw = "";
-      fillupNote      = "";
-      fillupDate      = todayISO();
+      registrarDraft.fillupAmountRaw = "";
+      registrarDraft.fillupNote      = "";
+      registrarDraft.fillupDate      = todayISO();
       bumpTxVersion();
       statsRevision++;
       setTimeout(() => { fillupSaved = null; }, 6000);
@@ -395,7 +385,7 @@
     }
   }
 
-  let kindLabel = $derived(kind === "ingreso" ? "ingreso" : kind === "gasto" ? "gasto" : "tanqueo");
+  let kindLabel = $derived(registrarDraft.kind === "ingreso" ? "ingreso" : registrarDraft.kind === "gasto" ? "gasto" : "tanqueo");
 </script>
 
 <div class="registrar-shell">
@@ -442,27 +432,28 @@
 
         <!-- Pestañas de tipo -->
         <div class="kind-tabs">
+          {#if isActiveStep("registros")}<TourPoint text="Ingreso, gasto o tanqueo" />{/if}
           <button
             type="button"
             class="kind-tab tab-income"
-            class:active={kind === "ingreso"}
-            onclick={() => { kind = "ingreso"; saveError = null; }}
+            class:active={registrarDraft.kind === "ingreso"}
+            onclick={() => { registrarDraft.kind = "ingreso"; saveError = null; }}
           >Ingreso</button>
           <button
             type="button"
             class="kind-tab tab-expense"
-            class:active={kind === "gasto"}
-            onclick={() => { kind = "gasto"; saveError = null; }}
+            class:active={registrarDraft.kind === "gasto"}
+            onclick={() => { registrarDraft.kind = "gasto"; saveError = null; }}
           >Gasto</button>
           <button
             type="button"
             class="kind-tab tab-fuel"
-            class:active={kind === "tanqueo"}
-            onclick={() => { kind = "tanqueo"; saveError = null; }}
+            class:active={registrarDraft.kind === "tanqueo"}
+            onclick={() => { registrarDraft.kind = "tanqueo"; saveError = null; }}
           >Tanqueo</button>
         </div>
 
-        {#if kind === "tanqueo"}
+        {#if registrarDraft.kind === "tanqueo"}
 
           <!-- ── Tanqueo ── -->
           <div class="entry-card">
@@ -473,7 +464,7 @@
               type="text"
               inputmode="numeric"
               placeholder="0"
-              value={fillupAmountRaw ? new Intl.NumberFormat("es-CO").format(fillupAmount) : ""}
+              value={registrarDraft.fillupAmountRaw ? new Intl.NumberFormat("es-CO").format(fillupAmount) : ""}
               oninput={handleFillupAmountInput}
             />
           </div>
@@ -482,15 +473,15 @@
           <div class="chip-section">
             <span class="chip-section-label">Vehículo</span>
             {#if vehicles.length === 0}
-              <p class="empty-hint">Configura un vehículo en <a href="/config">Configuración</a> para registrar tanqueos.</p>
+              <p class="empty-hint">Configura un vehículo en <a href="/config">Ajustes</a> para registrar tanqueos.</p>
             {:else}
               <div class="chip-grid">
                 {#each vehicles as v (v.id)}
                   <button
                     type="button"
                     class="chip"
-                    class:active={fillupVehicleId === v.id}
-                    onclick={() => { fillupVehicleId = v.id; }}
+                    class:active={registrarDraft.fillupVehicleId === v.id}
+                    onclick={() => { registrarDraft.fillupVehicleId = v.id; }}
                   >{v.name}</button>
                 {/each}
               </div>
@@ -505,19 +496,19 @@
                 type="text"
                 inputmode="numeric"
                 placeholder="0"
-                value={fillupPriceRaw ? new Intl.NumberFormat("es-CO").format(fillupPrice) : ""}
+                value={registrarDraft.fillupPriceRaw ? new Intl.NumberFormat("es-CO").format(fillupPrice) : ""}
                 oninput={handleFillupPriceInput}
               />
             </div>
             <div class="meta-field">
               <span class="meta-label">Fecha</span>
-              <DatePicker bind:value={fillupDate} />
+              <DatePicker bind:value={registrarDraft.fillupDate} />
             </div>
           </div>
 
           <div class="meta-field">
             <span class="meta-label">Nota <span class="optional">opcional</span></span>
-            <input class="meta-input" type="text" bind:value={fillupNote} placeholder="Descripción breve…" maxlength="200" />
+            <input class="meta-input" type="text" bind:value={registrarDraft.fillupNote} placeholder="Descripción breve…" maxlength="200" />
           </div>
 
           <div class="cat-fixed-note">Se registra en categoría <strong>Gasolina</strong></div>
@@ -527,20 +518,22 @@
 
           <!-- ── Ingreso / Gasto ── -->
           <div class="entry-card">
-          <div class="amount-display" class:tone-income={kind === "ingreso"} class:tone-expense={kind === "gasto"}>
+          <div class="amount-display" class:tone-income={registrarDraft.kind === "ingreso"} class:tone-expense={registrarDraft.kind === "gasto"}>
+            {#if isActiveStep("registros")}<TourPoint text="Monto del movimiento" />{/if}
             <span class="amount-currency">$</span>
             <input
               class="amount-input"
               type="text"
               inputmode="numeric"
               placeholder="0"
-              value={amountRaw ? new Intl.NumberFormat("es-CO").format(amount) : ""}
+              value={registrarDraft.amountRaw ? new Intl.NumberFormat("es-CO").format(amount) : ""}
               oninput={handleAmountInput}
             />
           </div>
           <span class="amount-caption">monto del {kindLabel}</span>
 
           <div class="chip-section">
+            {#if isActiveStep("registros")}<TourPoint text="Categoría del movimiento" />{/if}
             <span class="chip-section-label">Categoría</span>
             {#if displayCategories.length === 0}
               <p class="empty-hint">Sin categorías todavía.</p>
@@ -550,8 +543,8 @@
                   <button
                     type="button"
                     class="chip"
-                    class:active={categoryId === c.id}
-                    onclick={() => { categoryId = c.id; }}
+                    class:active={registrarDraft.categoryId === c.id}
+                    onclick={() => { registrarDraft.categoryId = c.id; }}
                   >{c.name}</button>
                 {/each}
               </div>
@@ -563,13 +556,13 @@
             <div class="viaje-section">
               <button type="button" class="viaje-toggle" onclick={toggleViaje}>
                 <span class="chip-section-label">Kilometraje <span class="optional">opcional</span></span>
-                <span class="switch" class:on={viajeOpen}></span>
+                <span class="switch" class:on={registrarDraft.viajeOpen}></span>
               </button>
 
-              {#if viajeOpen}
+              {#if registrarDraft.viajeOpen}
                 <div class="viaje-body">
                   {#if vehicles.length === 0}
-                    <p class="empty-hint">Configura un vehículo en <a href="/config">Configuración</a> para registrar viajes.</p>
+                    <p class="empty-hint">Configura un vehículo en <a href="/config">Ajustes</a> para registrar viajes.</p>
                   {:else}
                     {#if customRoutes.length > 0}
                       <div class="viaje-field">
@@ -579,7 +572,7 @@
                             <button
                               type="button"
                               class="chip chip-sm"
-                              class:active={gasKmRaw === (route.distance_m / 1000).toString()}
+                              class:active={registrarDraft.gasKmRaw === (route.distance_m / 1000).toString()}
                               onclick={() => selectGasPreset(route.distance_m / 1000)}
                               title={route.description ?? route.name}
                             >{route.name}</button>
@@ -591,7 +584,7 @@
                     <div class="viaje-field">
                       <span class="viaje-field-label">Distancia</span>
                       <div class="km-field">
-                        <input type="text" inputmode="decimal" class="km-value" bind:value={gasKmRaw} placeholder="0" />
+                        <input type="text" inputmode="decimal" class="km-value" bind:value={registrarDraft.gasKmRaw} placeholder="0" />
                         <span class="km-unit">km</span>
                       </div>
                     </div>
@@ -604,8 +597,8 @@
                             <button
                               type="button"
                               class="chip chip-sm"
-                              class:active={vehicleId === v.id}
-                              onclick={() => { vehicleId = v.id; }}
+                              class:active={registrarDraft.vehicleId === v.id}
+                              onclick={() => { registrarDraft.vehicleId = v.id; }}
                             >{v.name}</button>
                           {/each}
                         </div>
@@ -619,13 +612,14 @@
 
           <div class="meta-row">
             <div class="meta-field">
+              {#if isActiveStep("registros")}<TourPoint text="Fecha (ya viene con la de hoy)" />{/if}
               <span class="meta-label">Fecha</span>
-              <DatePicker bind:value={date} />
+              <DatePicker bind:value={registrarDraft.date} />
             </div>
             <div class="meta-field meta-field-check">
               <span class="meta-label">&nbsp;</span>
               <label class="check-row">
-                <input type="checkbox" class="check-box" bind:checked={extraordinary} />
+                <input type="checkbox" class="check-box" bind:checked={registrarDraft.extraordinary} />
                 <span>Extraordinario</span>
                 <span
                   class="hint-mark"
@@ -640,7 +634,7 @@
 
           <div class="meta-field">
             <span class="meta-label">Nota <span class="optional">opcional</span></span>
-            <input class="meta-input" type="text" bind:value={note} placeholder="Descripción breve…" maxlength="200" />
+            <input class="meta-input" type="text" bind:value={registrarDraft.note} placeholder="Descripción breve…" maxlength="200" />
           </div>
 
           <p class="metas-hint">
@@ -655,14 +649,15 @@
     </ScrollArea>
 
     <div class="save-bar-wrap">
+      <button type="button" class="clear-form-btn" onclick={clearForm}>Limpiar formulario</button>
       <button
         type="submit"
         form="tx-form"
         class="save-bar"
-        class:save-income={kind === "ingreso"}
-        class:save-expense={kind === "gasto"}
-        class:save-fuel={kind === "tanqueo"}
-        disabled={saving || (kind === "tanqueo" ? fillupAmount <= 0 || fillupVehicleId === null : amount <= 0)}
+        class:save-income={registrarDraft.kind === "ingreso"}
+        class:save-expense={registrarDraft.kind === "gasto"}
+        class:save-fuel={registrarDraft.kind === "tanqueo"}
+        disabled={saving || (registrarDraft.kind === "tanqueo" ? fillupAmount <= 0 || registrarDraft.fillupVehicleId === null : amount <= 0)}
       >
         {saving ? "Guardando…" : `Guardar ${kindLabel}`}
       </button>
@@ -676,11 +671,11 @@
     {#if catLoading && !catBudget && catRecentTxs.length === 0}
       <div class="ctx-loading">
         <span class="ctx-loading-dot"></span>
-        <span class="ctx-loading-label">Cargando {categories.find(c => c.id === categoryId)?.name ?? ""}…</span>
+        <span class="ctx-loading-label">Cargando {categories.find(c => c.id === registrarDraft.categoryId)?.name ?? ""}…</span>
       </div>
     {:else if showCatPanel}
 
-      <div class="ctx-panel-title">{categories.find(c => c.id === categoryId)?.name ?? ""}</div>
+      <div class="ctx-panel-title">{categories.find(c => c.id === registrarDraft.categoryId)?.name ?? ""}</div>
 
       {#if catBudget}
         <div class="ctx-row ctx-row-col">
@@ -864,7 +859,9 @@
 
   /* ── Pestañas de tipo (controlan qué formulario se ve, viven fuera de la tarjeta) ── */
   .kind-tabs {
+    position: relative;
     display: flex;
+    align-items: baseline;
     border-bottom: 1px solid var(--border);
     gap: 1.75rem;
   }
@@ -901,6 +898,7 @@
   /* ── Monto — es el dato principal de toda la pantalla, tiene que notarse
      de inmediato antes que cualquier otro campo. ── */
   .amount-display {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.4rem;
@@ -962,6 +960,7 @@
   /* ── Selección por chips — ancho uniforme sin importar el largo del texto:
      una grilla reparte 1fr por columna, todas las celdas quedan iguales ── */
   .chip-section {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
@@ -1109,6 +1108,7 @@
   .meta-row > * { flex: 1; min-width: 0; }
 
   .meta-field {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
@@ -1259,8 +1259,24 @@
     padding: 0 1.5rem 1.25rem;
     box-sizing: border-box;
     display: flex;
+    align-items: center;
     justify-content: flex-end;
+    gap: 0.75rem;
   }
+
+  .clear-form-btn {
+    padding: 0.55rem 1rem;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.72rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .clear-form-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
 
   .save-bar {
     padding: 0.7rem 2.25rem;

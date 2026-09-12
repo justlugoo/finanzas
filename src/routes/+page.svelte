@@ -3,7 +3,9 @@
   import type { AccountBalances, PeriodSummaryV2, CategoryProgressV2, MonthComparisonV2, PeriodV2, MetaV2 } from "$lib/types";
   import { txState } from "$lib/txState.svelte";
   import ScrollArea from "$lib/components/ScrollArea.svelte";
+  import TourPoint from "$lib/components/TourPoint.svelte";
   import { MESES, MESES_CORTO, DASHBOARD_RECENT_SIZE, mlToGallons, metersToKm } from "$lib/constants";
+  import { isActiveStep } from "$lib/tour.svelte";
 
   type PeriodKey = "Day" | "Week" | "Month" | "Year" | "All";
 
@@ -274,11 +276,13 @@
       class:balance-pos={!loading && (globalBal?.disponible ?? 0) >= 0}
       class:balance-neg={!loading && (globalBal?.disponible ?? 0) < 0}
     >
+      {#if isActiveStep("resumen")}<TourPoint text="Cuánto tienes disponible ahora" />{/if}
       <span class="status-label">Disponible</span>
       <span class="status-value">{loading ? "…" : formatCOP(globalBal?.disponible ?? 0)}</span>
     </div>
     <div class="status-divider"></div>
     <div class="status-item">
+      {#if isActiveStep("resumen")}<TourPoint text="Ahorros y deudas incluidos" />{/if}
       <span class="status-label">Patrimonio</span>
       <span class="status-value status-value-secondary">{loading ? "…" : formatCOP(globalBal?.patrimonio ?? 0)}</span>
     </div>
@@ -530,7 +534,7 @@
 
                 {#if fs.overCapacity}
                   <p class="fuel-warning">
-                    ⚠ El nivel calculado superó la capacidad del tanque — revisa el rendimiento (km/gal) de este vehículo en <a href="/config">Configuración</a>.
+                    ⚠ El nivel calculado superó la capacidad del tanque — revisa el rendimiento (km/gal) de este vehículo en <a href="/config">Ajustes</a>.
                   </p>
                 {/if}
               </div>
@@ -538,7 +542,7 @@
           {:else}
             <p class="fuel-setup-hint">
               Agrega la capacidad del tanque de tu vehículo en
-              <a href="/config">Configuración</a> para ver la autonomía.
+              <a href="/config">Ajustes</a> para ver la autonomía.
             </p>
           {/if}
         </section>
@@ -701,6 +705,7 @@
   }
 
   .status-item {
+    position: relative;
     flex: 1;
     display: flex;
     flex-direction: column;
