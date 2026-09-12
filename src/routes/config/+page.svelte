@@ -67,6 +67,10 @@
   let savingBudget        = $state(false);
   let savedBudgetCategory = $state<string | null>(null);
 
+  let editingBudgetName   = $state<string | null>(null);
+  let editBudgetNameRaw   = $state("");
+  let savingBudgetName    = $state(false);
+
   // ── Presupuestos — crear / eliminar ──────────────────────────────────────
   let newBudgetName    = $state("");
   let newBudgetType    = $state<"income" | "expense">("expense");
@@ -74,6 +78,7 @@
   let addingBudget     = $state(false);
   let budgetFormError  = $state<string | null>(null);
   let deletingBudget   = $state<string | null>(null);
+  let confirmingDeleteBudget = $state<string | null>(null);
   let togglingFixed    = $state<string | null>(null);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -149,6 +154,37 @@
     editBudgetRaw = amount > 0 ? amount.toString() : "";
   }
 
+  function startEditBudgetName(categoryId: string, currentName: string) {
+    editingBudgetName = categoryId;
+    editBudgetNameRaw = currentName;
+  }
+
+  async function saveEditBudgetName(row: CategoryBudgetRow) {
+    const name = editBudgetNameRaw.trim();
+    if (!name || name === row.category.name) { editingBudgetName = null; return; }
+    savingBudgetName = true;
+
+    const prevBudgets = budgets;
+    editingBudgetName = null;
+
+    try {
+      const updated = await categoryApi.update(row.category.id, name, row.category.is_fixed, row.category.route_id);
+      budgets = budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b)
+        .sort((a, b) => a.category.name.localeCompare(b.category.name));
+    } catch (e: any) {
+      budgets = prevBudgets;
+      console.error("[config] rename category error:", e);
+      pageError = e?.message ?? "No se pudo renombrar la categoría.";
+    } finally {
+      savingBudgetName = false;
+    }
+  }
+
+  function handleBudgetNameKeydown(e: KeyboardEvent, row: CategoryBudgetRow) {
+    if (e.key === "Enter")  saveEditBudgetName(row);
+    if (e.key === "Escape") { editingBudgetName = null; }
+  }
+
   function handleBudgetInput(e: Event & { currentTarget: HTMLInputElement }) {
     const digits = e.currentTarget.value.replace(/\D/g, "");
     editBudgetRaw = digits;
@@ -184,7 +220,7 @@
 
   async function saveRouteAssoc(row: CategoryBudgetRow, routeId: string | null) {
     try {
-      const updated = await categoryApi.update(row.category.id, row.category.is_fixed, routeId);
+      const updated = await categoryApi.update(row.category.id, row.category.name, row.category.is_fixed, routeId);
       budgets = budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b);
     } catch (e) {
       console.error("[config] save route assoc error:", e);
@@ -341,7 +377,7 @@
   async function toggleFixed(row: CategoryBudgetRow) {
     togglingFixed = row.category.id;
     try {
-      const updated = await categoryApi.update(row.category.id, !row.category.is_fixed, row.category.route_id);
+      const updated = await categoryApi.update(row.category.id, row.category.name, !row.category.is_fixed, row.category.route_id);
       budgets = budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b);
     } catch (e) {
       console.error("[config] toggle fixed error:", e);
@@ -381,6 +417,7 @@
       pageError = e?.message ?? "No se pudo eliminar la categoría.";
     } finally {
       deletingBudget = null;
+      confirmingDeleteBudget = null;
     }
   }
 
@@ -718,7 +755,21 @@
               {#each budgets as b (b.category.id)}
                 <div class="budget-row" class:row-saved={savedBudgetCategory === b.category.id}>
                   <div class="budget-cat">
-                    <span class="item-name">{b.category.name}</span>
+                    {#if editingBudgetName === b.category.id}
+                      <div class="edit-row edit-row-inline">
+                        <!-- svelte-ignore a11y_autofocus -->
+                        <input type="text" class="input-narrow"
+                          bind:value={editBudgetNameRaw}
+                          onkeydown={(e) => handleBudgetNameKeydown(e, b)}
+                          disabled={savingBudgetName} autofocus />
+                        <button class="icon-btn confirm" onclick={() => saveEditBudgetName(b)} disabled={savingBudgetName} title="Guardar">✓</button>
+                        <button class="icon-btn" onclick={() => { editingBudgetName = null; }} disabled={savingBudgetName} title="Cancelar">✕</button>
+                      </div>
+                    {:else}
+                      <button class="item-name name-btn" onclick={() => startEditBudgetName(b.category.id, b.category.name)} title="Editar nombre">
+                        {b.category.name}
+                      </button>
+                    {/if}
                     {#if b.category.kind === "income"}
                       <button
                         class="pill-toggle"
@@ -761,12 +812,22 @@
                     {/if}
                   </div>
 
-                  <div class="budget-row-actions">
-                    <button
-                      class="item-act danger"
-                      onclick={() => deleteBudget(b.category.id)}
-                      disabled={deletingBudget === b.category.id}
-                    >{deletingBudget === b.category.id ? "…" : "Eliminar"}</button>
+                  <div class="budget-row-actions" class:force-show={confirmingDeleteBudget === b.category.id}>
+                    {#if confirmingDeleteBudget === b.category.id}
+                      <span class="confirm-label">¿Eliminar?</span>
+                      <button
+                        class="item-act danger"
+                        onclick={() => deleteBudget(b.category.id)}
+                        disabled={deletingBudget === b.category.id}
+                      >{deletingBudget === b.category.id ? "…" : "Sí"}</button>
+                      <button
+                        class="item-act"
+                        onclick={() => { confirmingDeleteBudget = null; }}
+                        disabled={deletingBudget === b.category.id}
+                      >No</button>
+                    {:else}
+                      <button class="item-act danger" onclick={() => { confirmingDeleteBudget = b.category.id; }}>Eliminar</button>
+                    {/if}
                   </div>
                 </div>
               {/each}
@@ -1107,6 +1168,19 @@
   .item-row:hover { background: var(--bg-elevated); }
 
   .item-name { flex: 1; min-width: 0; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* `.item-name` reusado en un <button> (renombrar categoría) — resetea lo
+     que el navegador le agrega por defecto a un botón, conserva el resto. */
+  button.name-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: color 0.15s;
+  }
+  button.name-btn:hover { color: var(--accent); }
   .item-meta { font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; }
   .item-value { color: var(--accent); font-weight: 700; font-family: var(--font-mono); font-size: 0.85rem; white-space: nowrap; }
 
@@ -1343,10 +1417,17 @@
     flex: 0 0 auto;
     min-width: 64px;
     display: flex;
+    align-items: center;
+    gap: 0.3rem;
     justify-content: flex-end;
     opacity: 0;
     transition: opacity 0.15s;
   }
+  /* Se fuerza visible mientras se confirma el borrado — si el mouse se
+     corre un poco del hover, no debe desaparecer la pregunta a mitad de
+     decidir. */
+  .budget-row-actions.force-show { opacity: 1; min-width: 150px; }
+  .confirm-label { font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; }
 
   .amount-btn {
     font-size: 0.82rem;

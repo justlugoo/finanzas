@@ -133,7 +133,7 @@ pub async fn category_progress(
 
 pub async fn export_csv(conn: &Connection, filter: EntryFilter) -> AppResult<CsvExport> {
     let rows = repositories::entries::list_for_export(conn, &filter).await?;
-    let categories = repositories::categories::list(conn, None).await?;
+    let categories = repositories::categories::list(conn, None, true).await?;
     let cat_names: HashMap<String, String> = categories.into_iter().map(|c| (c.id, c.name)).collect();
 
     let mut csv = String::from("ID,Fecha,Tipo,Categoría,Monto (COP),Nota,Extraordinario,Creado en\n");

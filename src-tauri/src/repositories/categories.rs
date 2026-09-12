@@ -20,9 +20,15 @@ pub fn row_to_category(row: &libsql::Row) -> Result<Category, libsql::Error> {
     })
 }
 
-pub async fn list(conn: &Connection, kind: Option<&str>) -> AppResult<Vec<Category>> {
+/// `include_archived` decide si entran las categorías archivadas (ver
+/// `archive()` más abajo): la selección activa (chips de Registrar, lista
+/// de Presupuestos) debe excluirlas, pero resolver el nombre de categoría
+/// de movimientos ya existentes (Historial, "Último registro", etc.)
+/// necesita seguir viéndolas para no perder el nombre real.
+pub async fn list(conn: &Connection, kind: Option<&str>, include_archived: bool) -> AppResult<Vec<Category>> {
     let sql = format!(
-        "SELECT {COLUMNS} FROM categories WHERE is_system = 0 {} ORDER BY name",
+        "SELECT {COLUMNS} FROM categories WHERE is_system = 0 {} {} ORDER BY name",
+        if include_archived { "" } else { "AND archived_at IS NULL" },
         if kind.is_some() { "AND kind = ?" } else { "" }
     );
     let mut rows = match kind {
@@ -69,32 +75,62 @@ pub async fn insert(
 pub async fn update(
     conn: &Connection,
     id: &str,
+    name: &str,
     is_fixed: bool,
     route_id: Option<&str>,
 ) -> AppResult<Category> {
     let affected = conn
         .execute(
-            "UPDATE categories SET is_fixed = ?, route_id = ?, updated_at = datetime('now') WHERE id = ? AND is_system = 0",
-            libsql::params![is_fixed as i64, route_id.map(|s| s.to_string()), id.to_string()],
+            "UPDATE categories SET name = ?, is_fixed = ?, route_id = ?, updated_at = datetime('now') \
+             WHERE id = ? AND is_system = 0",
+            libsql::params![name.to_string(), is_fixed as i64, route_id.map(|s| s.to_string()), id.to_string()],
         )
-        .await?;
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                AppError::ValidationError(format!("ya existe una categoría '{name}' de ese tipo"))
+            } else {
+                AppError::DatabaseError(e.to_string())
+            }
+        })?;
     if affected == 0 {
         return Err(AppError::NotFound(format!("categoría {id} no existe")));
     }
     get(conn, id).await
 }
 
+/// El error de FK se traduce a un mensaje humano sin exponer el texto crudo
+/// de SQLite ni el id (ULID) de la categoría — el llamador (capa de
+/// servicio) ya conoce el nombre real y arma el mensaje final con eso.
 pub async fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     let affected = conn
         .execute("DELETE FROM categories WHERE id = ? AND is_system = 0", libsql::params![id.to_string()])
         .await
-        .map_err(|e| {
-            AppError::ValidationError(format!(
-                "no se puede borrar la categoría {id}: todavía tiene movimientos o presupuesto asociado ({e})"
-            ))
-        })?;
+        .map_err(|_| AppError::ValidationError("todavía tiene movimientos o un presupuesto asociado".into()))?;
     if affected == 0 {
         return Err(AppError::NotFound(format!("categoría {id} no existe")));
+    }
+    Ok(())
+}
+
+/// Alternativa al borrado real cuando una categoría tiene movimientos
+/// asociados: `entries.category_id` es `NOT NULL` para income/expense (el
+/// `CHECK` compuesto de la tabla lo exige), así que un movimiento ya
+/// registrado nunca puede quedar en "sin categoría" — borrar la fila a la
+/// fuerza rompería esa regla o requeriría debilitarla. Archivar dejar la
+/// categoría fuera de cualquier selección activa (chips, lista de
+/// Presupuestos) sin tocar el histórico: los movimientos viejos conservan
+/// su categoría real y su nombre real en Historial.
+pub async fn archive(conn: &Connection, id: &str) -> AppResult<()> {
+    let affected = conn
+        .execute(
+            "UPDATE categories SET archived_at = datetime('now'), updated_at = datetime('now') \
+             WHERE id = ? AND is_system = 0 AND archived_at IS NULL",
+            libsql::params![id.to_string()],
+        )
+        .await?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("categoría {id} no existe o ya está archivada")));
     }
     Ok(())
 }

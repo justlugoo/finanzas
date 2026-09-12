@@ -125,7 +125,7 @@
             entryApi.list({ page_size: DASHBOARD_RECENT_SIZE }),
             entryApi.getMonthComparison(),
             entryApi.getAccountBalances(),
-            categoryApi.list(),
+            categoryApi.list(undefined, true), // incluir archivadas: resuelve nombre en "últimas transacciones"
           ]);
           if (!cancelled) {
             summary    = sum;

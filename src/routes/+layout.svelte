@@ -41,7 +41,7 @@
       entryApi.getPeriodSummary({ type: "Month", value: { year: now.getFullYear(), month: now.getMonth() + 1 } }),
       entryApi.list({ page: 1, page_size: WIDGET_RECENT_SIZE }),
       goalApi.list("saving"),
-      categoryApi.list(),
+      categoryApi.list(undefined, true), // incluir archivadas: resuelve nombre de la última transacción
     ]).then(([bal, summary, recent, goals, cats]) => {
       if (cancelled) return;
       balances     = bal;

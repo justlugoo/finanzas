@@ -361,7 +361,7 @@ pub async fn list_category_progress(
 ) -> AppResult<Vec<CategoryProgressV2>> {
     let mut rows = conn
         .query(
-            "SELECT id, name, kind, is_fixed FROM categories WHERE is_system = 0 ORDER BY name",
+            "SELECT id, name, kind, is_fixed FROM categories WHERE is_system = 0 AND archived_at IS NULL ORDER BY name",
             (),
         )
         .await?;

@@ -35,16 +35,30 @@ async fn categorias_crud_y_conflicto_de_borrado() {
     .await;
     assert!(dup.is_err());
 
-    let listed = services::categories::list(&conn, Some("expense")).await.unwrap();
+    let listed = services::categories::list(&conn, Some("expense"), false).await.unwrap();
     assert_eq!(listed.len(), 1);
     // Las categorías de sistema (creadas por init_fresh_v2_schema no hay
     // ninguna todavía) nunca deben aparecer en el listado para UI.
     assert!(listed.iter().all(|c| !c.is_system));
 
-    let updated = services::categories::update(&conn, &cat.id, true, None).await.unwrap();
+    let updated = services::categories::update(&conn, &cat.id, "Comida y bebida", true, None).await.unwrap();
     assert!(updated.is_fixed);
+    assert_eq!(updated.name, "Comida y bebida", "renombrar una categoría debe estar permitido");
 
-    // No se puede borrar una categoría con un movimiento asociado.
+    // "Eliminar" una categoría sin movimientos ni presupuesto asociado debe
+    // borrarla de verdad.
+    let unused = services::categories::create(
+        &conn,
+        CategoryInput { name: "Sin usar".into(), kind: "expense".into(), is_fixed: false, route_id: None },
+    )
+    .await
+    .unwrap();
+    services::categories::delete(&conn, &unused.id).await.unwrap();
+    assert!(finanzas_lib::repositories::categories::get(&conn, &unused.id).await.is_err(), "sin movimientos, debe borrarse de verdad");
+
+    // Con un movimiento asociado, "eliminar" no debe fallar — debe archivar
+    // en su lugar (entries.category_id no admite NULL para income/expense,
+    // así que un movimiento ya registrado nunca puede quedar sin categoría).
     let cash = finanzas_lib::repositories::accounts::id_by_code(&conn, "cash").await.unwrap();
     services::entries::create(
         &conn,
@@ -63,7 +77,41 @@ async fn categorias_crud_y_conflicto_de_borrado() {
     )
     .await
     .unwrap();
-    assert!(services::categories::delete(&conn, &cat.id).await.is_err());
+    services::categories::delete(&conn, &cat.id).await.unwrap();
+
+    let archived = finanzas_lib::repositories::categories::get(&conn, &cat.id).await.unwrap();
+    assert!(archived.archived_at.is_some(), "con movimientos asociados, eliminar debe archivar, no fallar");
+
+    // Archivada: desaparece del listado activo (chips, presupuestos)...
+    let active = services::categories::list(&conn, Some("expense"), false).await.unwrap();
+    assert!(!active.iter().any(|c| c.id == cat.id), "una categoría archivada no debe aparecer en la selección activa");
+
+    // ...pero sigue existiendo para resolver el nombre de movimientos viejos
+    // (Historial, exportación CSV) si se pide explícitamente.
+    let all = services::categories::list(&conn, Some("expense"), true).await.unwrap();
+    assert!(all.iter().any(|c| c.id == cat.id && c.name == "Comida y bebida"), "el nombre real debe seguir resolviéndose");
+}
+
+/// Renombrar a un nombre ya usado por otra categoría del mismo tipo debe
+/// rechazarse igual que al crear (mismo UNIQUE (name, kind) del esquema).
+#[tokio::test]
+async fn renombrar_categoria_a_nombre_duplicado_se_rechaza() {
+    let conn = fresh_db().await;
+    services::categories::create(
+        &conn,
+        CategoryInput { name: "Servicios".into(), kind: "expense".into(), is_fixed: false, route_id: None },
+    )
+    .await
+    .unwrap();
+    let otra = services::categories::create(
+        &conn,
+        CategoryInput { name: "Suscripciones".into(), kind: "expense".into(), is_fixed: false, route_id: None },
+    )
+    .await
+    .unwrap();
+
+    let conflict = services::categories::update(&conn, &otra.id, "Servicios", false, None).await;
+    assert!(conflict.is_err(), "renombrar a un nombre ya usado (mismo tipo) debe rechazarse");
 }
 
 #[tokio::test]
@@ -343,7 +391,7 @@ async fn factory_reset_v2_no_borra_cuentas_de_sistema() {
 
     services::system_v2::factory_reset(&conn).await.unwrap();
 
-    assert!(services::categories::list(&conn, None).await.unwrap().is_empty());
+    assert!(services::categories::list(&conn, None, false).await.unwrap().is_empty());
     assert!(services::vehicles_v2::list(&conn).await.unwrap().is_empty());
     // Las 5 cuentas de sistema deben sobrevivir siempre.
     let balances = services::entries::account_balances(&conn).await.unwrap();

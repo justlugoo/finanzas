@@ -8,9 +8,13 @@ use crate::services::categories as svc;
 use crate::state::{DbState, get_conn};
 
 #[tauri::command]
-pub async fn category_list(state: State<'_, DbState>, kind: Option<String>) -> AppResult<Vec<Category>> {
+pub async fn category_list(
+    state: State<'_, DbState>,
+    kind: Option<String>,
+    include_archived: Option<bool>,
+) -> AppResult<Vec<Category>> {
     let conn = get_conn(&state).await?;
-    svc::list(&conn, kind.as_deref()).await
+    svc::list(&conn, kind.as_deref(), include_archived.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -23,11 +27,12 @@ pub async fn category_create(state: State<'_, DbState>, input: CategoryInput) ->
 pub async fn category_update(
     state: State<'_, DbState>,
     id: String,
+    name: String,
     is_fixed: bool,
     route_id: Option<String>,
 ) -> AppResult<Category> {
     let conn = get_conn(&state).await?;
-    svc::update(&conn, &id, is_fixed, route_id).await
+    svc::update(&conn, &id, &name, is_fixed, route_id).await
 }
 
 #[tauri::command]
