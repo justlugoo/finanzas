@@ -91,10 +91,14 @@
 
   let newPrice = $derived(parseInt(newPriceRaw.replace(/\D/g, ""), 10) || 0);
 
-  // ── Presupuestos — edición inline ────────────────────────────────────────
-  let editingBudget       = $state<string | null>(null);
-  let editBudgetRaw       = $state("");
-  let savingBudget        = $state(false);
+  // ── Presupuestos — monto mensual, editable directamente en la fila ────────
+  // Un solo input siempre visible por fila (no un botón "—" que se
+  // transforma en un cuadro de edición aparte) — así se ve de una que el
+  // campo es editable, y no hay un salto visual al hacerle clic. El
+  // "draft" solo existe mientras se está escribiendo; al guardar (blur o
+  // Enter) vuelve a leerse directo de `b.monthly_cop`.
+  let budgetAmountDrafts  = $state<Record<string, string>>({});
+  let savingBudgetAmountId = $state<string | null>(null);
   let savedBudgetCategory = $state<string | null>(null);
 
   let editingBudgetName   = $state<string | null>(null);
@@ -104,7 +108,9 @@
   // ── Presupuestos — crear / eliminar ──────────────────────────────────────
   let newBudgetName    = $state("");
   let newBudgetType    = $state<"income" | "expense">("expense");
-  let newBudgetIsFixed = $state(false);
+  // Fijo por defecto — Fijo/Variable solo se decide después, en la tabla
+  // (un campo menos en un formulario que ya tiene lo esencial: nombre y tipo).
+  let newBudgetIsFixed = $state(true);
   let addingBudget     = $state(false);
   let budgetFormError  = $state<string | null>(null);
   let deletingBudget   = $state<string | null>(null);
@@ -202,12 +208,6 @@
     }
   }
 
-  // ── Edición de presupuesto ────────────────────────────────────────────────
-  function startEditBudget(categoryId: string, amount: number) {
-    editingBudget = categoryId;
-    editBudgetRaw = amount > 0 ? amount.toString() : "";
-  }
-
   function startEditBudgetName(categoryId: string, currentName: string) {
     editingBudgetName = categoryId;
     editBudgetNameRaw = currentName;
@@ -238,20 +238,26 @@
     if (e.key === "Escape") { editingBudgetName = null; }
   }
 
-  function handleBudgetInput(e: Event & { currentTarget: HTMLInputElement }) {
+  function handleBudgetAmountInput(e: Event & { currentTarget: HTMLInputElement }, categoryId: string) {
     const digits = e.currentTarget.value.replace(/\D/g, "");
-    editBudgetRaw = digits;
+    budgetAmountDrafts = { ...budgetAmountDrafts, [categoryId]: digits };
     e.currentTarget.value = digits ? new Intl.NumberFormat("es-CO").format(parseInt(digits, 10)) : "";
   }
 
-  async function saveEditBudget(categoryId: string) {
-    const amount = parseInt(editBudgetRaw, 10);
-    if (isNaN(amount) || amount < 0) { editingBudget = null; return; }
-    savingBudget = true;
+  async function commitBudgetAmount(categoryId: string) {
+    const draft = budgetAmountDrafts[categoryId];
+    if (draft === undefined) return; // no se tocó — nada que guardar
+    const amount = parseInt(draft, 10) || 0;
 
+    const { [categoryId]: _discard, ...rest } = budgetAmountDrafts;
+    budgetAmountDrafts = rest;
+
+    const prev = budgets.find(b => b.category.id === categoryId);
+    if (prev && prev.monthly_cop === amount) return; // sin cambios reales
+
+    savingBudgetAmountId = categoryId;
     const prevBudgets = budgets;
     budgets = budgets.map(b => b.category.id === categoryId ? { ...b, monthly_cop: amount } : b);
-    editingBudget = null;
 
     try {
       await budgetApi.setMonthly(categoryId, amount);
@@ -262,13 +268,18 @@
       console.error("[config] save budget error:", e);
       pageError = "No se pudo guardar el presupuesto. Intenta de nuevo.";
     } finally {
-      savingBudget = false;
+      savingBudgetAmountId = null;
     }
   }
 
-  function handleBudgetKeydown(e: KeyboardEvent, categoryId: string) {
-    if (e.key === "Enter")  saveEditBudget(categoryId);
-    if (e.key === "Escape") { editingBudget = null; }
+  function handleBudgetAmountKeydown(e: KeyboardEvent, categoryId: string) {
+    if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+    if (e.key === "Escape") {
+      // Descarta el draft ANTES del blur, para que no se guarde lo escrito.
+      const { [categoryId]: _discard, ...rest } = budgetAmountDrafts;
+      budgetAmountDrafts = rest;
+      (e.currentTarget as HTMLInputElement).blur();
+    }
   }
 
   async function saveRouteAssoc(row: CategoryBudgetRow, routeId: string | null) {
@@ -451,7 +462,7 @@
       });
       budgets = sortBudgets([...budgets, { category: created, monthly_cop: 0 }]);
       newBudgetName = "";
-      newBudgetIsFixed = false;
+      newBudgetIsFixed = true;
     } catch (e: any) {
       budgetFormError = e?.message ?? "No se pudo crear la categoría.";
     } finally {
@@ -464,7 +475,6 @@
     try {
       await categoryApi.remove(categoryId);
       budgets = budgets.filter(b => b.category.id !== categoryId);
-      if (editingBudget === categoryId) editingBudget = null;
     } catch (e: any) {
       console.error("[config] delete budget error:", e);
       pageError = e?.message ?? "No se pudo eliminar la categoría.";
@@ -572,11 +582,13 @@
                 <div class="budget-row budget-row-example">
                   <div class="budget-cat">
                     <span class="item-name">Sueldo</span>
-                    <span class="pill-toggle on">Fijo</span>
+                    <span class="kind-tag fixed">Fijo</span>
                   </div>
-                  <div class="budget-route-example">Sin ruta</div>
+                  {#if vehicles.length > 0}
+                    <div class="budget-route-example">Sin ruta</div>
+                  {/if}
                   <div class="budget-amount">
-                    <span class="amount-btn">{formatCOP(1500000)}</span>
+                    <input class="amount-input-inline" value={new Intl.NumberFormat("es-CO").format(1500000)} disabled readonly />
                   </div>
                   <span class="example-tag">Ejemplo</span>
                   <button class="item-act example-dismiss" onclick={dismissBudgetExample} title="Ocultar ejemplo">✕</button>
@@ -605,44 +617,45 @@
                     {/if}
                     {#if b.category.kind === "income"}
                       <button
-                        class="pill-toggle"
-                        class:on={b.category.is_fixed}
+                        class="kind-tag fixed-toggle"
+                        class:fixed={b.category.is_fixed}
+                        class:variable={!b.category.is_fixed}
                         onclick={() => toggleFixed(b)}
                         disabled={togglingFixed === b.category.id}
                         title={b.category.is_fixed ? "Ingreso fijo — clic para marcar como variable" : "Ingreso variable — clic para marcar como fijo"}
                       >{b.category.is_fixed ? "Fijo" : "Variable"}</button>
                     {:else}
-                      <span class="type-pill expense">Gasto</span>
+                      <span class="kind-tag expense">Gasto</span>
                     {/if}
                   </div>
 
-                  <div class="budget-route" style="--cs-padding: 0.2rem 0.5rem; font-size: 0.75rem;">
-                    <CustomSelect
-                      value={b.category.route_id}
-                      options={[
-                        { value: null, label: "Sin ruta" },
-                        ...customRoutes.map(r => ({ value: r.id, label: r.name })),
-                      ]}
-                      onchange={(v) => saveRouteAssoc(b, v)}
-                    />
-                  </div>
+                  {#if vehicles.length > 0}
+                    <div class="budget-route" style="--cs-padding: 0.2rem 0.5rem; font-size: 0.75rem;">
+                      <CustomSelect
+                        value={b.category.route_id}
+                        options={[
+                          { value: null, label: "Sin ruta" },
+                          ...customRoutes.map(r => ({ value: r.id, label: r.name })),
+                        ]}
+                        onchange={(v) => saveRouteAssoc(b, v)}
+                      />
+                    </div>
+                  {/if}
 
                   <div class="budget-amount">
-                    {#if editingBudget === b.category.id}
-                      <div class="edit-row edit-row-inline">
-                        <!-- svelte-ignore a11y_autofocus -->
-                        <input type="text" inputmode="numeric" class="input-narrow"
-                          value={editBudgetRaw ? new Intl.NumberFormat("es-CO").format(parseInt(editBudgetRaw, 10)) : ""}
-                          oninput={handleBudgetInput} onkeydown={(e) => handleBudgetKeydown(e, b.category.id)}
-                          disabled={savingBudget} autofocus />
-                        <button class="icon-btn confirm" onclick={() => saveEditBudget(b.category.id)} disabled={savingBudget} title="Guardar">✓</button>
-                        <button class="icon-btn" onclick={() => { editingBudget = null; }} disabled={savingBudget} title="Cancelar">✕</button>
-                      </div>
-                    {:else}
-                      <button class="amount-btn" onclick={() => startEditBudget(b.category.id, b.monthly_cop)}>
-                        {b.monthly_cop > 0 ? formatCOP(b.monthly_cop) : "—"}
-                      </button>
-                    {/if}
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      class="amount-input-inline"
+                      placeholder="Monto"
+                      value={budgetAmountDrafts[b.category.id] !== undefined
+                        ? (budgetAmountDrafts[b.category.id] ? new Intl.NumberFormat("es-CO").format(parseInt(budgetAmountDrafts[b.category.id], 10)) : "")
+                        : (b.monthly_cop > 0 ? new Intl.NumberFormat("es-CO").format(b.monthly_cop) : "")}
+                      oninput={(e) => handleBudgetAmountInput(e, b.category.id)}
+                      onblur={() => commitBudgetAmount(b.category.id)}
+                      onkeydown={(e) => handleBudgetAmountKeydown(e, b.category.id)}
+                      disabled={savingBudgetAmountId === b.category.id}
+                    />
                   </div>
 
                   <div class="budget-row-actions" class:force-show={confirmingDeleteBudget === b.category.id}>
@@ -682,15 +695,6 @@
                 disabled={addingBudget}
               />
             </div>
-            {#if newBudgetType === "income"}
-              <button
-                type="button"
-                class="pill-toggle"
-                class:on={newBudgetIsFixed}
-                onclick={() => newBudgetIsFixed = !newBudgetIsFixed}
-                disabled={addingBudget}
-              >{newBudgetIsFixed ? "Fijo" : "Variable"}</button>
-            {/if}
             <button type="submit" class="btn-secondary" disabled={addingBudget || !newBudgetName.trim()}>
               {addingBudget ? "…" : "+ Agregar"}
             </button>
@@ -767,44 +771,12 @@
                 </p>
               </div>
             </div>
-          </div>
 
-          <!-- ── Gasolina ── -->
-          <div class="combo-col">
-            <div class="panel">
-              <div class="price-hero">
-                {#if currentPrice}
-                  <span class="price-value">{formatCOP(currentPrice.price_per_gallon)}</span>
-                  <span class="price-unit">/galón</span>
-                {:else}
-                  <span class="price-value muted">Sin precio registrado</span>
-                {/if}
-              </div>
-              {#if currentPrice}
-                <div class="price-meta">
-                  <span>{currentPrice.date}</span>
-                  <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
-                </div>
-              {/if}
-
-              {#if saveMsg}<div class="banner success small">{saveMsg}</div>{/if}
-              {#if saveError}<div class="banner error small">{saveError}</div>{/if}
-              <form onsubmit={handleSavePrice} class="stacked-form">
-                <span class="tour-field full">
-                  <input
-                    type="text"
-                    inputmode="numeric"
-                    placeholder="Nuevo precio por galón"
-                    value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
-                    oninput={handlePriceInput}
-                  />
-                </span>
-                <button type="submit" class="btn-primary full-width" disabled={saving || newPrice <= 0}>
-                  {saving ? "Guardando…" : "Guardar"}
-                </button>
-              </form>
-            </div>
-
+            <!-- Costos por ruta vive en esta columna (no en la de Gasolina)
+                 para aprovechar el espacio que sobra debajo de Vehículos —
+                 así la columna de Gasolina queda un panel más corta y no
+                 hace falta scroll para llegar a "Historial y comparación
+                 semanal". -->
             <div class="panel">
               <div class="panel-header">
                 <span class="panel-title">Costos por ruta</span>
@@ -864,6 +836,43 @@
                     {addingRoute ? "…" : "+ Agregar"}
                   </button>
                 </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- ── Gasolina ── -->
+          <div class="combo-col">
+            <div class="panel">
+              <div class="price-hero">
+                {#if currentPrice}
+                  <span class="price-value">{formatCOP(currentPrice.price_per_gallon)}</span>
+                  <span class="price-unit">/galón</span>
+                {:else}
+                  <span class="price-value muted">Sin precio registrado</span>
+                {/if}
+              </div>
+              {#if currentPrice}
+                <div class="price-meta">
+                  <span>{currentPrice.date}</span>
+                  <span class="source-badge source-{currentPrice.source}">{currentPrice.source}</span>
+                </div>
+              {/if}
+
+              {#if saveMsg}<div class="banner success small">{saveMsg}</div>{/if}
+              {#if saveError}<div class="banner error small">{saveError}</div>{/if}
+              <form onsubmit={handleSavePrice} class="stacked-form">
+                <span class="tour-field full">
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="Nuevo precio por galón"
+                    value={newPriceRaw ? new Intl.NumberFormat("es-CO").format(newPrice) : ""}
+                    oninput={handlePriceInput}
+                  />
+                </span>
+                <button type="submit" class="btn-primary full-width" disabled={saving || newPrice <= 0}>
+                  {saving ? "Guardando…" : "Guardar"}
+                </button>
               </form>
             </div>
 
@@ -1188,7 +1197,11 @@
   .tour-field.grow { flex: 1; min-width: 140px; }
   .tour-field.narrow { flex: 0 0 auto; width: 110px; }
   .tour-field.full { display: flex; width: 100%; }
-  .tour-field > input { flex: 1; min-width: 0; width: 100%; }
+  /* input[type="text"] en vez de solo "input": misma especificidad que la
+     regla genérica de más abajo (elemento+atributo) — si no, esa regla le
+     gana en empate y vuelve a imponer min-width:140px, desbordando la fila
+     en la columna angosta de Vehículos. */
+  .tour-field > input[type="text"] { flex: 1; min-width: 0; width: 100%; }
   .tour-field-block { position: relative; display: block; }
 
   /* ── Formulario apilado — para la columna angosta de Vehículos, donde un
@@ -1203,9 +1216,13 @@
     align-items: center;
     gap: 0.4rem;
   }
-  .stacked-form-row input,
+  /* input[type="text"] en vez de solo "input": misma especificidad que la
+     regla genérica de abajo (elemento+atributo) — si no, esa regla más
+     abajo en el archivo le gana en empate y vuelve a poner min-width:140px,
+     desbordando la fila y recortando los botones de check/cancelar. */
+  .stacked-form-row input[type="text"],
   .stacked-form-row .tour-field { flex: 1; min-width: 0; }
-  .stacked-form-row input { width: 100%; }
+  .stacked-form-row input[type="text"] { width: 100%; }
   .btn-secondary.full-width,
   .btn-primary.full-width { width: 100%; }
 
@@ -1482,8 +1499,23 @@
     flex: 1;
     min-width: 140px;
   }
+  /* Campos de solo dígitos (rendimiento, capacidad, km de ruta, nivel de
+     tanque, precio del galón) — fondo/borde planos, sin "caja", igual que
+     el monto de presupuesto de más abajo (input.amount-input-inline, que
+     por ser más específico no se ve afectado por esta regla). */
   input[inputmode="numeric"],
-  input[inputmode="decimal"] { font-family: var(--font-mono); }
+  input[inputmode="decimal"] {
+    font-family: var(--font-mono);
+    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 10%, transparent);
+    box-shadow: none;
+    border-radius: var(--radius);
+    transition: border-color 0.15s;
+  }
+  input[inputmode="numeric"]:focus,
+  input[inputmode="decimal"]:focus {
+    border-color: var(--border);
+  }
   input:focus { border-color: var(--accent); }
 
   .input-narrow { flex: 0 0 auto; width: 110px; min-width: 0; }
@@ -1636,6 +1668,7 @@
      Historial: se distingue de un dato real a simple vista. ── */
   .budget-row-example { opacity: 0.7; border-bottom-style: dashed; }
   .budget-row-example:hover { background: none; }
+  .budget-row-example .amount-input-inline:disabled { opacity: 1; }
   .budget-route-example {
     flex: 0 0 130px;
     min-width: 0;
@@ -1670,46 +1703,70 @@
   .budget-row-actions.force-show { opacity: 1; min-width: 150px; }
   .confirm-label { font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; }
 
-  .amount-btn {
+  /* Monto del presupuesto — un input siempre presente y editable
+     directamente (no un botón "—" que se transforma en un cuadro de
+     edición aparte): se ve de una que es un campo, y no hay salto visual
+     al hacerle clic. Transparente en reposo, fondo+borde solo en foco. */
+  /* `input.amount-input-inline` (elemento+clase) a propósito: el selector
+     genérico `input[type="text"]` de más abajo tiene más especificidad
+     que una clase sola y le ganaba a estas reglas sin que se notara —
+     fondo/borde grises y el foco en ámbar (`input:focus`) se colaban
+     igual aunque acá se hubieran puesto en transparente. */
+  input.amount-input-inline {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 10%, transparent);
+    box-shadow: none;
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    font: inherit;
     font-size: 0.82rem;
     font-family: var(--font-mono);
-    color: var(--text-secondary);
-    padding: 0.15rem 0.4rem;
-    border-radius: var(--radius);
-    transition: background 0.15s, color 0.15s;
+    text-align: right;
+    padding: 0.2rem 0.4rem;
+    width: 100px;
+    min-width: 0;
+    flex: none;
+    outline: none;
+    transition: border-color 0.15s, color 0.15s;
   }
-  .amount-btn:hover { background: var(--bg-elevated); color: var(--accent); }
+  input.amount-input-inline::placeholder { color: var(--text-muted); font-family: var(--font); text-transform: none; letter-spacing: 0; opacity: 0.6; }
+  input.amount-input-inline:hover:not(:disabled)  { color: var(--text-secondary); }
+  input.amount-input-inline:focus { color: var(--text-primary); border-color: var(--border); }
+  input.amount-input-inline:disabled { opacity: 0.6; cursor: not-allowed; }
 
-  .type-pill {
-    font-size: 0.6rem;
+  /* Tags de tipo (Gasto/Fijo/Variable) — un punto de color + texto, sin
+     caja ni borde: se integran al renglón en vez de resaltar como una
+     etiqueta aparte. */
+  .kind-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.66rem;
     font-weight: 600;
     font-family: var(--font-mono);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 0.1rem 0.4rem;
-    border-radius: var(--radius);
+    letter-spacing: 0.05em;
     white-space: nowrap;
     flex-shrink: 0;
-  }
-  .type-pill.expense { border: 1px solid var(--danger); color: var(--danger); }
-
-  .pill-toggle {
-    font-size: 0.6rem;
-    font-weight: 600;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 0.1rem 0.4rem;
-    border-radius: var(--radius);
-    white-space: nowrap;
-    flex-shrink: 0;
-    background: transparent;
     color: var(--text-muted);
-    border: 1px solid var(--border);
-    transition: color 0.15s, border-color 0.15s;
   }
-  .pill-toggle.on { color: var(--accent); border-color: var(--accent); }
-  .pill-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+  .kind-tag::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+  .kind-tag.expense { color: var(--danger); }
+  .kind-tag.fixed   { color: var(--accent); }
+  .kind-tag.variable { color: var(--text-muted); }
+  button.kind-tag.fixed-toggle { transition: color 0.15s; }
+  button.kind-tag.fixed-toggle:hover:not(:disabled) { color: var(--accent); }
+  button.kind-tag:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* ── Sistema ── */
   .row-between { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }

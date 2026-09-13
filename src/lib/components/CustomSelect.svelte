@@ -2,6 +2,11 @@
   interface Option {
     value: any;
     label: string;
+    /** Texto mostrado en el trigger cerrado cuando esta opción está
+     * seleccionada, si debe ser distinto del texto de la fila en el menú
+     * abierto (ej. "Todos" en la lista, "Categorías" cuando está cerrado
+     * — evita que se vea la misma palabra repetida al abrir el menú). */
+    triggerLabel?: string;
   }
   interface Group {
     label: string;
@@ -34,12 +39,13 @@
     ...groups.flatMap((g: Group) => g.options),
   ]);
 
-  let selectedLabel = $derived(
-    allOptions.find((o: Option) => o.value === value)?.label ?? placeholder
-  );
+  let selectedLabel = $derived.by(() => {
+    const match = allOptions.find((o: Option) => o.value === value);
+    return match ? (match.triggerLabel ?? match.label) : placeholder;
+  });
 
   let widestLabel = $derived(
-    [placeholder, ...allOptions.map((o: Option) => String(o.label))]
+    [placeholder, ...allOptions.flatMap((o: Option) => [String(o.label), String(o.triggerLabel ?? o.label)])]
       .reduce((a, b) => b.length > a.length ? b : a, "")
   );
 

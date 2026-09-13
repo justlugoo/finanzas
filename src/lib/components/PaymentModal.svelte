@@ -323,6 +323,17 @@
   }
   input:focus { border-color: var(--accent); }
 
+  /* Monto del abono — solo dígitos: fondo/borde planos, sin "caja", igual
+     que el monto de presupuesto en Ajustes. */
+  input[inputmode="numeric"] {
+    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 10%, transparent);
+    box-shadow: none;
+    border-radius: var(--radius);
+    transition: border-color 0.15s;
+  }
+  input[inputmode="numeric"]:focus { border-color: var(--border); }
+
   .btn-primary {
     padding: 0.45rem 1rem; background: var(--accent); color: var(--bg-base);
     font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em;

@@ -430,7 +430,7 @@
     <div class="filter-select-wrap">
       <CustomSelect
         value={filterCat}
-        options={[{ value: "", label: "Categorías" }]}
+        options={[{ value: "", label: "Todos", triggerLabel: "Categorías" }]}
         groups={categoryFilterGroups}
         onchange={(v) => { filterCat = v; currentPage = 1; }}
       />
@@ -876,6 +876,20 @@
     align-items: center;
   }
 
+  /* Los 4 controles del filtro (período, tipo, categoría, buscador) miden
+     EXACTAMENTE lo mismo — no por casualidad de paddings parecidos (eso
+     nunca cuadra pixel a pixel entre un <button>, un <input> y un <div>,
+     cada uno con sus propias reglas de métrica de fuente), sino porque
+     los 4 contenedores comparten una altura explícita fija y sus hijos se
+     centran por flexbox en vez de por padding+line-height. */
+  .period-selector,
+  .kind-pills,
+  .filter-select-wrap,
+  .search-wrap {
+    height: 32px;
+    box-sizing: border-box;
+  }
+
   .period-selector {
     position: relative;
     display: flex;
@@ -886,7 +900,11 @@
   }
 
   .period-selector button {
-    padding: 0.28rem 0.6rem;
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    padding: 0 0.6rem;
     border-radius: var(--radius);
     font-size: 0.72rem;
     font-weight: 600;
@@ -910,7 +928,11 @@
   }
 
   .kind-pill {
-    padding: 0.28rem 0.65rem;
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    padding: 0 0.65rem;
     border-radius: var(--radius);
     font-size: 0.68rem;
     font-weight: 600;
@@ -926,35 +948,53 @@
   .kind-pill.active.income  { color: var(--success); }
   .kind-pill.active.expense { color: var(--danger); }
 
+  /* Mismo lenguaje visual que .period-selector/.kind-pills: fondo plano
+     sin borde, misma altura exacta — antes el select tenía un borde
+     visible y una altura derivada de su propio padding, distinta a la de
+     esos dos grupos. */
   .filter-select-wrap {
     position: relative;
     font-size: 0.78rem;
-    --cs-padding: 0.32rem 0.6rem;
+    background: var(--bg-elevated);
+    padding: 3px;
+    border-radius: var(--radius);
+    --cs-padding: 0 0.6rem;
   }
+  .filter-select-wrap :global(.cs-wrap) { height: 100%; }
+  .filter-select-wrap :global(.cs-trigger) { background: transparent; border: none; }
+  .filter-select-wrap :global(.cs-trigger:hover),
+  .filter-select-wrap :global(.cs-trigger:focus-visible) { background: var(--bg-surface); }
 
-
-  /* Search */
+  /* Search — mismo fondo plano sin borde, misma altura exacta. El ancho
+     ya NO cambia al enfocar (crecer de golpe corría el resto de la fila
+     y se sentía como si la interfaz "se rompiera" un instante). */
   .search-wrap {
     position: relative;
     display: flex;
     align-items: center;
+    background: var(--bg-elevated);
+    padding: 3px;
+    border-radius: var(--radius);
   }
 
   .search-input {
     -webkit-appearance: none;
     appearance: none;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    background: transparent;
+    border: none;
+    box-shadow: none;
     border-radius: var(--radius);
     color: var(--text-primary);
     font: inherit;
     font-size: 0.78rem;
-    padding: 0.32rem 1.5rem 0.32rem 0.6rem;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 1.5rem 0 0.6rem;
     outline: none;
-    width: 160px;
-    transition: border-color 0.15s, width 0.2s;
+    width: 180px;
+    transition: background 0.15s;
   }
-  .search-input:focus { border-color: var(--accent); width: 200px; }
+  .search-input:focus { background: var(--bg-surface); }
   .search-input::placeholder { color: var(--text-muted); }
 
   .search-clear {
@@ -1410,7 +1450,18 @@
     padding: 0.5rem 0.65rem; outline: none; width: 100%;
   }
 
-  input[type="number"] { font-family: var(--font-mono); }
+  /* Monto — solo dígitos: fondo/borde planos, sin "caja", igual que el
+     monto de presupuesto en Ajustes. La nota (input[type="text"]) sigue
+     con la caja normal. */
+  input[type="number"] {
+    font-family: var(--font-mono);
+    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 10%, transparent);
+    box-shadow: none;
+    border-radius: var(--radius);
+    transition: border-color 0.15s;
+  }
+  input[type="number"]:focus { border-color: var(--border); }
 
   input:focus { border-color: var(--accent); }
 

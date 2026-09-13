@@ -1033,7 +1033,17 @@
   }
   input:focus { border-color: var(--accent); }
 
-  input[inputmode="numeric"] { font-family: var(--font-mono); }
+  /* Campos de solo dígitos (montos, cuotas) — fondo/borde planos, sin
+     "caja", igual que el monto de presupuesto en Ajustes. */
+  input[inputmode="numeric"] {
+    font-family: var(--font-mono);
+    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 10%, transparent);
+    box-shadow: none;
+    border-radius: var(--radius);
+    transition: border-color 0.15s;
+  }
+  input[inputmode="numeric"]:focus { border-color: var(--border); }
 
   .hint {
     font-size: 0.72rem; color: var(--text-muted);

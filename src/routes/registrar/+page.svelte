@@ -1142,18 +1142,34 @@
     transition: border-color 0.15s;
     width: 100%;
   }
-  input[inputmode="numeric"] { font-family: var(--font-mono); }
+  /* Campos de solo dígitos (precio del galón, kilometraje) — fondo/borde
+     planos, sin "caja", igual que el monto de presupuesto en Ajustes.
+     Excluye .amount-input: el monto grande de arriba es un display
+     prominente por diseño, no un campo de formulario chico. */
+  input[inputmode="numeric"]:not(.amount-input),
+  input[inputmode="decimal"]:not(.amount-input) {
+    font-family: var(--font-mono);
+    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 10%, transparent);
+    box-shadow: none;
+    border-radius: var(--radius);
+    transition: border-color 0.15s;
+  }
+  input[inputmode="numeric"]:not(.amount-input):focus,
+  input[inputmode="decimal"]:not(.amount-input):focus {
+    border-color: var(--border);
+  }
   input:focus { border-color: var(--accent); }
 
-  /* Misma especificidad que input[type="text"] de arriba (elemento+atributo
-     vs. elemento+clase) — al declararse después, gana la cascada y puede
-     pisar el padding/width genéricos para dejar espacio al sufijo "km". */
-  input.km-value {
+  /* Misma especificidad que la regla de arriba (atributo+:not vs.
+     atributo+clase) — al declararse después, gana la cascada y ajusta el
+     padding para dejar espacio al sufijo "km". */
+  input[inputmode="decimal"].km-value {
     width: 120px;
     font-size: 0.9rem;
     font-weight: 600;
     text-align: left;
-    padding: 0.5rem 2.5rem 0.5rem 0.65rem;
+    padding: 0.2rem 2.5rem 0.2rem 0.4rem;
   }
 
   .meta-field-check { flex: 0 0 auto !important; }
