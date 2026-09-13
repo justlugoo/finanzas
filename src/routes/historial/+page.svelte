@@ -66,8 +66,6 @@
   // ── Datos ─────────────────────────────────────────────────────────────────
   let txs              = $state<Entry[]>([]);
   let categories       = $state<Category[]>([]);
-  // Mapa completo (no solo el nombre) para poder marcar cuándo la categoría
-  // de un movimiento ya no está activa — ver `categoryArchived()`.
   let categoryMap      = $derived(new Map(categories.map(c => [c.id, c])));
 
   // Filtro de categorías del historial, agrupado por Ingresos/Gastos — sin
@@ -96,18 +94,12 @@
   let error            = $state<string | null>(null);
   let payableAccountId = $state<string | null>(null);
 
+  // Eliminar una categoría la borra de verdad, tenga o no movimientos
+  // asociados — un movimiento viejo con una categoría ya borrada simplemente
+  // se muestra como "Sin categoría".
   function categoryName(e: Entry): string {
     if (e.type === "transfer") return "Transferencia";
     return (e.category_id && categoryMap.get(e.category_id)?.name) ?? "Sin categoría";
-  }
-
-  // "Eliminar" una categoría con movimientos asociados la archiva en vez de
-  // borrarla (no puede quedar sin categoría: `entries.category_id` no
-  // admite NULL para ingreso/gasto) — se distingue con un tag para que no
-  // parezca una categoría activa como cualquier otra.
-  function categoryArchived(e: Entry): boolean {
-    const cat = e.category_id ? categoryMap.get(e.category_id) : undefined;
-    return cat?.archived_at != null;
   }
 
   // Un gasto cuya cuenta de origen es "payable" es una compra a crédito
@@ -163,15 +155,15 @@
   let editSaving         = $state(false);
   let editError          = $state<string | null>(null);
 
-  // Categorías del mismo tipo que el movimiento en edición, para el selector
-  // — se incluye la categoría actual aunque esté archivada (si no, el
-  // selector se vería vacío para un movimiento viejo con categoría archivada).
+  // Categorías del mismo tipo que el movimiento en edición, para el selector.
+  // Si la categoría original ya se borró (movimiento "huérfano"), no
+  // aparece ninguna preseleccionada — hay que elegir una para poder guardar.
   let editCategoryOptions = $derived(
     editingTx
       ? categories
-          .filter(c => c.kind === editingTx!.type && (c.archived_at == null || c.id === editCategoryId))
+          .filter(c => c.kind === editingTx!.type)
           .sort((a, b) => a.name.localeCompare(b.name))
-          .map(c => ({ value: c.id, label: c.archived_at ? `${c.name} (archivada)` : c.name }))
+          .map(c => ({ value: c.id, label: c.name }))
       : []
   );
 
@@ -591,10 +583,6 @@
                 </span>
 
                 <span class="tx-cat">{categoryName(tx)}</span>
-
-                {#if categoryArchived(tx)}
-                  <span class="tx-tag archived" title="Esta categoría ya se eliminó de la selección activa — se conserva solo para no perder el nombre real de movimientos viejos">Archivada</span>
-                {/if}
 
                 {#if tx.note}
                   <span class="tx-note">{tx.note}</span>
@@ -1326,7 +1314,6 @@
   }
   .tx-tag.extra { background: transparent; color: var(--accent); border: 1px solid var(--accent); font-family: var(--font-mono); font-size: 0.58rem; }
   .tx-tag.credit { background: transparent; color: var(--text-muted); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 0.58rem; }
-  .tx-tag.archived { background: transparent; color: var(--text-muted); border: 1px dashed var(--border); font-family: var(--font-mono); font-size: 0.58rem; }
 
   /* Gap / spacer */
   .tx-gap { flex: 1; min-width: 0.25rem; }

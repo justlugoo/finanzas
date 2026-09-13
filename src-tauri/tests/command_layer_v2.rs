@@ -69,11 +69,12 @@ async fn categorias_crud_y_conflicto_de_borrado() {
     services::categories::delete(&conn, &unused.id).await.unwrap();
     assert!(finanzas_lib::repositories::categories::get(&conn, &unused.id).await.is_err(), "sin movimientos, debe borrarse de verdad");
 
-    // Con un movimiento asociado, "eliminar" no debe fallar — debe archivar
-    // en su lugar (entries.category_id no admite NULL para income/expense,
-    // así que un movimiento ya registrado nunca puede quedar sin categoría).
+    // Con un movimiento asociado, "eliminar" borra la categoría de verdad
+    // igual — el movimiento queda con una referencia "huérfana"
+    // (category_id sigue apuntando al id ya borrado; el frontend resuelve
+    // el nombre a "Sin categoría" cuando no la encuentra).
     let cash = finanzas_lib::repositories::accounts::id_by_code(&conn, "cash").await.unwrap();
-    services::entries::create(
+    let entry = services::entries::create(
         &conn,
         EntryInput {
             occurred_on: "2026-01-01".into(),
@@ -92,17 +93,13 @@ async fn categorias_crud_y_conflicto_de_borrado() {
     .unwrap();
     services::categories::delete(&conn, &cat.id).await.unwrap();
 
-    let archived = finanzas_lib::repositories::categories::get(&conn, &cat.id).await.unwrap();
-    assert!(archived.archived_at.is_some(), "con movimientos asociados, eliminar debe archivar, no fallar");
+    assert!(
+        finanzas_lib::repositories::categories::get(&conn, &cat.id).await.is_err(),
+        "con movimientos asociados, eliminar debe borrar de verdad igual, no archivar"
+    );
 
-    // Archivada: desaparece del listado activo (chips, presupuestos)...
-    let active = services::categories::list(&conn, Some("expense"), false).await.unwrap();
-    assert!(!active.iter().any(|c| c.id == cat.id), "una categoría archivada no debe aparecer en la selección activa");
-
-    // ...pero sigue existiendo para resolver el nombre de movimientos viejos
-    // (Historial, exportación CSV) si se pide explícitamente.
-    let all = services::categories::list(&conn, Some("expense"), true).await.unwrap();
-    assert!(all.iter().any(|c| c.id == cat.id && c.name == "Comida y bebida"), "el nombre real debe seguir resolviéndose");
+    let orphaned = services::entries::get_by_id(&conn, &entry.id).await.unwrap();
+    assert_eq!(orphaned.category_id, Some(cat.id.clone()), "el movimiento viejo conserva la referencia, aunque ya no exista la categoría");
 }
 
 /// Renombrar a un nombre ya usado por otra categoría del mismo tipo debe

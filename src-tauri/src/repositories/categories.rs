@@ -99,38 +99,33 @@ pub async fn update(
     get(conn, id).await
 }
 
-/// El error de FK se traduce a un mensaje humano sin exponer el texto crudo
-/// de SQLite ni el id (ULID) de la categoría — el llamador (capa de
-/// servicio) ya conoce el nombre real y arma el mensaje final con eso.
+/// Borrado real, siempre — a petición explícita: si una categoría tenía
+/// movimientos o un presupuesto asociado, esos movimientos quedan
+/// "huérfanos" (`entries.category_id` sigue apuntando a un id que ya no
+/// existe; el frontend resuelve el nombre a "Sin categoría" cuando no
+/// encuentra la categoría). El presupuesto/override de esa categoría sí se
+/// borra de una vez, no tendría sentido dejarlo suelto sin categoría dueña.
+///
+/// `entries.category_id` tiene una FK hacia `categories(id)` sin
+/// `ON DELETE`, así que sin desactivar la verificación de FK para esta
+/// conexión el borrado fallaría apenas hubiera un solo movimiento
+/// asociado — es exactamente lo que se quiere evitar acá.
 pub async fn delete(conn: &Connection, id: &str) -> AppResult<()> {
-    let affected = conn
-        .execute("DELETE FROM categories WHERE id = ? AND is_system = 0", libsql::params![id.to_string()])
-        .await
-        .map_err(|_| AppError::ValidationError("todavía tiene movimientos o un presupuesto asociado".into()))?;
-    if affected == 0 {
-        return Err(AppError::NotFound(format!("categoría {id} no existe")));
-    }
-    Ok(())
-}
+    conn.execute("PRAGMA foreign_keys = OFF", ()).await?;
 
-/// Alternativa al borrado real cuando una categoría tiene movimientos
-/// asociados: `entries.category_id` es `NOT NULL` para income/expense (el
-/// `CHECK` compuesto de la tabla lo exige), así que un movimiento ya
-/// registrado nunca puede quedar en "sin categoría" — borrar la fila a la
-/// fuerza rompería esa regla o requeriría debilitarla. Archivar dejar la
-/// categoría fuera de cualquier selección activa (chips, lista de
-/// Presupuestos) sin tocar el histórico: los movimientos viejos conservan
-/// su categoría real y su nombre real en Historial.
-pub async fn archive(conn: &Connection, id: &str) -> AppResult<()> {
-    let affected = conn
-        .execute(
-            "UPDATE categories SET archived_at = datetime('now'), updated_at = datetime('now') \
-             WHERE id = ? AND is_system = 0 AND archived_at IS NULL",
-            libsql::params![id.to_string()],
-        )
-        .await?;
-    if affected == 0 {
-        return Err(AppError::NotFound(format!("categoría {id} no existe o ya está archivada")));
+    let result: AppResult<i64> = async {
+        conn.execute("DELETE FROM budget_overrides WHERE category_id = ?", libsql::params![id.to_string()]).await?;
+        conn.execute("DELETE FROM budgets WHERE category_id = ?", libsql::params![id.to_string()]).await?;
+        let affected = conn
+            .execute("DELETE FROM categories WHERE id = ? AND is_system = 0", libsql::params![id.to_string()])
+            .await?;
+        Ok(affected as i64)
+    }.await;
+
+    conn.execute("PRAGMA foreign_keys = ON", ()).await?;
+
+    match result? {
+        0 => Err(AppError::NotFound(format!("categoría {id} no existe"))),
+        _ => Ok(()),
     }
-    Ok(())
 }

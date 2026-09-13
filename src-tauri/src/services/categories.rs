@@ -32,18 +32,10 @@ pub async fn update(
     repositories::categories::update(conn, id, name, is_fixed, route_id.as_deref()).await
 }
 
-/// "Eliminar" desde la UI siempre debe funcionar, sin importar si la
-/// categoría ya tiene movimientos o un presupuesto asociado: si el borrado
-/// real es seguro (nunca se usó), se borra de verdad; si no, se archiva
-/// (ver `repositories::categories::archive`) — desaparece de cualquier
-/// selección activa (chips de Registrar, lista de Presupuestos) sin tocar
-/// el histórico, porque `entries.category_id` no admite NULL para
-/// income/expense (el `CHECK` de la tabla lo exige) y por eso un movimiento
-/// ya registrado nunca puede quedar "sin categoría".
+/// "Eliminar" desde la UI siempre borra la categoría de verdad, tenga o no
+/// movimientos/presupuesto asociados — ver `repositories::categories::delete`
+/// para el porqué (movimientos viejos quedan con una categoría "huérfana",
+/// a propósito).
 pub async fn delete(conn: &Connection, id: &str) -> AppResult<()> {
-    match repositories::categories::delete(conn, id).await {
-        Ok(()) => Ok(()),
-        Err(AppError::ValidationError(_)) => repositories::categories::archive(conn, id).await,
-        Err(other) => Err(other),
-    }
+    repositories::categories::delete(conn, id).await
 }
