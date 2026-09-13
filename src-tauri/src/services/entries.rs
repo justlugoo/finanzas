@@ -88,11 +88,32 @@ pub async fn update(
     amount_cop: i64,
     note: Option<&str>,
     is_extraordinary: bool,
+    category_id: Option<&str>,
 ) -> AppResult<Entry> {
     if amount_cop <= 0 {
         return Err(AppError::ValidationError("amount_cop debe ser mayor que cero".into()));
     }
-    repositories::entries::update(conn, id, occurred_on, amount_cop, note, is_extraordinary).await
+
+    let current = repositories::entries::get_by_id(conn, id).await?;
+    match current.kind.as_str() {
+        "transfer" => {
+            if category_id.is_some() {
+                return Err(AppError::ValidationError("una transferencia no tiene categoría".into()));
+            }
+        }
+        kind => {
+            let cid = category_id
+                .ok_or_else(|| AppError::ValidationError("category_id es obligatorio para ingreso/gasto".into()))?;
+            let cat = repositories::categories::get(conn, cid).await?;
+            if cat.kind != kind {
+                return Err(AppError::ValidationError(
+                    "la categoría debe ser del mismo tipo (ingreso/gasto) que el movimiento".into(),
+                ));
+            }
+        }
+    }
+
+    repositories::entries::update(conn, id, occurred_on, amount_cop, note, is_extraordinary, category_id).await
 }
 
 pub async fn delete(conn: &Connection, id: &str) -> AppResult<()> {

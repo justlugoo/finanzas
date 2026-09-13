@@ -69,6 +69,27 @@
   // Mapa completo (no solo el nombre) para poder marcar cuándo la categoría
   // de un movimiento ya no está activa — ver `categoryArchived()`.
   let categoryMap      = $derived(new Map(categories.map(c => [c.id, c])));
+
+  // Filtro de categorías del historial, agrupado por Ingresos/Gastos — sin
+  // esto la lista mezclaba ambos tipos en un solo orden alfabético, sin
+  // forma de distinguir a simple vista si una categoría era de ingreso o
+  // de gasto.
+  let categoryFilterGroups = $derived([
+    {
+      label: "Ingresos",
+      options: categories
+        .filter(c => c.kind === "income")
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(c => ({ value: c.id, label: c.name })),
+    },
+    {
+      label: "Gastos",
+      options: categories
+        .filter(c => c.kind === "expense")
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(c => ({ value: c.id, label: c.name })),
+    },
+  ]);
   let filteredIncome   = $state(0);
   let filteredExpenses = $state(0);
   let loading          = $state(true);
@@ -130,16 +151,29 @@
   let menuOpen = $state(false);
 
   // ── Edición ───────────────────────────────────────────────────────────────
-  // Solo se pueden editar fecha, monto, nota y extraordinario — cambiar tipo,
-  // cuentas o categoría de un movimiento ya creado equivale a otro
-  // movimiento distinto (services::entries::update, backend v2).
+  // Fecha, monto, nota, extraordinario y categoría (solo a otra del mismo
+  // tipo ingreso/gasto) son editables. Tipo y cuentas no — cambiar eso
+  // equivale a otro movimiento distinto (services::entries::update, backend v2).
   let editingTx          = $state<Entry | null>(null);
   let editAmount         = $state("");
   let editDate           = $state("");
   let editNote           = $state("");
   let editExtraord       = $state(false);
+  let editCategoryId     = $state("");
   let editSaving         = $state(false);
   let editError          = $state<string | null>(null);
+
+  // Categorías del mismo tipo que el movimiento en edición, para el selector
+  // — se incluye la categoría actual aunque esté archivada (si no, el
+  // selector se vería vacío para un movimiento viejo con categoría archivada).
+  let editCategoryOptions = $derived(
+    editingTx
+      ? categories
+          .filter(c => c.kind === editingTx!.type && (c.archived_at == null || c.id === editCategoryId))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map(c => ({ value: c.id, label: c.archived_at ? `${c.name} (archivada)` : c.name }))
+      : []
+  );
 
   // ── Confirmación eliminar ─────────────────────────────────────────────────
   let deletingId         = $state<string | null>(null);
@@ -282,12 +316,13 @@
   // ── Edición ────────────────────────────────────────────────────────────────
 
   function startEdit(tx: Entry) {
-    editingTx    = tx;
-    editDate     = tx.occurred_on;
-    editNote     = tx.note ?? "";
-    editExtraord = tx.is_extraordinary;
-    editAmount   = tx.amount_cop.toString();
-    editError    = null;
+    editingTx      = tx;
+    editDate       = tx.occurred_on;
+    editNote       = tx.note ?? "";
+    editExtraord   = tx.is_extraordinary;
+    editAmount     = tx.amount_cop.toString();
+    editCategoryId = tx.category_id ?? "";
+    editError      = null;
   }
 
   function cancelEdit() { editingTx = null; }
@@ -296,11 +331,13 @@
     if (!editingTx) return;
     const amt = parseInt(editAmount, 10);
     if (!amt || amt <= 0) { editError = "Monto inválido."; return; }
+    if (editingTx.type !== "transfer" && !editCategoryId) { editError = "Selecciona una categoría."; return; }
     editSaving = true;
     editError  = null;
 
     try {
-      const updated = await entryApi.update(editingTx.id, editDate, amt, editNote.trim() || null, editExtraord);
+      const catId = editingTx.type === "transfer" ? null : editCategoryId;
+      const updated = await entryApi.update(editingTx.id, editDate, amt, editNote.trim() || null, editExtraord, catId);
       txs = txs.map(t => t.id === updated.id ? updated : t);
       editingTx = null;
       bumpTxVersion();
@@ -393,10 +430,8 @@
     <div class="filter-select-wrap">
       <CustomSelect
         value={filterCat}
-        options={[
-          { value: "", label: "Categorías" },
-          ...categories.map(c => ({ value: c.id, label: c.name })),
-        ]}
+        options={[{ value: "", label: "Categorías" }]}
+        groups={categoryFilterGroups}
         onchange={(v) => { filterCat = v; currentPage = 1; }}
       />
     </div>
@@ -699,9 +734,8 @@
       {/if}
 
       <p class="edit-readonly-hint">
-        {categoryName(editingTx)} ·
         {editingTx.type === "income" ? "Ingreso" : editingTx.type === "expense" ? "Gasto" : "Transferencia"}
-        <br />El tipo y la categoría no se pueden cambiar aquí — borra y vuelve a crear el movimiento si te equivocaste.
+        <br />El tipo no se puede cambiar aquí — borra y vuelve a crear el movimiento si te equivocaste de ingreso/gasto.
       </p>
 
       <div class="modal-form">
@@ -714,6 +748,17 @@
           <span class="field-label">Fecha</span>
           <DatePicker bind:value={editDate} />
         </div>
+
+        {#if editingTx.type !== "transfer"}
+          <div class="field">
+            <span class="field-label">Categoría</span>
+            <CustomSelect
+              bind:value={editCategoryId}
+              options={editCategoryOptions}
+              placeholder="Selecciona una categoría"
+            />
+          </div>
+        {/if}
 
         <div class="field">
           <label for="edit-note">Nota</label>

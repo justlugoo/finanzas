@@ -70,7 +70,7 @@ pub async fn list_with_categories(conn: &Connection) -> AppResult<Vec<CategoryBu
             "SELECT c.id, c.name, c.kind, c.is_fixed, c.route_id, c.is_system, c.code, \
                     c.archived_at, c.created_at, c.updated_at, COALESCE(b.monthly_cop, 0) \
              FROM categories c LEFT JOIN budgets b ON b.category_id = c.id \
-             WHERE c.is_system = 0 AND c.archived_at IS NULL ORDER BY c.name",
+             WHERE c.is_system = 0 AND c.archived_at IS NULL ORDER BY c.kind DESC, c.name",
             (),
         )
         .await?;

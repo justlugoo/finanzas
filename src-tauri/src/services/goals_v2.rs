@@ -54,7 +54,7 @@ pub async fn update(conn: &Connection, id: &str, input: GoalInputV2) -> AppResul
     if goal.kind == "debt"
         && let Some(entry_id) = repositories::goals_v2::debt_opening_entry_id(conn, id).await? {
             let entry = repositories::entries::get_by_id(conn, &entry_id).await?;
-            repositories::entries::update(conn, &entry_id, &entry.occurred_on, input.target_cop, entry.note.as_deref(), entry.is_extraordinary).await?;
+            repositories::entries::update(conn, &entry_id, &entry.occurred_on, input.target_cop, entry.note.as_deref(), entry.is_extraordinary, entry.category_id.as_deref()).await?;
         }
 
     build_progress(conn, goal).await

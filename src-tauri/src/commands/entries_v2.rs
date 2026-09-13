@@ -36,9 +36,10 @@ pub async fn entry_update(
     amount_cop: i64,
     note: Option<String>,
     is_extraordinary: bool,
+    category_id: Option<String>,
 ) -> AppResult<Entry> {
     let conn = get_conn(&state).await?;
-    svc::update(&conn, &id, &occurred_on, amount_cop, note.as_deref(), is_extraordinary).await
+    svc::update(&conn, &id, &occurred_on, amount_cop, note.as_deref(), is_extraordinary, category_id.as_deref()).await
 }
 
 #[tauri::command]

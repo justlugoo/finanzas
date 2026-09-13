@@ -105,10 +105,12 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> AppResult<Entry> {
     row_to_entry(&row).map_err(|e| AppError::DatabaseError(e.to_string()))
 }
 
-/// Solo permite actualizar los campos que tienen sentido editar desde la UI
-/// (fecha, monto, nota, extraordinario) — cambiar `kind`/cuentas/categoría
-/// de una entry ya creada equivaldría a otro movimiento distinto; para eso
-/// se borra y se crea de nuevo.
+/// Permite actualizar fecha, monto, nota, extraordinario y categoría — el
+/// `kind`/cuentas de una entry ya creada siguen sin poder cambiar (eso sí
+/// equivaldría a otro movimiento distinto: cambiar de ingreso a gasto, o
+/// mover dinero de una cuenta a otra, para eso se borra y se crea de nuevo).
+/// La validación de que `category_id` pertenezca a una categoría del mismo
+/// `kind` que la entry vive en `services::entries::update`.
 pub async fn update(
     conn: &Connection,
     id: &str,
@@ -116,9 +118,10 @@ pub async fn update(
     amount_cop: i64,
     note: Option<&str>,
     is_extraordinary: bool,
+    category_id: Option<&str>,
 ) -> AppResult<Entry> {
     let sql = format!(
-        "UPDATE entries SET occurred_on = ?, amount_cop = ?, note = ?, is_extraordinary = ?, updated_at = datetime('now') \
+        "UPDATE entries SET occurred_on = ?, amount_cop = ?, note = ?, is_extraordinary = ?, category_id = ?, updated_at = datetime('now') \
          WHERE id = ? AND deleted_at IS NULL \
          RETURNING {SELECT_COLUMNS}"
     );
@@ -130,6 +133,7 @@ pub async fn update(
                 amount_cop,
                 note.map(|s| s.to_string()),
                 is_extraordinary as i64,
+                category_id.map(|s| s.to_string()),
                 id.to_string()
             ],
         )

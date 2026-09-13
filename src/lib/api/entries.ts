@@ -13,8 +13,8 @@ export const create = (input: EntryInput) =>
 export const get = (id: string) =>
   invoke<Entry>("entry_get", { id });
 
-export const update = (id: string, occurredOn: string, amountCop: number, note: string | null, isExtraordinary: boolean) =>
-  invoke<Entry>("entry_update", { id, occurredOn, amountCop, note, isExtraordinary });
+export const update = (id: string, occurredOn: string, amountCop: number, note: string | null, isExtraordinary: boolean, categoryId: string | null) =>
+  invoke<Entry>("entry_update", { id, occurredOn, amountCop, note, isExtraordinary, categoryId });
 
 export const remove = (id: string) =>
   invoke<void>("entry_delete", { id });

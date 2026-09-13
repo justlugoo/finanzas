@@ -127,6 +127,16 @@
     }).format(n);
   }
 
+  // Ingresos primero, luego gastos, alfabético dentro de cada grupo — igual
+  // que el filtro de categorías en Historial, para no mezclar ambos tipos
+  // en un solo orden alfabético donde no se distinguen a simple vista.
+  function sortBudgets(rows: CategoryBudgetRow[]): CategoryBudgetRow[] {
+    return [...rows].sort((a, b) => {
+      if (a.category.kind !== b.category.kind) return a.category.kind === "income" ? -1 : 1;
+      return a.category.name.localeCompare(b.category.name);
+    });
+  }
+
   function handlePriceInput(e: Event & { currentTarget: HTMLInputElement }) {
     const digits = e.currentTarget.value.replace(/\D/g, "");
     newPriceRaw = digits;
@@ -213,8 +223,7 @@
 
     try {
       const updated = await categoryApi.update(row.category.id, name, row.category.is_fixed, row.category.route_id);
-      budgets = budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b)
-        .sort((a, b) => a.category.name.localeCompare(b.category.name));
+      budgets = sortBudgets(budgets.map(b => b.category.id === row.category.id ? { ...b, category: updated } : b));
     } catch (e: any) {
       budgets = prevBudgets;
       console.error("[config] rename category error:", e);
@@ -440,7 +449,7 @@
       const created = await categoryApi.create({
         name, kind: newBudgetType, is_fixed: newBudgetType === "income" ? newBudgetIsFixed : false, route_id: null,
       });
-      budgets = [...budgets, { category: created, monthly_cop: 0 }].sort((a, b) => a.category.name.localeCompare(b.category.name));
+      budgets = sortBudgets([...budgets, { category: created, monthly_cop: 0 }]);
       newBudgetName = "";
       newBudgetIsFixed = false;
     } catch (e: any) {

@@ -175,9 +175,17 @@ async fn entries_crud_filtros_y_resumen() {
     assert_eq!(filtered.filtered_expense, 80_000);
 
     // Update.
-    let updated = services::entries::update(&conn, &income.id, "2026-06-02", 1_050_000, Some("actualizado"), false).await.unwrap();
+    let updated = services::entries::update(&conn, &income.id, "2026-06-02", 1_050_000, Some("actualizado"), false, Some(&salario.id)).await.unwrap();
     assert_eq!(updated.amount_cop, 1_050_000);
     assert_eq!(updated.occurred_on, "2026-06-02");
+
+    // Reasignar categoría a otra del mismo tipo (income) debe funcionar.
+    let freelance = services::categories::create(&conn, CategoryInput { name: "Freelance".into(), kind: "income".into(), is_fixed: false, route_id: None }).await.unwrap();
+    let recategorized = services::entries::update(&conn, &income.id, "2026-06-02", 1_050_000, None, false, Some(&freelance.id)).await.unwrap();
+    assert_eq!(recategorized.category_id, Some(freelance.id.clone()));
+
+    // Reasignar a una categoría de gasto (tipo distinto) debe rechazarse.
+    assert!(services::entries::update(&conn, &income.id, "2026-06-02", 1_050_000, None, false, Some(&comida.id)).await.is_err());
 
     // Resumen de período (mes de junio 2026, ya pasado por completo).
     let summary = services::entries::period_summary(&conn, &PeriodV2::Month { year: 2026, month: 6 }).await.unwrap();

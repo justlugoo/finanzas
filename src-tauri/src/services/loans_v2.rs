@@ -106,7 +106,7 @@ pub async fn update(conn: &Connection, id: &str, person_name: &str, principal_co
 
     if let Some(entry_id) = repositories::loans_v2::lending_entry_id(conn, id).await? {
         let entry = repositories::entries::get_by_id(conn, &entry_id).await?;
-        repositories::entries::update(conn, &entry_id, &entry.occurred_on, principal_cop, entry.note.as_deref(), entry.is_extraordinary).await?;
+        repositories::entries::update(conn, &entry_id, &entry.occurred_on, principal_cop, entry.note.as_deref(), entry.is_extraordinary, entry.category_id.as_deref()).await?;
     }
 
     with_balance(conn, loan).await
