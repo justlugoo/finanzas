@@ -31,6 +31,11 @@
   let pendingLoans   = $derived(tipoFiltered.filter(m => m.tipo === "me_deben"      && m.estado === "pendiente").sort(byProgressDesc));
   let pendingSavings = $derived(tipoFiltered.filter(m => m.tipo === "quiero_juntar" && m.estado === "pendiente").sort(byProgressDesc));
   let doneMetas      = $derived(tipoFiltered.filter(m => m.estado === "completado"));
+  // Un ahorro completado es un logro (algo que juntaste); una deuda o
+  // préstamo completado es solo un asunto ya resuelto — no ameritan la
+  // misma palabra.
+  let doneSavings    = $derived(doneMetas.filter(m => m.tipo === "quiero_juntar"));
+  let doneOthers     = $derived(doneMetas.filter(m => m.tipo !== "quiero_juntar"));
 
   let allPendingCount = $derived(pendingDebts.length + pendingLoans.length + pendingSavings.length);
 
@@ -102,10 +107,8 @@
     if (m.fecha) stats.push({ label: "Fecha", value: formatDateShort(m.fecha) });
     if (m.cuotas !== null && m.cuotas > 0 && m.tipo === "debo") {
       stats.push({ label: "Cuotas", value: `${m.cuotas} cuotas` });
-    }
-    const streak = monthStreak(m);
-    if (!done && streak >= 2) {
-      stats.push({ label: "Constancia", value: `${streak} meses seguidos`, colorClass: "accent" });
+      const restantes = Math.max(m.cuotas - m.abonos.length, 0);
+      stats.push({ label: "Cuotas restantes", value: `${restantes}`, colorClass: done ? undefined : "accent" });
     }
     return stats;
   }
@@ -126,29 +129,6 @@
     const now = new Date();
     now.setHours(0, 0, 0, 0);
     return Math.round((target.getTime() - now.getTime()) / 86_400_000);
-  }
-
-  // Meses consecutivos con al menos un abono, contando hacia atrás desde el
-  // mes actual (o desde el último mes con abono, si este mes aún no tiene
-  // uno — así un día 1 de mes sin abonar todavía no rompe la racha visible).
-  function monthStreak(m: MetaV2): number {
-    if (m.abonos.length === 0) return 0;
-    const months = new Set(m.abonos.map(a => a.date.slice(0, 7)));
-    const now = new Date();
-    let y = now.getFullYear();
-    let mo = now.getMonth() + 1;
-    const key = () => `${y}-${String(mo).padStart(2, "0")}`;
-    if (!months.has(key())) {
-      mo -= 1;
-      if (mo === 0) { mo = 12; y -= 1; }
-    }
-    let streak = 0;
-    while (months.has(key())) {
-      streak++;
-      mo -= 1;
-      if (mo === 0) { mo = 12; y -= 1; }
-    }
-    return streak;
   }
 
   // ── Crear ─────────────────────────────────────────────────────────────────
@@ -461,14 +441,27 @@
         {/if}
       {/if}
 
-      <!-- ── Sección LOGROS ── -->
-      {#if showDone && doneMetas.length > 0}
+      <!-- ── Sección COMPLETADOS (deudas y préstamos ya resueltos) ── -->
+      {#if showDone && doneOthers.length > 0}
         {#if showPending && allPendingCount > 0}
+          <div class="section-divider"></div>
+        {/if}
+        <div class="section-label secondary">Completados</div>
+        <div class="meta-grid">
+          {#each doneOthers as m (m.id)}
+            {@render metaCard(m)}
+          {/each}
+        </div>
+      {/if}
+
+      <!-- ── Sección LOGROS (solo ahorros completados) ── -->
+      {#if showDone && doneSavings.length > 0}
+        {#if (showPending && allPendingCount > 0) || doneOthers.length > 0}
           <div class="section-divider"></div>
         {/if}
         <div class="section-label secondary">Logros</div>
         <div class="meta-grid">
-          {#each doneMetas as m (m.id)}
+          {#each doneSavings as m (m.id)}
             {@render metaCard(m)}
           {/each}
         </div>
@@ -480,7 +473,6 @@
 
 {#snippet metaCard(m: MetaV2)}
   {@const done = m.estado === "completado"}
-  {@const streak = done ? 0 : monthStreak(m)}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="meta-card" class:done onclick={() => { detail = m; }}>
@@ -514,9 +506,6 @@
         <span class="paid-value">{formatCOP(m.abonado)}</span>
         <span class="sep">/</span>
         <span class="total-value">{formatCOP(m.total)}</span>
-        {#if streak >= 2}
-          <span class="streak-badge">{streak} meses seguidos</span>
-        {/if}
       </div>
 
       {#if m.cuotas !== null && m.cuotas > 0 && m.tipo === "debo"}
@@ -930,19 +919,6 @@
   .done-total { font-size: 1.1rem; font-weight: 700; font-variant-numeric: tabular-nums; font-family: var(--font-mono); color: var(--text-primary); }
   .done-label { font-size: 0.75rem; color: var(--text-muted); }
 
-  /* ── Racha de constancia — solo aparece con 2+ meses seguidos abonando;
-     dato real, no decoración, por eso vive junto al monto abonado. ── */
-  .streak-badge {
-    font-size: 0.62rem;
-    font-weight: 600;
-    font-family: var(--font-mono);
-    color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-    border-radius: var(--radius);
-    padding: 0.05rem 0.4rem;
-    margin-left: auto;
-    white-space: nowrap;
-  }
 
   /* ── Pending amount ── */
   .pending-amount { display: flex; align-items: baseline; gap: 0.4rem; }
