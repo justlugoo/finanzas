@@ -28,6 +28,7 @@ src-tauri/gen/
 .env.local
 credentials.toml
 CLAUDE.md
+reportes/
 
 # Build artifacts
 build/
