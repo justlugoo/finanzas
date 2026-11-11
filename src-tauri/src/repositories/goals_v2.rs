@@ -138,15 +138,18 @@ pub async fn soft_delete_entries(conn: &Connection, goal_id: &str) -> AppResult<
 }
 
 /// Progreso de una meta — sección 6 de schema-v2.md. La dirección de la
-/// transferencia es parte del filtro, no un `SUM` indiscriminado.
+/// transferencia es parte del filtro, no un `SUM` indiscriminado. Los
+/// retiros (transfer en sentido contrario, con la misma meta) restan.
 pub async fn current_amount(conn: &Connection, goal_id: &str, kind: &str) -> AppResult<i64> {
     let to_code = if kind == "debt" { "payable" } else { "savings" };
     let mut rows = conn
         .query(
-            "SELECT COALESCE(SUM(e.amount_cop), 0) FROM entries e
+            "SELECT COALESCE(SUM(CASE WHEN a_from.code = 'cash' THEN e.amount_cop ELSE -e.amount_cop END), 0)
+             FROM entries e
              JOIN accounts a_from ON a_from.id = e.account_from
              JOIN accounts a_to   ON a_to.id   = e.account_to
-             WHERE e.kind = 'transfer' AND e.goal_id = ? AND a_from.code = 'cash' AND a_to.code = ?
+             WHERE e.kind = 'transfer' AND e.goal_id = ?1
+               AND ((a_from.code = 'cash' AND a_to.code = ?2) OR (a_from.code = ?2 AND a_to.code = 'cash'))
                AND e.deleted_at IS NULL",
             libsql::params![goal_id.to_string(), to_code],
         )
