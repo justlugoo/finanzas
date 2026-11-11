@@ -2,7 +2,13 @@
   // Fecha tipeada con máscara DD/MM/AAAA — sin calendario emergente de
   // ningún tipo, así que no hay ventana que "esconder" ni estilo ajeno al
   // de la app. Valida día 01-31, mes 01-12, y no permite fechas futuras.
-  let { value = $bindable("") }: { value: string } = $props();
+  // `optional` + `allowFuture` son para campos como la fecha meta, que puede
+  // quedar vacía y apunta al futuro (no es la fecha de un movimiento).
+  let {
+    value = $bindable(""),
+    optional = false,
+    allowFuture = false,
+  }: { value: string; optional?: boolean; allowFuture?: boolean } = $props();
 
   function todayISO(): string {
     const d = new Date();
@@ -25,7 +31,8 @@
   // que el campo se veía con fecha pero el formulario se enviaba sin
   // ninguna (o el botón de guardar quedaba deshabilitado) hasta que el
   // usuario tecleaba la fecha a mano, aunque ya fuera la misma que se veía.
-  if (!value) value = todayISO();
+  // svelte-ignore state_referenced_locally
+  if (!value && !optional) value = todayISO();
 
   let display   = $state(isoToDisplay(value));
   let lastValue = value;
@@ -56,6 +63,13 @@
     if (digits.length > 4) out += "/" + yyyy;
     display = out;
 
+    // Campo opcional borrado del todo → sin fecha.
+    if (optional && digits.length === 0) {
+      value     = "";
+      lastValue = "";
+      return;
+    }
+
     if (digits.length === 8) {
       const y = parseInt(yyyy, 10);
       const m = parseInt(mm, 10);
@@ -63,7 +77,7 @@
       let iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
       const today = todayISO();
-      if (iso > today) iso = today; // no se pueden registrar fechas futuras
+      if (!allowFuture && iso > today) iso = today; // no se pueden registrar fechas futuras
 
       value     = iso;
       lastValue = iso;

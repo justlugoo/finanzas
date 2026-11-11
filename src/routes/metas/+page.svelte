@@ -616,7 +616,7 @@
           {:else}
             <div class="field">
               <span class="field-label">Fecha meta <span class="optional">(opcional)</span></span>
-              <DatePicker bind:value={cTargetDate} />
+              <DatePicker bind:value={cTargetDate} optional allowFuture />
             </div>
           {/if}
 
@@ -705,7 +705,7 @@
       {#if editTarget?.tipo === "quiero_juntar"}
         <div class="field">
           <span class="field-label">Fecha meta <span class="optional">(opcional)</span></span>
-          <DatePicker bind:value={eTargetDate} />
+          <DatePicker bind:value={eTargetDate} optional allowFuture />
         </div>
       {/if}
       <div class="modal-actions">
